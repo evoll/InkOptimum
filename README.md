@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/inkmod-logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/inkmod-logo-light.png">
-    <img alt="inkMOD — Custom Firmware for Xteink X3, X4 and X4 Pro"
+    <source media="(prefers-color-scheme: dark)" srcset="assets/InkOptimum-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/InkOptimum-light.png">
+    <img alt="InkOptimum — Custom Firmware for Xteink X3, X4 and X4 Pro"
          src="assets/inkmod-logo-light.png" width="300">
   </picture>
 </p>
 
-<h1 align="center">inkMOD</h1>
+<h1 align="center">InkOptimum</h1>
 
 <p align="center">
 Open-source custom firmware for <b>Xteink X3, X4 and X4 Pro</b>
@@ -30,11 +30,12 @@ FB2 / FB2.ZIP / EPUB · dictionaries · custom fonts · OPDS · statistics · we
 
 **Do not flash the X3/X4 image to X4 Pro or the X4 Pro image to X3/X4.** The firmware also performs device-family checks where possible, but the correct image should always be selected before flashing.
 
-## What inkMOD includes
+## What InkOptimum includes
 
 ### Reading and book formats
 
 - Native **FB2** and **FB2.ZIP** support.
+- Native **FB3** and **FB3.ZIP** support.
 - **EPUB** reading with browser-side EPUBKIT preparation/optimization.
 - **TXT, XTC and XTCH** support.
 - ZIP content detection for supported books instead of relying only on the file extension.
@@ -107,9 +108,9 @@ See [`RECOVERY.md`](RECOVERY.md) before experimenting with firmware recovery.
 
 ## Current release
 
-The source tree is currently versioned as **inkMOD 1.1.8**.
+The source tree is currently versioned as **InkOptimum 1.2.0**.
 
-Highlights of 1.1.8 include:
+Highlights of 1.2.0 include:
 
 - full X4 Pro target and touch/frontlight integration;
 - separate X3/X4 and X4 Pro release artifacts;
@@ -117,7 +118,7 @@ Highlights of 1.1.8 include:
 - short cover-based swipe navigation in Lyra Carousel;
 - remembered file-browser directory and selection on all supported models;
 - OPDS/cache, KOReader sync and browser-side book-preparation improvements;
-- continued FB2/EPUB rendering and stability work.
+- continued FB2/FB3/EPUB rendering and stability work.
 
 Detailed history is in [`CHANGELOG.md`](CHANGELOG.md). Release-specific notes are in [`RELEASE_NOTES_1.1.8.md`](RELEASE_NOTES_1.1.8.md).
 
@@ -182,7 +183,7 @@ assets/        project artwork
 
 ## Community and support
 
-inkMOD is free and open source. Financial support is optional and never unlocks firmware functionality.
+InkOptimum is free and open source. Financial support is optional and never unlocks firmware functionality.
 
 - [![Telegram](https://img.shields.io/badge/Join%20inkMOD%20on%20Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/inkmodx4)
 - [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/V7S125SA30)
@@ -191,9 +192,9 @@ Installation instructions and community experience are also maintained in the in
 
 ## Credits and upstream
 
-inkMOD is based on and derived from **CrossPoint / FreeInk** work and includes third-party open-source components. See [`THIRD_PARTY.md`](THIRD_PARTY.md) and [`LICENSE`](LICENSE) for licensing information.
+InkOptimum is based on and derived from **CrossPoint / FreeInk / inkMOD** work and includes third-party open-source components. See [`THIRD_PARTY.md`](THIRD_PARTY.md) and [`LICENSE`](LICENSE) for licensing information.
 
-Contributors and testers who helped shape recent inkMOD releases include **Alpa4hinO** and **olimo**, along with community members who supplied books, logs, hardware tests and bug reports.
+Contributors and testers who helped shape recent InkOptimum releases include **Alpa4hinO** and **olimo**, along with community members who supplied books, logs, hardware tests and bug reports.
 
 ## License
 
