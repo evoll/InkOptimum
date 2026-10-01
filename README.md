@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/InkOptimum-logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/InkOptimum-light.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/InkOptimum-logo-light.png">
     <img alt="InkOptimum — Custom Firmware for Xteink X3, X4 and X4 Pro"
          src="assets/inkmod-logo-light.png" width="300">
   </picture>
