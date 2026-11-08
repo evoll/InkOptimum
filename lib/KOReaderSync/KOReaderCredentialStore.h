@@ -27,6 +27,7 @@ class KOReaderCredentialStore {
   static KOReaderCredentialStore instance;
   std::string username;
   std::string password;
+  std::string customHeader;  // optional "Name: value" sent with every sync request
   std::string serverUrl;                                            // Custom sync server URL (empty = default)
   DocumentMatchMethod matchMethod = DocumentMatchMethod::FILENAME;  // Default to filename for compatibility
   bool sendMetadata = false;
@@ -69,6 +70,10 @@ class KOReaderCredentialStore {
   // Server URL management
   void setServerUrl(const std::string& url);
   const std::string& getServerUrl() const { return serverUrl; }
+
+  // Optional extra request header ("Name: value"), validated by opds_profile::parseHeaderLine.
+  void setCustomHeader(const std::string& header) { customHeader = header; }
+  const std::string& getCustomHeader() const { return customHeader; }
 
   // Get base URL for API calls (with http:// normalization if no protocol, falls back to default)
   std::string getBaseUrl() const;

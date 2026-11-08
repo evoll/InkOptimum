@@ -1,7 +1,13 @@
 #include "ParsedText.h"
+#include "WordSpacing.h"
 
 #include <BidiUtils.h>
+
+#include <Epub/BidiLine.h>
+#include <CjkBreak.h>
+#include <CjkPunct.h>
 #include <GfxRenderer.h>
+#include <IndicScripts.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -51,6 +57,71 @@ uint32_t lastCodepoint(const std::string& word) {
   }
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + i);
   return utf8NextCodepoint(&ptr);
+}
+
+// Han, kana and CJK punctuation are written without spaces, so a line may break between any two of
+// them and no gap is drawn there. Hangul is excluded: Korean separates its words with spaces.
+bool isSpacelessCjk(const uint32_t cp) {
+  if (!utf8IsCjkBreakable(cp)) return false;
+  return !((cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0xFFA0 && cp <= 0xFFDC));
+}
+
+// True when the boundary between two characters is a spaceless CJK boundary.
+bool isSpacelessCjkBoundary(const uint32_t left, const uint32_t right) {
+  return isSpacelessCjk(left) || isSpacelessCjk(right);
+}
+
+// The gap the layout puts between two words that are not marked as continuing: the font's space,
+// except at a spaceless CJK boundary where nothing is drawn.
+// A codepoint as UTF-8, for measuring one character.
+std::string utf8Of(const uint32_t cp) {
+  std::string out;
+  if (cp < 0x80) {
+    out.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+  return out;
+}
+
+int spaceAdvance(const GfxRenderer& renderer, const int fontId, const uint32_t left, const uint32_t right,
+                 const EpdFontFamily::Style style) {
+  if (left != 0 && right != 0 && isSpacelessCjkBoundary(left, right)) {
+    // Chinese and Japanese set a quarter em between Han/kana and a Latin letter or digit (spec 5.4).
+    if (CjkPunctuation::bookProfile().cjkLatinGap && CjkPunctuation::takesCjkLatinGap(left, right)) {
+      const uint32_t cjk = CjkPunctuation::isHanOrKana(left) ? left : right;
+      return renderer.getTextAdvanceX(fontId, utf8Of(cjk).c_str(), style) * CjkPunctuation::kCjkLatinGap / 8;
+    }
+    return 0;
+  }
+  const int natural = renderer.getSpaceAdvance(fontId, left, right, style);
+  // Reader > Word Spacing: widen (+10 px steps) or narrow (-20 % of the gap per step) every inter-word space.
+  return natural + WordSpacing::extra(natural, WordSpacing::current());
+}
+
+// CJK marks whose width depends on their neighbour; each is laid out as a word of its own.
+bool isAdjustedMark(const uint32_t cp) {
+  using CjkPunctuation::Class;
+  const Class c = CjkPunctuation::classOf(cp);
+  return c != Class::None && c != Class::IdeographicSpace && c != Class::AmbiguousQuote;
+}
+
+bool containsSpacelessCjk(const std::string& word) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  while (*ptr) {
+    if (isSpacelessCjk(utf8NextCodepoint(&ptr))) return true;
+  }
+  return false;
 }
 
 bool containsSoftHyphen(const std::string& word) { return word.find(SOFT_HYPHEN_UTF8) != std::string::npos; }
@@ -189,9 +260,70 @@ bool isWordCharacter(uint32_t cp) {
 
 }  // namespace
 
+ParsedText::BidiMark& ParsedText::bidiMarkAt(const uint32_t word) {
+  for (auto& m : bidiMarks) {
+    if (m.word == word) return m;
+  }
+  bidiMarks.push_back(BidiMark{word, {0, 0, 0, 0}, 0, {0, 0, 0, 0}, 0});
+  return bidiMarks.back();
+}
+
+void ParsedText::bidiOpen(const uint32_t cp) {
+  if (bidiPendingOpens.size() < 4) bidiPendingOpens.push_back(cp);
+}
+
+void ParsedText::bidiClose(const bool isolate) {
+  if (!bidiPendingOpens.empty()) {  // the element held no word: drop its opener
+    bidiPendingOpens.pop_back();
+    return;
+  }
+  if (words.empty()) return;
+  BidiMark& m = bidiMarkAt(static_cast<uint32_t>(words.size() - 1));
+  if (m.nClose < 4) m.closes[m.nClose++] = isolate ? 'I' : 'F';
+}
+
+// The consumed words are gone: their marks go too, the rest move down.
+void ParsedText::bidiShiftAfterErase(const size_t consumed) {
+  size_t out = 0;
+  for (size_t i = 0; i < bidiMarks.size(); ++i) {
+    if (bidiMarks[i].word < consumed) continue;
+    bidiMarks[out] = bidiMarks[i];
+    bidiMarks[out].word -= static_cast<uint32_t>(consumed);
+    ++out;
+  }
+  bidiMarks.resize(out);
+}
+
+// Word `wordIndex` was split in two: its closers go to the second part, later marks move up by one.
+void ParsedText::bidiSplitWord(const size_t wordIndex) {
+  if (bidiMarks.empty()) return;
+  BidiMark* own = nullptr;
+  for (auto& m : bidiMarks) {
+    if (m.word == wordIndex) {
+      own = &m;
+    } else if (m.word > wordIndex) {
+      ++m.word;
+    }
+  }
+  if (own != nullptr && own->nClose > 0) {
+    BidiMark tail{static_cast<uint32_t>(wordIndex + 1), {0, 0, 0, 0}, 0, {0, 0, 0, 0}, own->nClose};
+    for (uint8_t i = 0; i < own->nClose; ++i) tail.closes[i] = own->closes[i];
+    own->nClose = 0;
+    bidiMarks.push_back(tail);
+  }
+}
+
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
                          const bool attachToPrevious, const bool backgroundBlack) {
   if (word.empty()) return;
+
+  if (!bidiPendingOpens.empty()) {
+    BidiMark& m = bidiMarkAt(static_cast<uint32_t>(words.size()));
+    for (const uint32_t cp : bidiPendingOpens) {
+      if (m.nOpen < 4) m.opens[m.nOpen++] = cp;
+    }
+    bidiPendingOpens.clear();
+  }
 
   EpdFontFamily::Style baseStyle = fontStyle;
   if (underline) {
@@ -208,6 +340,12 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordIsBionicSuffix.push_back(false);
     wordIsGuideDot.push_back(true);
     wordBackgroundBlack.push_back(false);
+  }
+
+  // Han/kana/CJK punctuation: no spaces in the source, so split into tokens a line may break between.
+  if (containsSpacelessCjk(word)) {
+    addSpacelessCjkWord(word, baseStyle, attachToPrevious, backgroundBlack);
+    return;
   }
 
   // Already-bold text should stay fully bold; bionic splitting would make its suffix regular later.
@@ -351,7 +489,91 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
   }
 }
 
+void ParsedText::addSpacelessCjkWord(const std::string& word, const EpdFontFamily::Style style,
+                                     const bool attachToPrevious, const bool backgroundBlack) {
+  const auto* const begin = reinterpret_cast<const unsigned char*>(word.c_str());
+  const auto* p = begin;
+  const auto* tokenStart = begin;
+
+  // The first token may break from the previous word only where kinsoku allows it; otherwise it
+  // stays attached exactly as the caller asked.
+  bool attachFirst = attachToPrevious;
+  if (attachToPrevious && !words.empty()) {
+    const auto* probe = begin;
+    const uint32_t firstCp = utf8NextCodepoint(&probe);
+    const uint32_t lastCp = lastCodepoint(words.back());
+    if (isSpacelessCjkBoundary(lastCp, firstCp) && cjk_break::breakAllowed(lastCp, firstCp)) attachFirst = false;
+  }
+
+  // Whether the token being built is attached (no break, no gap) to the one before it.
+  bool tokenAttached = attachFirst;
+  auto emit = [&](const unsigned char* from, const unsigned char* to) {
+    words.emplace_back(reinterpret_cast<const char*>(from), static_cast<size_t>(to - from));
+    wordStyles.push_back(style);
+    wordContinues.push_back(tokenAttached);
+    wordIsBionicSuffix.push_back(false);
+    wordIsGuideDot.push_back(false);
+    wordBackgroundBlack.push_back(backgroundBlack);
+  };
+
+  uint32_t prev = 0;
+  while (*p) {
+    const auto* cpStart = p;
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp == 0) break;
+    if (prev != 0 && isSpacelessCjkBoundary(prev, cp)) {
+      const bool lineMayBreak = cjk_break::breakAllowed(prev, cp);
+      // A punctuation mark is a word of its own (its width and position depend on its neighbour), attached to
+      // what it follows or precedes when kinsoku forbids a break there.
+      if (lineMayBreak || isAdjustedMark(prev) || isAdjustedMark(cp)) {
+        emit(tokenStart, cpStart);
+        tokenStart = cpStart;
+        tokenAttached = !lineMayBreak;
+      }
+    }
+    prev = cp;
+  }
+  emit(tokenStart, p);
+}
+
+void ParsedText::setRubyGroupAt(const size_t startIndex, const size_t count, const std::string& ruby) {
+  if (count == 0 || ruby.empty() || startIndex >= words.size()) return;
+  const size_t end = std::min(words.size(), startIndex + count);
+  if (rubyTexts.size() < end) rubyTexts.resize(end);
+  rubyTexts[startIndex] = ruby;
+  for (size_t i = startIndex + 1; i < end; ++i) {
+    wordStyles[i] = static_cast<EpdFontFamily::Style>(wordStyles[i] | EpdFontFamily::RUBY_CONTINUE);
+    wordContinues[i] = true;
+  }
+}
+
+// A group whose annotation is wider than its base gets the difference as padding, half on each side,
+// so the annotation never overlaps the neighbouring text.
+void ParsedText::widenRubyGroups(const GfxRenderer& renderer, const int fontId,
+                                 std::vector<uint16_t>& wordWidths) const {
+  for (size_t i = 0; i < rubyTexts.size() && i < words.size(); ++i) {
+    if (rubyTexts[i].empty()) continue;
+    size_t end = i + 1;
+    while (end < words.size() && (wordStyles[end] & EpdFontFamily::RUBY_CONTINUE) != 0) ++end;
+    int baseWidth = 0;
+    for (size_t k = i; k < end; ++k) baseWidth += wordWidths[k];
+    const int rubyWidth = renderer.getTextAdvanceX(fontId, rubyTexts[i].c_str(), EpdFontFamily::SUP);
+    if (rubyWidth > baseWidth) {
+      const int extra = rubyWidth - baseWidth;
+      const int left = extra / 2;
+      wordWidths[i] = static_cast<uint16_t>(std::min(65535, wordWidths[i] + left));
+      wordWidths[end - 1] = static_cast<uint16_t>(std::min(65535, wordWidths[end - 1] + extra - left));
+    }
+    i = end - 1;
+  }
+}
+
 int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
+  const int indent = naturalFirstLineIndent(isFirstLine, renderer, fontId);
+  return gridEm_ > 0 ? CjkPunctuation::wholeEmIndent(indent, gridEm_) : indent;
+}
+
+int ParsedText::naturalFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
   const bool naturalAlign =
       blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::None ||
       (blockStyle.isRtl ? blockStyle.alignment == CssTextAlign::Right : blockStyle.alignment == CssTextAlign::Left);
@@ -371,6 +593,54 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 }
 
 // Consumes data to minimize memory usage
+void ParsedText::shapeIndicWords(const GfxRenderer& renderer, const int fontId) {
+  constexpr size_t kMaxWordBytes = 512;
+  for (size_t w = 0; w < words.size(); ++w) {
+    const std::string& word = words[w];
+    if (word.empty() || word.size() > kMaxWordBytes) continue;
+    bool any = false;
+    for (size_t i = 0; i + 1 < word.size(); ++i) {
+      if (indic::startsIndic(reinterpret_cast<const unsigned char*>(word.c_str() + i))) {
+        any = true;
+        break;
+      }
+    }
+    if (!any) continue;
+
+    std::vector<uint32_t> cps;
+    const auto* p = reinterpret_cast<const unsigned char*>(word.c_str());
+    while (*p) cps.push_back(utf8NextCodepoint(&p));
+
+    std::string shaped;
+    bool changed = false;
+    for (size_t i = 0; i < cps.size();) {
+      const auto* script = indic::scriptOf(cps[i]);
+      if (!script) {
+        utf8AppendCodepoint(cps[i++], shaped);
+        continue;
+      }
+      // The run: this script's code points, with the joiners that steer conjuncts and the Vedic signs that sit on them.
+      size_t j = i + 1;
+      while (j < cps.size()) {
+        const auto* next = indic::scriptOf(cps[j]);
+        const bool joiner = cps[j] == indic::ZWNJ || cps[j] == indic::ZWJ || (cps[j] >= 0x0951 && cps[j] <= 0x0954);
+        if (next ? next != script : !joiner) break;
+        ++j;
+      }
+      const size_t before = shaped.size();
+      if (renderer.shapeIndicRun(fontId, wordStyles[w], cps.data() + i, static_cast<unsigned>(j - i),
+                                 static_cast<uint8_t>(indic::indexOf(*script)), "", &shaped)) {
+        changed = true;
+      } else {
+        shaped.resize(before);
+        for (size_t k = i; k < j; ++k) utf8AppendCodepoint(cps[k], shaped);
+      }
+      i = j;
+    }
+    if (changed) words[w] = std::move(shaped);
+  }
+}
+
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                                        const bool includeLastLine, const size_t maxLines,
@@ -389,6 +659,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     }
   }
 
+  shapeIndicWords(renderer, fontId);
+
   // Ensure SD card font glyph metrics are loaded before measuring word widths.
   // For flash-based fonts isSdCardFont() returns false and this block is skipped
   // entirely — no heap allocation. For SD card fonts this reads glyph metadata
@@ -406,7 +678,19 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
   }
 
-  const int pageWidth = viewportWidth;
+  int pageWidth = viewportWidth;
+  gridEm_ = 0;
+  gridShift_ = 0;
+  if (CjkPunctuation::bookProfile().grid) {
+    // The whole-em grid (spec 5.5), for a paragraph that has CJK in it: the text width is a whole number of ems.
+    const bool hasCjk = std::any_of(words.begin(), words.end(), [](const std::string& w) { return containsSpacelessCjk(w); });
+    const int em = hasCjk ? renderer.getTextAdvanceX(fontId, "\xE4\xB8\x80", EpdFontFamily::REGULAR) : 0;  // 一
+    if (em >= 8 && em * 4 <= viewportWidth) {
+      gridEm_ = em;
+      pageWidth = CjkPunctuation::wholeEmWidth(viewportWidth, em);
+      gridShift_ = (viewportWidth - pageWidth) / 2;
+    }
+  }
   auto wordWidths = calculateWordWidths(renderer, fontId);
 
   std::vector<size_t> lineBreakIndices;
@@ -453,6 +737,13 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     wordIsBionicSuffix.erase(wordIsBionicSuffix.begin(), wordIsBionicSuffix.begin() + consumed);
     wordIsGuideDot.erase(wordIsGuideDot.begin(), wordIsGuideDot.begin() + consumed);
     wordBackgroundBlack.erase(wordBackgroundBlack.begin(), wordBackgroundBlack.begin() + consumed);
+    bidiShiftAfterErase(consumed);
+    if (!rubyTexts.empty()) {
+      rubyTexts.erase(rubyTexts.begin(), rubyTexts.begin() + std::min(consumed, rubyTexts.size()));
+    }
+    if (!wordDrawShift.empty()) {
+      wordDrawShift.erase(wordDrawShift.begin(), wordDrawShift.begin() + std::min(consumed, wordDrawShift.size()));
+    }
   }
 }
 
@@ -463,8 +754,48 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
   for (size_t i = 0; i < words.size(); ++i) {
     wordWidths.push_back(measureWordWidth(renderer, fontId, words[i], wordStyles[i]));
   }
+  if (!rubyTexts.empty()) widenRubyGroups(renderer, fontId, wordWidths);
+  applyCjkPunctuation(renderer, fontId, wordWidths);
 
   return wordWidths;
+}
+
+// Full-width CJK marks next to other marks give up part of their blank half-em (JLREQ / CLREQ, spec 5.2). The
+// narrowed mark is drawn shifted so its ink stays where the glyph put it; wordDrawShift carries that shift.
+void ParsedText::applyCjkPunctuation(const GfxRenderer& renderer, const int fontId, std::vector<uint16_t>& wordWidths) {
+  using namespace CjkPunctuation;
+  wordDrawShift.clear();
+  const Table table = bookProfile().table;
+  int emWidth = -1;  // measured lazily, only for curly quotes
+  for (size_t i = 0; i < words.size(); ++i) {
+    const std::string& w = words[i];
+    if (w.empty() || static_cast<unsigned char>(w[0]) < 0x80) continue;
+    const auto* ptr = reinterpret_cast<const unsigned char*>(w.c_str());
+    const uint32_t cp = utf8NextCodepoint(&ptr);
+    if (static_cast<size_t>(ptr - reinterpret_cast<const unsigned char*>(w.c_str())) != w.size()) continue;  // one character only
+    const Class mark = classOf(cp);
+    if (mark == Class::None || mark == Class::IdeographicSpace || mark == Class::AmbiguousQuote) continue;
+
+    // The curly quotes are CJK punctuation only where the font draws them full-width; in a Latin font they are
+    // narrow and must be left alone.
+    if (isCurlyQuote(cp)) {
+      if (emWidth < 0) emWidth = renderer.getTextAdvanceX(fontId, utf8Of(0x4E00).c_str(), wordStyles[i]);
+      if (emWidth <= 0 || wordWidths[i] * 8 < emWidth * 7) continue;
+    }
+
+    // An opening mark looks at the character before it, every other mark at the one after it.
+    Class neighbour = Class::None;
+    if (mark == Class::Opening) {
+      if (i > 0 && !words[i - 1].empty()) neighbour = classOf(lastCodepoint(words[i - 1]));
+    } else if (i + 1 < words.size() && !words[i + 1].empty()) {
+      neighbour = classOf(firstCodepoint(words[i + 1]));
+    }
+    const Adjust adj = adjustFor(table, mark, neighbour, wordWidths[i]);
+    if (adj.widthDelta <= 0) continue;
+    wordWidths[i] = static_cast<uint16_t>(wordWidths[i] - adj.widthDelta);
+    if (wordDrawShift.empty()) wordDrawShift.assign(words.size(), 0);
+    wordDrawShift[i] = adj.drawShift;
+  }
 }
 
 std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
@@ -507,7 +838,7 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
       int gap = 0;
       if (j > static_cast<size_t>(i) && !continuesVec[j]) {
         gap =
-            renderer.getSpaceAdvance(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
+            spaceAdvance(renderer, fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
       } else if (j > static_cast<size_t>(i) && continuesVec[j]) {
         // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
         gap = renderer.getKerning(fontId, lastCodepoint(words[j - 1]), firstCodepoint(words[j]), wordStyles[j - 1]);
@@ -609,7 +940,7 @@ std::vector<size_t> ParsedText::computeGreedyLineBreaks(const GfxRenderer& rende
       const bool firstToken = currentIndex == lineStart;
       int spacing = 0;
       if (!firstToken && !continuesVec[currentIndex]) {
-        spacing = renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
+        spacing = spaceAdvance(renderer, fontId, lastCodepoint(words[currentIndex - 1]),
                                            firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
       } else if (!firstToken && continuesVec[currentIndex]) {
         spacing = renderer.getKerning(fontId, lastCodepoint(words[currentIndex - 1]),
@@ -668,7 +999,7 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
       const bool isFirstWord = currentIndex == lineStart;
       int spacing = 0;
       if (!isFirstWord && !continuesVec[currentIndex]) {
-        spacing = renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
+        spacing = spaceAdvance(renderer, fontId, lastCodepoint(words[currentIndex - 1]),
                                            firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
       } else if (!isFirstWord && continuesVec[currentIndex]) {
         // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
@@ -778,9 +1109,12 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   words.insert(words.begin() + wordIndex + 1, remainder);
   wordStyles.insert(wordStyles.begin() + wordIndex + 1, style);
   wordBackgroundBlack.insert(wordBackgroundBlack.begin() + wordIndex + 1, wordBackgroundBlack[wordIndex]);
+  bidiSplitWord(wordIndex);
   // The hyphen remainder is neither a bionic suffix nor a guide dot - it starts fresh on the next line.
   wordIsBionicSuffix.insert(wordIsBionicSuffix.begin() + wordIndex + 1, false);
   wordIsGuideDot.insert(wordIsGuideDot.begin() + wordIndex + 1, false);
+  if (rubyTexts.size() > wordIndex + 1) rubyTexts.insert(rubyTexts.begin() + wordIndex + 1, std::string());
+  if (wordDrawShift.size() > wordIndex + 1) wordDrawShift.insert(wordDrawShift.begin() + wordIndex + 1, 0);
 
   // Continuation flag handling after splitting a word into prefix + remainder.
   //
@@ -853,8 +1187,11 @@ bool ParsedText::splitPathologicalTokenAtIndex(const size_t wordIndex, const int
   words.insert(words.begin() + wordIndex + 1, remainder);
   wordStyles.insert(wordStyles.begin() + wordIndex + 1, style);
   wordBackgroundBlack.insert(wordBackgroundBlack.begin() + wordIndex + 1, wordBackgroundBlack[wordIndex]);
+  bidiSplitWord(wordIndex);
   wordIsBionicSuffix.insert(wordIsBionicSuffix.begin() + wordIndex + 1, false);
   wordIsGuideDot.insert(wordIsGuideDot.begin() + wordIndex + 1, false);
+  if (rubyTexts.size() > wordIndex + 1) rubyTexts.insert(rubyTexts.begin() + wordIndex + 1, std::string());
+  if (wordDrawShift.size() > wordIndex + 1) wordDrawShift.insert(wordDrawShift.begin() + wordIndex + 1, 0);
   wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
 
   wordWidths[wordIndex] = static_cast<uint16_t>(chosenWidth);
@@ -881,6 +1218,9 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   std::vector<bool> lineBionicSuffix;
   std::vector<bool> lineGuideDot;
   std::vector<uint8_t> lineBackgroundBlack;
+  std::vector<std::string> lineRuby;  // stays empty for a line without ruby
+  std::vector<int16_t> lineDrawShift;  // stays empty for a line without adjusted CJK marks
+  std::vector<std::string> lineDisplay;  // the drawn forms of a bidi line's pieces; empty for any other line
   lineWords.reserve(lineWordCount);
   lineWordStyles.reserve(lineWordCount);
   lineWordWidths.reserve(lineWordCount);
@@ -900,6 +1240,14 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     lineBionicSuffix.push_back(wordIsBionicSuffix[sourceIndex]);
     lineGuideDot.push_back(wordIsGuideDot[sourceIndex]);
     lineBackgroundBlack.push_back(wordBackgroundBlack[sourceIndex]);
+    if (!wordDrawShift.empty()) {
+      if (lineDrawShift.empty()) lineDrawShift.assign(lineWordCount, 0);
+      lineDrawShift[i] = sourceIndex < wordDrawShift.size() ? wordDrawShift[sourceIndex] : 0;
+    }
+    if (sourceIndex < rubyTexts.size() && !rubyTexts[sourceIndex].empty()) {
+      if (lineRuby.empty()) lineRuby.resize(lineWordCount);
+      lineRuby[i] = std::move(rubyTexts[sourceIndex]);
+    }
   }
 
   // Calculate total word width for this line, count actual word gaps,
@@ -917,7 +1265,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       if (!isFixedDialogueGap(preserveNaturalWordSpaces, lineWords[wordIdx - 1])) {
         actualGapCount++;
       }
-      totalNaturalGaps += renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx - 1]),
+      totalNaturalGaps += spaceAdvance(renderer, fontId, lastCodepoint(lineWords[wordIdx - 1]),
                                                    firstCodepoint(lineWords[wordIdx]), lineWordStyles[wordIdx - 1]);
     } else if (wordIdx > 0 && continuesVec[lastBreakAt + wordIdx]) {
       // Continuation tokens (including NBSP represented as a literal space word)
@@ -965,37 +1313,161 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   // gaps there is enough room to distribute the remainder naturally, so let
   // those lines reach the full text width. One/two-gap lines retain the old
   // protection against absurdly wide spaces.
-  if (justifyExtra > 0 && actualGapCount >= 1 && actualGapCount <= 2) {
+  // A line with a break between two CJK characters (a gap that has no natural width) ends flush (spec 5.1): the
+  // cap above would hold it to 2 px a gap, so such a line is capped at an eighth of the width instead, and what
+  // the even share leaves over goes 1 px each to evenly spaced gaps. Latin lines keep their rounding.
+  bool cjkGapOnLine = false;
+  for (size_t wordIdx = 1; wordIdx < lineWordCount && !cjkGapOnLine; wordIdx++) {
+    cjkGapOnLine = !continuesVec[lastBreakAt + wordIdx] &&
+                   isSpacelessCjkBoundary(lastCodepoint(lineWords[wordIdx - 1]), firstCodepoint(lineWords[wordIdx]));
+  }
+  if (justifyExtra > 0 && actualGapCount >= 1 && actualGapCount <= 2 && !cjkGapOnLine) {
     const int averageNaturalGap = std::max(1, totalNaturalGaps / static_cast<int>(actualGapCount));
     justifyExtra = std::min(justifyExtra, averageNaturalGap * 2);
   }
+  if (cjkGapOnLine) justifyExtra = std::min(justifyExtra, effectivePageWidth / 8);
+  const int justifyRemainder = cjkGapOnLine && justifyExtra >= 0 && spareSpace > 0 && justifyExtra < effectivePageWidth / 8 &&
+                                       effectiveAlignment == CssTextAlign::Justify && !isLastLine
+                                   ? spareSpace - justifyExtra * static_cast<int>(actualGapCount)
+                                   : 0;
+  int stretchedGaps = 0;
+  const auto gapExtra = [&]() {
+    const int g = stretchedGaps++;
+    const int gaps = static_cast<int>(actualGapCount);
+    if (gaps == 0 || justifyRemainder <= 0) return justifyExtra;
+    return justifyExtra + ((g + 1) * justifyRemainder / gaps - g * justifyRemainder / gaps);
+  };
 
   visualOrderScratch.clear();
   visualOrderScratch.reserve(lineWordCount);
   const bool shouldResolveVisualOrder = blockStyle.isRtl || hasRtlWord;
+
+  // The bidi line pass (BidiLine.h, as in witchhunt): one UAX #9 pass over the whole line, so a word whose characters
+  // land apart is split into pieces and brackets and digits resolve against their neighbours. It sets the line's
+  // pieces in visual order (`bidiLogical` their logical text, `reorderedWordsScratch` what each draws). A line with
+  // bionic splits, guide dots, ruby or CJK mark shifts, a line over the pass's limits, and a line the pass leaves
+  // exactly as it was take the word-order path below.
+  std::vector<std::string> bidiLogical;
+  std::vector<uint16_t> bidiPieceToken;
+  bool usedBidiLine = false;
+
+  // Markup controls (dir, <bdi>, <bdo>): each marked word becomes a token wrapped in its openers and closers.
+  bool lineMarked = false;
+  if (!bidiMarks.empty()) {
+    for (const auto& m : bidiMarks) {
+      if (m.word >= lastBreakAt && m.word < lineBreak) {
+        lineMarked = true;
+        break;
+      }
+    }
+  }
+  std::vector<std::string> markedTokens;  // the tokens' texts, controls included; empty for an unmarked line
+  if (lineMarked) {
+    markedTokens.reserve(lineWordCount);
+    for (size_t i = 0; i < lineWordCount; ++i) {
+      std::string tok;
+      const BidiMark* mark = nullptr;
+      for (const auto& m : bidiMarks) {
+        if (m.word == lastBreakAt + i) {
+          mark = &m;
+          break;
+        }
+      }
+      if (mark != nullptr) {
+        for (uint8_t k = 0; k < mark->nOpen; ++k) utf8AppendCodepoint(tok, mark->opens[k]);
+      }
+      tok += lineWords[i];
+      if (mark != nullptr) {
+        for (uint8_t k = 0; k < mark->nClose; ++k) utf8AppendCodepoint(tok, mark->closes[k] == 'I' ? 0x2069 : 0x202C);
+      }
+      markedTokens.push_back(std::move(tok));
+    }
+  }
+  BidiLine::OpenControls lineOpen;
+  for (uint8_t k = 0; k < bidiCarryN_; ++k) lineOpen.cps[k] = bidiCarry_[k];
+  lineOpen.count = bidiCarryN_;
+  lineOpen.overflow = bidiCarryOver_;
+
+  if ((shouldResolveVisualOrder || lineMarked) && lineRuby.empty() && lineDrawShift.empty()) {
+    bool plainLine = true;
+    for (size_t i = 0; i < lineWordCount && plainLine; ++i) plainLine = !lineBionicSuffix[i] && !lineGuideDot[i];
+    BidiLine::Scratch* const scratch = plainLine ? BidiLine::heapScratch() : nullptr;
+    if (scratch != nullptr) {
+      std::vector<BidiLine::Token> tokens;
+      tokens.reserve(lineWordCount);
+      for (size_t i = 0; i < lineWordCount; ++i) {
+        const std::string_view text = lineMarked ? std::string_view(markedTokens[i]) : std::string_view(lineWords[i]);
+        tokens.push_back({text, i > 0 && !continuesVec[lastBreakAt + i]});
+      }
+      BidiLine::Line bidiLine;
+      if (BidiLine::layoutLine(tokens.data(), tokens.size(), lineOpen, blockStyle.isRtl ? 1 : 0, *scratch,
+                               bidiLine) &&
+          !bidiLine.fallback) {
+        bool changed = bidiLine.reordered || bidiLine.pieces.size() != lineWordCount;
+        reorderedWordsScratch.clear();
+        for (const auto& piece : bidiLine.pieces) {
+          if (piece.displayLength == 0) continue;  // only controls or joiners: nothing to draw
+          std::string logical(tokens[piece.token].text.substr(piece.begin, piece.end - piece.begin));
+          if (lineMarked) BidiLine::dropControls(logical);
+          reorderedWordsScratch.emplace_back(bidiLine.display.data() + piece.displayBegin, piece.displayLength);
+          bidiLogical.push_back(std::move(logical));
+          bidiPieceToken.push_back(piece.token);
+          changed = changed || reorderedWordsScratch.back() != lineWords[piece.token];
+        }
+        usedBidiLine = changed && !reorderedWordsScratch.empty();
+        // Gap kinds, in visual order, for the continuation flags built below.
+        if (usedBidiLine) {
+          bidiGapScratch.clear();
+          for (const auto& piece : bidiLine.pieces) {
+            if (piece.displayLength == 0) continue;
+            bidiGapScratch.push_back(piece.gapBefore == BidiLine::Gap::Space ? 0 : 1);
+          }
+        }
+      }
+    }
+  }
+  if (lineMarked) {  // what the line leaves open carries into the next
+    BidiLine::OpenControls carry = lineOpen;
+    for (const auto& tok : markedTokens) carry.advance(tok);
+    for (uint8_t k = 0; k < carry.count && k < 8; ++k) bidiCarry_[k] = carry.cps[k];
+    bidiCarryN_ = carry.count;
+    bidiCarryOver_ = carry.overflow;
+  }
   const bool willReorder =
-      shouldResolveVisualOrder && BidiUtils::computeVisualWordOrder(lineWords, blockStyle.isRtl, visualOrderScratch);
+      usedBidiLine ||
+      (shouldResolveVisualOrder && BidiUtils::computeVisualWordOrder(lineWords, blockStyle.isRtl, visualOrderScratch));
 
   std::vector<int16_t> lineXPos;
   lineXPos.reserve(lineWordCount);
 
   if (willReorder) {
-    reorderedWordsScratch.clear();
+    if (!usedBidiLine) reorderedWordsScratch.clear();
     reorderedStylesScratch.clear();
     reorderedWidthsScratch.clear();
     reorderedContinuesScratch.clear();
     reorderedBionicSuffixScratch.clear();
     reorderedGuideDotScratch.clear();
     reorderedBackgroundBlackScratch.clear();
-    reorderedWordsScratch.reserve(visualOrderScratch.size());
-    reorderedStylesScratch.reserve(visualOrderScratch.size());
-    reorderedWidthsScratch.reserve(visualOrderScratch.size());
-    reorderedContinuesScratch.reserve(visualOrderScratch.size());
-    reorderedBionicSuffixScratch.reserve(visualOrderScratch.size());
-    reorderedGuideDotScratch.reserve(visualOrderScratch.size());
-    reorderedBackgroundBlackScratch.reserve(visualOrderScratch.size());
+    reorderedStylesScratch.reserve(lineWordCount);
+    reorderedWidthsScratch.reserve(lineWordCount);
+    reorderedContinuesScratch.reserve(lineWordCount);
+    reorderedBionicSuffixScratch.reserve(lineWordCount);
+    reorderedGuideDotScratch.reserve(lineWordCount);
+    reorderedBackgroundBlackScratch.reserve(lineWordCount);
 
-    for (size_t i = 0; i < visualOrderScratch.size(); ++i) {
+    if (usedBidiLine) {
+      for (size_t i = 0; i < reorderedWordsScratch.size(); ++i) {
+        const uint16_t token = bidiPieceToken[i];
+        reorderedStylesScratch.push_back(lineWordStyles[token]);
+        reorderedWidthsScratch.push_back(
+            measureWordWidth(renderer, fontId, reorderedWordsScratch[i], lineWordStyles[token]));
+        reorderedBionicSuffixScratch.push_back(false);
+        reorderedGuideDotScratch.push_back(false);
+        reorderedBackgroundBlackScratch.push_back(lineBackgroundBlack[token]);
+        reorderedContinuesScratch.push_back(i > 0 && bidiGapScratch[i] != 0);
+      }
+    }
+    for (size_t i = 0; !usedBidiLine && i < visualOrderScratch.size(); ++i) {
       const uint16_t src = visualOrderScratch[i];
       reorderedWordsScratch.push_back(std::move(lineWords[src]));
       reorderedStylesScratch.push_back(lineWordStyles[src]);
@@ -1029,7 +1501,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         if (!isFixedDialogueGap(preserveNaturalWordSpaces, reorderedWordsScratch[wordIdx - 1])) {
           reorderedGapCount++;
         }
-        reorderedNaturalGaps += renderer.getSpaceAdvance(fontId, lastCodepoint(reorderedWordsScratch[wordIdx - 1]),
+        reorderedNaturalGaps += spaceAdvance(renderer, fontId, lastCodepoint(reorderedWordsScratch[wordIdx - 1]),
                                                          firstCodepoint(reorderedWordsScratch[wordIdx]),
                                                          reorderedStylesScratch[wordIdx - 1]);
       } else if (wordIdx > 0 && reorderedContinuesScratch[wordIdx]) {
@@ -1090,7 +1562,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                 firstCodepoint(reorderedWordsScratch[wordIdx + 1]), reorderedStylesScratch[wordIdx]);
         xpos += advance;
       } else if (wordIdx + 1 < reorderedWidthsScratch.size()) {
-        int gap = renderer.getSpaceAdvance(fontId, lastCodepoint(reorderedWordsScratch[wordIdx]),
+        int gap = spaceAdvance(renderer, fontId, lastCodepoint(reorderedWordsScratch[wordIdx]),
                                            firstCodepoint(reorderedWordsScratch[wordIdx + 1]),
                                            reorderedStylesScratch[wordIdx]);
         if (effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
@@ -1101,12 +1573,19 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       }
     }
 
-    lineWords.swap(reorderedWordsScratch);
+    if (usedBidiLine) {
+      lineDisplay = std::move(reorderedWordsScratch);  // the drawn forms
+      reorderedWordsScratch.clear();
+      lineWords = std::move(bidiLogical);              // the logical text of each piece
+    } else {
+      lineWords.swap(reorderedWordsScratch);
+    }
     lineWordStyles.swap(reorderedStylesScratch);
     lineWordWidths.swap(reorderedWidthsScratch);
     lineBionicSuffix.swap(reorderedBionicSuffixScratch);
     lineGuideDot.swap(reorderedGuideDotScratch);
     lineBackgroundBlack.swap(reorderedBackgroundBlackScratch);
+    lineRuby.clear();  // annotations are not carried through visual reordering
   } else {
     // Standard LTR/RTL positioning loop when no visual reordering is needed
     if (blockStyle.isRtl) {
@@ -1132,13 +1611,13 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         } else {
           int gap = 0;
           if (wordIdx + 1 < lineWordCount) {
-            gap = renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
+            gap = spaceAdvance(renderer, fontId, lastCodepoint(lineWords[wordIdx]),
                                            firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
           if (effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
               !(wordIdx + 1 < lineWordCount &&
                 isFixedDialogueGap(preserveNaturalWordSpaces, lineWords[wordIdx]))) {
-            gap += justifyExtra;
+            gap += gapExtra();
           }
           xpos -= gap;
         }
@@ -1153,7 +1632,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       }
 
       for (size_t wordIdx = 0; wordIdx < lineWordCount; ++wordIdx) {
-        lineXPos.push_back(static_cast<int16_t>(xpos));
+        lineXPos.push_back(static_cast<int16_t>(xpos + (lineDrawShift.empty() ? 0 : lineDrawShift[wordIdx])));
 
         const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
         if (nextIsContinuation) {
@@ -1164,13 +1643,13 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         } else {
           int gap = 0;
           if (wordIdx + 1 < lineWordCount) {
-            gap = renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
+            gap = spaceAdvance(renderer, fontId, lastCodepoint(lineWords[wordIdx]),
                                            firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
           if (effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
               !(wordIdx + 1 < lineWordCount &&
                 isFixedDialogueGap(preserveNaturalWordSpaces, lineWords[wordIdx]))) {
-            gap += justifyExtra;
+            gap += gapExtra();
           }
           xpos += lineWordWidths[wordIdx] + gap;
         }
@@ -1178,9 +1657,10 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
   }
 
+  const size_t finalCount = lineWords.size();  // pieces of a bidi line can outnumber the line's tokens
   bool lineHasBionicSplit = false;
   bool lineHasGuideDot = false;
-  for (size_t i = 0; i < lineWordCount; i++) {
+  for (size_t i = 0; i < finalCount; i++) {
     if (lineBionicSuffix[i]) {
       lineHasBionicSplit = true;
     }
@@ -1203,19 +1683,23 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   std::vector<uint16_t> outSuffixX;
   std::vector<uint16_t> outGuideDotXOffset;
   std::vector<uint8_t> outBackgroundBlack;
-  outWords.reserve(lineWordCount);
-  outXPos.reserve(lineWordCount);
-  outStyles.reserve(lineWordCount);
+  outWords.reserve(finalCount);
+  outXPos.reserve(finalCount);
+  outStyles.reserve(finalCount);
   if (lineHasBionicSplit) {
-    outBoundaries.reserve(lineWordCount);
-    outSuffixX.reserve(lineWordCount);
+    outBoundaries.reserve(finalCount);
+    outSuffixX.reserve(finalCount);
   }
   if (lineHasGuideDot) {
-    outGuideDotXOffset.reserve(lineWordCount);
+    outGuideDotXOffset.reserve(finalCount);
   }
-  outBackgroundBlack.reserve(lineWordCount);
+  outBackgroundBlack.reserve(finalCount);
+  std::vector<std::string> outRuby;
+  if (!lineRuby.empty()) outRuby.reserve(finalCount);
+  std::vector<std::string> outDisplay;
+  if (!lineDisplay.empty()) outDisplay.reserve(finalCount);
 
-  for (size_t i = 0; i < lineWordCount; i++) {
+  for (size_t i = 0; i < finalCount; i++) {
     if (lineBionicSuffix[i] && !outWords.empty()) {
       // Bionic suffix: merge string into the preceding bold-prefix entry.
       outWords.back() += lineWords[i];
@@ -1230,14 +1714,14 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       // Normal word: check for a following bionic suffix to record the byte boundary.
       uint8_t boundary = 0;
       uint16_t suffixX = 0;
-      if (i + 1 < lineWordCount && lineBionicSuffix[i + 1]) {
+      if (i + 1 < finalCount && lineBionicSuffix[i + 1]) {
         boundary = static_cast<uint8_t>(std::min(lineWords[i].size(), size_t{255}));
         // Suffix x offset = layout-time advance of the bold prefix, already known from xpos table.
         const int suffixDelta = static_cast<int>(lineXPos[i + 1]) - static_cast<int>(lineXPos[i]);
         suffixX = static_cast<uint16_t>(suffixDelta > 0 ? suffixDelta : 0);
       }
       outWords.push_back(std::move(lineWords[i]));
-      outXPos.push_back(lineXPos[i]);
+      outXPos.push_back(static_cast<int16_t>(lineXPos[i] + gridShift_));
       // For bionic entries with a suffix, strip BOLD from the stored style.
       // Render re-applies it to the prefix portion only, via the boundary field.
       const EpdFontFamily::Style storedStyle =
@@ -1252,10 +1736,13 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         outGuideDotXOffset.push_back(0);  // filled in later if a guide dot follows
       }
       outBackgroundBlack.push_back(lineBackgroundBlack[i]);
+      if (!lineRuby.empty()) outRuby.push_back(std::move(lineRuby[i]));
+      if (!lineDisplay.empty()) outDisplay.push_back(std::move(lineDisplay[i]));
     }
   }
 
   processLine(std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
                                           std::move(outBoundaries), std::move(outSuffixX),
-                                          std::move(outGuideDotXOffset), std::move(outBackgroundBlack), blockStyle));
+                                          std::move(outGuideDotXOffset), std::move(outBackgroundBlack), blockStyle,
+                                          std::move(outRuby), std::move(outDisplay)));
 }

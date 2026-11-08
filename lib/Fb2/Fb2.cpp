@@ -17,7 +17,19 @@
 
 #include "Fb2Encoding.h"
 #include "native/Fb2ZipOpener.h"
-#include "native/FsFileReader.h"
+#include <BufferedFileWriter.h>
+#include <DocxFormat.h>
+#include <DocxSource.h>
+#include <Fb3Source.h>
+#include <HtmlFormat.h>
+#include <HtmlSource.h>
+#include <MarkdownFormat.h>
+#include <MarkdownParser.h>
+#include <MobiFormat.h>
+#include <MobiSource.h>
+#include <RtfFormat.h>
+#include <RtfSource.h>
+#include <FsFileReader.h>
 
 namespace {
 
@@ -144,52 +156,6 @@ class ProfiledByteReader final : public IByteReader {
   uint64_t bytesRead_ = 0;
 };
 
-// Coalesce the many tiny generated-index/XML writes into 4 KiB SD writes.
-// If allocation fails, transparently fall back to direct writes.
-class BufferedFileWriter final : public Print {
- public:
-  explicit BufferedFileWriter(HalFile& file, size_t capacity = 4096)
-      : file_(file), capacity_(capacity), buffer_(new (std::nothrow) uint8_t[capacity]) {}
-  ~BufferedFileWriter() override { flushBuffer(); }
-  size_t write(uint8_t value) override { return write(&value, 1); }
-  size_t write(const uint8_t* data, size_t length) override {
-    if (failed_) return 0;
-    if (!buffer_) {
-      const size_t written = file_.write(data, length);
-      failed_ = written != length;
-      return written;
-    }
-    size_t accepted = 0;
-    while (accepted < length) {
-      if (used_ == capacity_ && !flushBuffer()) return accepted;
-      const size_t chunk = std::min(length - accepted, capacity_ - used_);
-      memcpy(buffer_.get() + used_, data + accepted, chunk);
-      used_ += chunk;
-      accepted += chunk;
-    }
-    return accepted;
-  }
-  bool finish() { return flushBuffer() && !failed_; }
-
- private:
-  bool flushBuffer() {
-    if (failed_) return false;
-    if (used_ == 0) return true;
-    const size_t written = file_.write(buffer_.get(), used_);
-    if (written != used_) {
-      failed_ = true;
-      return false;
-    }
-    used_ = 0;
-    return true;
-  }
-  HalFile& file_;
-  size_t capacity_;
-  std::unique_ptr<uint8_t[]> buffer_;
-  size_t used_ = 0;
-  bool failed_ = false;
-};
-
 // v6 ZIP fused-scan pipe -------------------------------------------------
 // ESP32-C3 is single-core, so this does not magically make inflate + XML
 // parsing parallel CPU work. The win is that scan() consumes decompressed
@@ -212,7 +178,7 @@ class Fb2PipeReader final : public IByteReader {
       total += got;
       pos_ += got;
       if (got == 0 && *producerDone_ && xStreamBufferBytesAvailable(stream_) == 0) break;
-      // A short chunk is perfectly valid for Fb2XmlReader; returning here
+      // A short chunk is perfectly valid for XmlPullReader; returning here
       // also keeps producer/consumer task switches coarse rather than busy.
       if (total > 0) break;
     }
@@ -388,7 +354,15 @@ std::string normalizeImageMediaType(const std::string& value) {
   if (equalsAsciiIgnoreCase(value, "image/jpeg") || equalsAsciiIgnoreCase(value, "image/jpg") ||
       equalsAsciiIgnoreCase(value, "image/pjpeg")) return "image/jpeg";
   if (equalsAsciiIgnoreCase(value, "image/png") || equalsAsciiIgnoreCase(value, "image/x-png")) return "image/png";
+  if (equalsAsciiIgnoreCase(value, "image/gif")) return "image/gif";
   return {};
+}
+
+// Always four characters: the image index stores name lengths as digits + 4.
+const char* imageExtensionFor(const std::string& mediaType) {
+  if (mediaType == "image/png") return ".png";
+  if (mediaType == "image/gif") return ".gif";
+  return ".jpg";
 }
 
 void writeBytes(Print& out, const char* data, size_t length) {
@@ -507,7 +481,7 @@ bool skipCacheBytes(HalFile& in, uint32_t bytes) {
   return true;
 }
 
-// The native parser (native/Fb2XmlReader.h) intentionally never decodes
+// The native parser (native/XmlPullReader.h) intentionally never decodes
 // bytes - it assumes UTF-8 input and forwards everything else verbatim, by
 // design (see its own header comment). Real-world FB2 files frequently
 // declare a legacy single-byte Russian encoding instead (windows-1251 is
@@ -701,6 +675,27 @@ constexpr char PACKAGE_STATE_FILE[] = "/fb2_package.bin";
 constexpr char SECTIONS_INDEX_FILE[] = "/.fb2_sections.bin";
 constexpr char SOURCE_PATHS_INDEX_FILE[] = "/.fb2_sourcepaths.bin";
 constexpr char IMAGES_INDEX_FILE[] = "/.fb2_images.bin";
+// Parser matching the prepared source kind: Markdown file, FB3 body (description
+// and cover come from the FB3 cache sidecars), DOCX body (styles and image table
+// come from the DOCX sidecar) or FB2 XML. Parsers are cheap and created per call;
+// each format lives in its own library.
+std::unique_ptr<FictionBookParser> makeRenderParser(const std::string& packageCachePath,
+                                                    const std::string& sourcePath) {
+  if (markdown::hasMarkdownExtension(sourcePath)) return std::unique_ptr<FictionBookParser>(new MarkdownParser());
+  if (fb3::isBodySource(sourcePath)) return fb3::makeRenderParser(packageCachePath);
+  if (docx::isBodySource(sourcePath)) return docx::makeRenderParser(packageCachePath);
+  if (html::isBodySource(sourcePath)) {
+    // HTML (also the converted RTF / MOBI body): relative images resolve next to the user's file.
+    char originalBuf[600] = {};
+    const size_t originalLen = Storage.readFileToBuffer((packageCachePath + "/.fb2_original").c_str(), originalBuf,
+                                                        sizeof(originalBuf));
+    const std::string original = (originalLen > 0 && originalLen < sizeof(originalBuf))
+                                     ? std::string(originalBuf, originalLen)
+                                     : std::string();
+    return html::makeRenderParser(original);
+  }
+  return std::unique_ptr<FictionBookParser>(new Fb2Parser());
+}
 
 std::vector<std::string> readLruIndex(const std::string& path) {
   std::vector<std::string> keys;
@@ -1485,9 +1480,91 @@ bool Fb2::isCompressedFb2() const {
   return true;
 }
 
+bool Fb2::zipContainsFb2Entry() const {
+  HalFile zipFile;
+  if (!Storage.openFileForRead("FB2", filepath, zipFile)) return false;
+  FsFileReader zipReader(zipFile);
+  ZipEntryInfo entry;
+  const bool found = findFb2EntryInZip(zipReader, entry);
+  zipFile.close();
+  return found;
+}
+
 bool Fb2::prepareSource(const ProgressFn& onProgress) {
   sourcePath = filepath;
   temporarySourcePath.clear();
+
+  // Markdown: the user's file is read in place by MarkdownParser (UTF-8 text;
+  // no XML prolog to sniff, so no encoding transcode step either).
+  if (markdown::hasMarkdownExtension(filepath)) {
+    if (!Storage.exists(filepath.c_str())) return false;
+    sourcePath = filepath;
+    if (onProgress) onProgress(30);
+    return true;
+  }
+
+  // FB3: ".fb3" is never an FB2 container, and a ".zip" only falls back to FB3
+  // when it holds no .fb2 (real .fb2.zip behaviour is unchanged). The body is
+  // inflated once into the cache and read natively by Fb3Parser.
+  if (fb3::hasFb3Extension(filepath) || (isCompressedFb2() && !zipContainsFb2Entry())) {
+    setupCacheDir();
+    fb3::PreparedSource prepared;
+    if (!fb3::prepareSource(filepath, cachePath, onProgress, prepared)) return false;
+    temporarySourcePath = prepared.bodyPath;
+    sourcePath = prepared.bodyPath;
+    preparedZipScan.reset();
+    // FB3 is UTF-8 by specification: no encoding sniffing/transcode step.
+    if (onProgress) onProgress(30);
+    return true;
+  }
+
+  // DOCX: an OPC package like FB3. The body (+ notes) is inflated once into the
+  // cache; styles are reduced into a small sidecar; images stay in the .docx.
+  if (docx::hasDocxExtension(filepath)) {
+    setupCacheDir();
+    docx::PreparedSource prepared;
+    if (!docx::prepareSource(filepath, cachePath, onProgress, prepared)) return false;
+    temporarySourcePath = prepared.bodyPath;
+    sourcePath = prepared.bodyPath;
+    preparedZipScan.reset();
+    if (onProgress) onProgress(30);
+    return true;
+  }
+
+  // RTF and MOBI/AZW3: converted once into a normalised HTML body in the cache
+  // (read by HtmlParser); pictures stay in the user's file.
+  if (rtf::hasRtfExtension(filepath)) {
+    setupCacheDir();
+    rtf::PreparedSource prepared;
+    if (!rtf::prepareSource(filepath, cachePath, onProgress, prepared)) return false;
+    temporarySourcePath = prepared.bodyPath;
+    sourcePath = prepared.bodyPath;
+    preparedZipScan.reset();
+    if (onProgress) onProgress(30);
+    return true;
+  }
+  if (mobi::hasMobiExtension(filepath)) {
+    setupCacheDir();
+    mobi::PreparedSource prepared;
+    if (!mobi::prepareSource(filepath, cachePath, onProgress, prepared)) return false;
+    temporarySourcePath = prepared.bodyPath;
+    sourcePath = prepared.bodyPath;
+    preparedZipScan.reset();
+    if (onProgress) onProgress(30);
+    return true;
+  }
+
+  // HTML: read in place unless it needs transcoding to UTF-8 (then a cache copy).
+  if (html::hasHtmlExtension(filepath)) {
+    setupCacheDir();
+    html::PreparedSource prepared;
+    if (!html::prepareSource(filepath, cachePath, onProgress, prepared)) return false;
+    sourcePath = prepared.bodyPath;
+    if (prepared.bodyPath != filepath) temporarySourcePath = prepared.bodyPath;  // never the user's own file
+    preparedZipScan.reset();
+    if (onProgress) onProgress(30);
+    return true;
+  }
 
   if (isCompressedFb2()) {
     const unsigned long zipStarted = millis();
@@ -2001,7 +2078,37 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
 #else
     IByteReader& reader = rawReader;
 #endif
-    Fb2Parser parser;
+    // FB3 reads its image table, cover and metadata from the package, so load
+    // that first (fb3Info only has to outlive the scan call below).
+    fb3::PackageInfo fb3Info;
+    std::unique_ptr<FictionBookParser> parserOwner;
+    if (fb3::isBodySource(sourcePath)) {
+      if (!fb3::loadPackageInfo(cachePath, filepath, fb3Info)) {
+        source.close();
+        LOG_ERR("FB3", "Cannot read FB3 package info: %s", filepath.c_str());
+        return fail();
+      }
+      std::unique_ptr<Fb3Parser> fb3Parser(new Fb3Parser());
+      fb3Parser->setPackageInfo(&fb3Info);
+      parserOwner = std::move(fb3Parser);
+    } else if (docx::isBodySource(sourcePath)) {
+      std::unique_ptr<DocxParser> docxParser(new DocxParser());
+      docx::PackageInfo docxInfo;
+      if (!docx::loadInfo(cachePath, docxInfo)) {
+        source.close();
+        LOG_ERR("DOCX", "Cannot read DOCX info: %s", filepath.c_str());
+        return fail();
+      }
+      docxParser->setOwnedInfo(std::move(docxInfo));
+      parserOwner = std::move(docxParser);
+    } else if (markdown::hasMarkdownExtension(sourcePath)) {
+      parserOwner.reset(new MarkdownParser());
+    } else if (html::isBodySource(sourcePath)) {
+      parserOwner = html::makeRenderParser(filepath);
+    } else {
+      parserOwner.reset(new Fb2Parser());
+    }
+    FictionBookParser& parser = *parserOwner;
     const unsigned long scanStarted = millis();
     LOG_INF("FB2-PROF", "scan start mem: free=%u max=%u",
             static_cast<unsigned>(ESP.getFreeHeap()),
@@ -2010,7 +2117,7 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
     LOG_INF("FB2-PROF", "scan XML buffer: %u bytes", static_cast<unsigned>(scanXmlBufferSize));
     if (!parser.scan(reader, scan, scanXmlBufferSize)) {
       source.close();
-      LOG_ERR("FB2", "FB2 scan failed (not well-formed?): %s", filepath.c_str());
+      LOG_ERR("FB2", "Book scan failed (not well-formed?): %s", filepath.c_str());
       return fail();
     }
     source.close();
@@ -2088,7 +2195,7 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
     ImageInfoPublic image;
     image.id = std::move(binary.id);
     image.mediaType = mediaType;
-    image.filename = "image_" + std::to_string(images.size()) + (mediaType == "image/png" ? ".png" : ".jpg");
+    image.filename = "image_" + std::to_string(images.size()) + imageExtensionFor(mediaType);
     images.push_back(std::move(image));
   }
   std::deque<Fb2BinaryIndexEntry>().swap(scan.binaries);
@@ -2264,7 +2371,6 @@ bool Fb2::persistImageIndex(const Fb2ScanResult& scan) {
   for (const auto& binary : scan.binaries) {
     const std::string mediaType = normalizeImageMediaType(binary.contentType);
     if (mediaType.empty()) continue;
-    const bool isPng = mediaType == "image/png";
     char imageDigits[11];
     const size_t digitCount = formatUnsignedDecimal(static_cast<uint32_t>(imageIndex++), imageDigits);
     const uint16_t idLen = static_cast<uint16_t>(std::min(binary.id.size(), static_cast<size_t>(4096)));
@@ -2274,7 +2380,7 @@ bool Fb2::persistImageIndex(const Fb2ScanResult& scan) {
     bufferedImages.write(reinterpret_cast<const uint8_t*>(&nameLen), sizeof(nameLen));
     writeBytes(bufferedImages, "image_");
     writeBytes(bufferedImages, imageDigits, digitCount);
-    writeBytes(bufferedImages, isPng ? ".png" : ".jpg");
+    writeBytes(bufferedImages, imageExtensionFor(mediaType));
     bufferedImages.write(reinterpret_cast<const uint8_t*>(&binary.payloadStartOffset), sizeof(binary.payloadStartOffset));
     bufferedImages.write(reinterpret_cast<const uint8_t*>(&binary.payloadEndOffset), sizeof(binary.payloadEndOffset));
   }
@@ -2428,8 +2534,30 @@ bool Fb2::decodeImageOnDemand(const std::string& imagePath,
   imagesIn.close();
   if (!found) return false;
 
+  // FB2 images are base64 payloads inside the prepared source. FB3 and DOCX
+  // images are ZIP members: read them from the package (staged inner .fb3 or the user's
+  // own file), never from the extracted body XML.
+  std::string readPath = sourcePath;
+  const bool fb3Source = fb3::isBodySource(sourcePath);
+  // HTML-family books: 'r' (MOBI record) and 'h' (RTF hex) ranges point into the
+  // user's original file; 'd' (data: URI) and 'f' (file reference) ranges point
+  // into the HTML source itself.
+  const bool htmlOriginal = html::isBodySource(sourcePath) && !binary.id.empty() &&
+                            (binary.id[0] == 'r' || binary.id[0] == 'h');
+  if (fb3Source || docx::isBodySource(sourcePath) || htmlOriginal) {
+    char originalBuf[600] = {};
+    const size_t originalLen =
+        Storage.readFileToBuffer((packageCachePath + ORIGINAL_PATH_MARKER_FILE).c_str(), originalBuf, sizeof(originalBuf));
+    const std::string original = (originalLen > 0 && originalLen < sizeof(originalBuf))
+                                     ? std::string(originalBuf, originalLen)
+                                     : std::string();
+    readPath = fb3Source ? fb3::packagePath(packageCachePath, original)
+               : htmlOriginal ? (Storage.exists(original.c_str()) ? original : std::string())
+                              : docx::packagePath(original);
+    if (readPath.empty()) return false;
+  }
   HalFile source;
-  if (!Storage.openFileForRead("FB2", sourcePath, source)) return false;
+  if (!Storage.openFileForRead("FB2", readPath, source)) return false;
   FsFileReader reader(source);
 
   HalFile out;
@@ -2447,8 +2575,8 @@ bool Fb2::decodeImageOnDemand(const std::string& imagePath,
   size_t flushUsed = 0;
   bool writeOk = true;
   int flushCount = 0;
-  Fb2Parser parser;
-  const bool decoded = parser.decodeBinary(reader, binary, [&](const uint8_t* d, size_t n) {
+  const std::unique_ptr<FictionBookParser> decoder = makeRenderParser(packageCachePath, sourcePath);
+  const bool decoded = decoder->decodeBinary(reader, binary, [&](const uint8_t* d, size_t n) {
     if (!writeOk) return;
     size_t offset = 0;
     while (offset < n) {
@@ -3028,7 +3156,8 @@ bool Fb2::renderChapterOnDemand(const std::string& packageCachePath, int chapter
   Fb2SectionIndexEntry section;  // only innerStartOffset is read by renderSection()
   section.innerStartOffset = innerStartOffset;
   section.level = level;
-  Fb2Parser parser;
+  const std::unique_ptr<FictionBookParser> parserOwner = makeRenderParser(packageCachePath, sourcePath);
+  FictionBookParser& parser = *parserOwner;
   StreamSink sink(out, packageCachePath + IMAGES_INDEX_FILE, buildLinkResolver(packageCachePath));
 
   // FB2 stores coverpage in <description>, outside the body. Emit it as the

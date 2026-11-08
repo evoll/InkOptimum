@@ -9,7 +9,9 @@
 #include <cstdio>
 
 #include "InkMODSettings.h"
+#include "util/PluginEventBus.h"
 #include "Epub.h"
+#include "Fb2.h"
 #include "EpubReaderActivity.h"
 #include "SdCardFontSystem.h"
 #include "Txt.h"
@@ -22,17 +24,22 @@
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
-bool ReaderActivity::isTxtFile(const std::string& path) {
-  return FsHelpers::hasTxtExtension(path) ||
-         FsHelpers::hasMarkdownExtension(path);  // Treat .md as txt files (until we have a markdown reader)
-}
+bool ReaderActivity::isTxtFile(const std::string& path) { return FsHelpers::hasTxtExtension(path); }
+
+// Markdown has its own native parser (see lib/Markdown/MarkdownParser.h): it is
+// prepared into an EPUB-shaped package through Fb2, like FB2/FB3 books.
+bool ReaderActivity::isMarkdownFile(const std::string& path) { return FsHelpers::hasMarkdownExtension(path); }
+
+// Word documents likewise have their own parser (lib/Docx) behind Fb2.
+bool ReaderActivity::isDocxFile(const std::string& path) { return (FsHelpers::checkFileExtension(path, ".docx") || FsHelpers::hasConvertedBookExtension(path)); }
 
 static bool isImagePreviewFile(const std::string& path) {
-  return FsHelpers::hasBmpExtension(path) || FsHelpers::hasPngExtension(path);
+  return FsHelpers::hasBmpExtension(path) || FsHelpers::hasPngExtension(path) || FsHelpers::hasJpgExtension(path);
 }
 
 bool ReaderActivity::shouldShowLoadingPopup(const std::string& path) {
-  if (isXtcFile(path) || isTxtFile(path) || isImagePreviewFile(path)) {
+  if (isXtcFile(path) || isTxtFile(path) || isMarkdownFile(path) || isDocxFile(path) ||
+      isImagePreviewFile(path)) {
     return true;
   }
 
@@ -56,6 +63,8 @@ bool ReaderActivity::shouldShowLoadingPopup(const std::string& path) {
   const bool hasReaderProgress = Storage.exists(progressPath.c_str()) || Storage.exists(progressBackupPath.c_str());
   return !hasReaderProgress;
 }
+
+std::string ReaderActivity::lastProtectionError;
 
 std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, const std::function<void(uint8_t)>& onProgress) {
   char breadcrumb[48];
@@ -89,6 +98,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, const st
   }
 
   LOG_ERR("READER", "Failed to load epub");
+  lastProtectionError = epub->getProtectionError();  // shown by onEnter()
   return nullptr;
 }
 
@@ -205,6 +215,7 @@ void ReaderActivity::onEnter() {
   sdFontSystem.ensureLoaded(renderer);
 
   currentBookPath = initialBookPath;
+  PluginEventBus::emit("reader.open", {{"book", initialBookPath}});
   if (isXtcFile(initialBookPath)) {
     auto xtc = loadXtc(initialBookPath);
     if (!xtc) {
@@ -219,14 +230,50 @@ void ReaderActivity::onEnter() {
       return;
     }
     onGoToTxtReader(std::move(txt));
-  } else {
-    auto epub = loadEpub(initialBookPath, reportProgress);
+  } else if (isMarkdownFile(initialBookPath) || isDocxFile(initialBookPath)) {
+    // Reached with a raw .md/.docx path (e.g. an older "recent" entry): build the
+    // package here, then open it like any other book.
+    Fb2 markdownBook(initialBookPath, "/.inkmod");
+    const auto markdownProgress = [&reportProgress](int percent) {
+      if (reportProgress) reportProgress(static_cast<uint8_t>(percent));
+    };
+    if (!markdownBook.load(markdownProgress)) {
+      LOG_ERR("READER", "Failed to prepare book package: %s", initialBookPath.c_str());
+      onGoBack();
+      return;
+    }
+    const std::string packagePath = markdownBook.getPackagePath();
+    currentBookPath = packagePath;
+    auto epub = loadEpub(packagePath, reportProgress);
     if (!epub) {
       onGoBack();
       return;
     }
     onGoToEpubReader(std::move(epub));
+  } else {
+    auto epub = loadEpub(initialBookPath, reportProgress);
+    if (!epub) {
+      showProtectionError();
+      onGoBack();
+      return;
+    }
+    onGoToEpubReader(std::move(epub));
   }
+}
+
+// A protected book that cannot be opened says why instead of silently going back.
+void ReaderActivity::showProtectionError() {
+  if (lastProtectionError.empty()) return;
+  StrId message = StrId::STR_DRM_PROTECTED_FILE;
+  if (lastProtectionError == "access expired") {
+    message = StrId::STR_LOAN_EXPIRED;
+  } else if (lastProtectionError == "loan date unverified") {
+    message = StrId::STR_LOAN_TIME_UNVERIFIED;
+  }
+  lastProtectionError.clear();
+  GUI.drawPopup(renderer, I18N.get(message));
+  renderer.displayBuffer();
+  delay(3000);
 }
 
 void ReaderActivity::onGoBack() { finish(); }

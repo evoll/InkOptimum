@@ -10,8 +10,11 @@
 #include "MappedInputManager.h"
 #include "InkMODHumor.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
+#include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 static constexpr int ROW_HEIGHT = 68;
 static constexpr int LIST_START_Y = 60;
@@ -48,28 +51,67 @@ void EpubReaderBookmarkListActivity::deleteSelectedBookmark() {
   requestUpdate();
 }
 
-void EpubReaderBookmarkListActivity::showBookmarkActionMenu(bool ignoreInitialConfirmRelease) {
-  if (bookmarks.empty() || selectedIndex < 0 || selectedIndex >= static_cast<int>(bookmarks.size())) return;
+int EpubReaderBookmarkListActivity::findBookmarkIndex(const Bookmark& target) const {
+  const auto it = std::find_if(bookmarks.begin(), bookmarks.end(), [&target](const Bookmark& bm) {
+    return bm.spineIndex == target.spineIndex && bm.progress == target.progress;
+  });
+  return it == bookmarks.end() ? -1 : static_cast<int>(std::distance(bookmarks.begin(), it));
+}
 
-  const Bookmark selectedBookmark = bookmarks[selectedIndex];
+void EpubReaderBookmarkListActivity::confirmDeleteBookmark(const Bookmark& selectedBookmark,
+                                                           const bool ignoreInitialConfirmRelease) {
   startActivityForResult(
       std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE),
                                              tr(STR_DELETE_BOOKMARK_CONFIRM), ignoreInitialConfirmRelease),
       [this, selectedBookmark](const ActivityResult& result) {
         longPressConfirmHandled = false;
-        if (result.isCancelled) {
-          requestUpdate();
-          return;
-        }
-
-        const auto it = std::find_if(bookmarks.begin(), bookmarks.end(), [&selectedBookmark](const Bookmark& bm) {
-          return bm.spineIndex == selectedBookmark.spineIndex && bm.progress == selectedBookmark.progress;
-        });
-        if (it != bookmarks.end()) {
-          selectedIndex = static_cast<int>(std::distance(bookmarks.begin(), it));
+        const int index = result.isCancelled ? -1 : findBookmarkIndex(selectedBookmark);
+        if (index >= 0) {
+          selectedIndex = index;
           deleteSelectedBookmark();
         } else {
           requestUpdate();
+        }
+      });
+}
+
+void EpubReaderBookmarkListActivity::renameBookmark(const Bookmark& selectedBookmark) {
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RENAME), selectedBookmark.name,
+                                              BOOKMARK_NAME_MAX - 1, InputType::Text),
+      [this, selectedBookmark](const ActivityResult& result) {
+        longPressConfirmHandled = false;
+        const auto* kb = result.isCancelled ? nullptr : std::get_if<KeyboardResult>(&result.data);
+        const int index = kb ? findBookmarkIndex(selectedBookmark) : -1;
+        if (index >= 0 && BOOKMARKS.renameBookmarkAt(static_cast<size_t>(index), kb->text)) {
+          bookmarks = BOOKMARKS.getBookmarks();
+        }
+        requestUpdate();
+      });
+}
+
+// Long-press / touch long-press menu: rename (favourite-page name) or delete.
+void EpubReaderBookmarkListActivity::showBookmarkActionMenu(bool ignoreInitialConfirmRelease) {
+  if (bookmarks.empty() || selectedIndex < 0 || selectedIndex >= static_cast<int>(bookmarks.size())) return;
+
+  const Bookmark selectedBookmark = bookmarks[selectedIndex];
+  // Button long-press: the key is still held, so its release must not pick a menu row.
+  if (ignoreInitialConfirmRelease) mappedInput.suppressNextConfirmRelease();
+  startActivityForResult(
+      std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "BookmarkActionSelect", StrId::STR_BOOKMARKS,
+                                                std::vector<std::string>{tr(STR_RENAME), tr(STR_DELETE)}, 0,
+                                                /*readerMode=*/true, /*showCurrentMarker=*/false),
+      [this, selectedBookmark](const ActivityResult& result) {
+        longPressConfirmHandled = false;
+        const auto* choice = result.isCancelled ? nullptr : std::get_if<OptionSelectionResult>(&result.data);
+        if (choice == nullptr) {
+          requestUpdate();
+          return;
+        }
+        if (choice->index == 0) {
+          renameBookmark(selectedBookmark);
+        } else {
+          confirmDeleteBookmark(selectedBookmark, false);
         }
       });
 }
@@ -129,6 +171,25 @@ void EpubReaderBookmarkListActivity::loop() {
           showBookmarkActionMenu(false);
           return;
         }
+      }
+    }
+
+    {
+      // Swipe a row to the left: ask to delete that bookmark.
+      const auto orientation = renderer.getOrientation();
+      const int gutterW = (orientation == GfxRenderer::Orientation::LandscapeClockwise ||
+                           orientation == GfxRenderer::Orientation::LandscapeCounterClockwise)
+                              ? 30
+                              : 0;
+      const int rectX = orientation == GfxRenderer::Orientation::LandscapeClockwise ? gutterW : 0;
+      const int rectY = LIST_START_Y + (orientation == GfxRenderer::Orientation::PortraitInverted ? 50 : 0);
+      const int row = TouchListNavigation::swipeDeleteRow(
+          mappedInput, selectedIndex, total,
+          Rect{rectX, rectY, renderer.getScreenWidth() - gutterW, pageItems * ROW_HEIGHT}, ROW_HEIGHT);
+      if (row >= 0) {
+        selectedIndex = row;
+        confirmDeleteBookmark(bookmarks[row], false);
+        return;
       }
     }
 
@@ -242,9 +303,12 @@ void EpubReaderBookmarkListActivity::render(RenderLock&&) {
 
     const Bookmark& bm = bookmarks[itemIndex];
     const char* chapter = (bm.chapterTitle[0] != '\0') ? bm.chapterTitle : tr(STR_UNKNOWN_CHAPTER);
-    const bool hasSnippet = bm.snippet[0] != '\0';
+    // A user-given name ("favourite page") takes the headline slot; otherwise show the text snippet.
+    const char* headline = bm.name[0] != '\0' ? bm.name : bm.snippet;
+    const bool hasSnippet = headline[0] != '\0';
     if (hasSnippet) {
-      const std::string snippetTrunc = renderer.truncatedText(UI_10_FONT_ID, bm.snippet, contentWidth - 40);
+      const std::string snippetTrunc = renderer.truncatedText(UI_10_FONT_ID, headline, contentWidth - 40,
+                                                              bm.name[0] != '\0' ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
       renderer.drawText(UI_10_FONT_ID, marginLeft, rowY + 5, snippetTrunc.c_str(), !isSelected);
     }
 

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "lib/JsonParser/StreamingJsonParser.h"
+#include "StreamingJsonParser.h"
 
 namespace {
 
@@ -150,13 +150,13 @@ TEST(StreamingJsonParser, StringEscapes) {
   EXPECT_EQ(events[2].value, std::string("a\"b\\c/d\ne\tf"));
 }
 
-TEST(StreamingJsonParser, UnicodeEscapePassthrough) {
+TEST(StreamingJsonParser, UnicodeEscapeDecoded) {
   auto events = parse(R"({"u": "\u0041\u0042"})");
 
   ASSERT_EQ(events.size(), 4u);
   EXPECT_EQ(events[2].type, EventType::STRING);
-  // \uXXXX passed through as literal \u followed by the hex digits
-  EXPECT_EQ(events[2].value, "\\u0041\\u0042");
+  // freeink-sdk JsonSax decodes \uXXXX (incl. surrogate pairs) to UTF-8
+  EXPECT_EQ(events[2].value, "AB");
 }
 
 TEST(StreamingJsonParser, Numbers) {

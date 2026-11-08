@@ -1,0 +1,7 @@
+{
+  "title": "Hello plugin",
+  "version": "1.0.0",
+  "author": "inkMOD",
+  "description": "Minimal browser plugin: a button that shows device information.",
+  "mount": "plugins"
+}

@@ -1479,3 +1479,19 @@ h2 {
         grid-template-columns: 1fr;
       }
     }
+
+.info-btn { background: none; border: 0; cursor: pointer; font-size: 1.05em; padding: 4px; }
+.book-info-body { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.book-info-cover { width: 110px; max-height: 160px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border-color); }
+.book-info-table { flex: 1 1 220px; border-collapse: collapse; font-size: 0.92em; }
+.book-info-table th { text-align: left; color: var(--label-color); font-weight: 500; padding: 4px 12px 4px 0; vertical-align: top; white-space: nowrap; }
+.book-info-table td { padding: 4px 0; word-break: break-word; }
+.book-info-desc { flex-basis: 100%; max-height: 180px; overflow: auto; color: var(--label-color); font-size: 0.9em; }
+
+/* About book: metadata editor */
+.book-edit { display: flex; flex-direction: column; gap: 8px; }
+.book-edit-row { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.book-edit-row input, .book-edit-row textarea { padding: 6px 8px; font: inherit; border: 1px solid var(--border-color, #ccc); border-radius: 6px; background: var(--input-bg, transparent); color: inherit; }
+.book-edit-check { font-size: 13px; }
+.book-edit-actions { display: flex; gap: 8px; margin-top: 4px; }
+.book-edit-status { min-height: 1.4em; font-size: 13px; }

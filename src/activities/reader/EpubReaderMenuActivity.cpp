@@ -8,8 +8,11 @@
 #include "InkMODSettings.h"
 #include "activities/reader/ReaderUtils.h"
 #include "BookMenuConfig.h"
+#include "reader/overrides/BookOverridesSettings.h"
 #include "MappedInputManager.h"
 #include "LegacyRenderDiagnostics.h"
+#include "activities/util/OptionSelectionActivity.h"
+#include "activities/settings/BleSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/TouchListNavigation.h"
@@ -84,10 +87,10 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
     GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title, const int currentPage,
     const int totalPages, const int bookProgressPercent, const uint8_t currentOrientation, const bool hasFootnotes,
     const bool hasBookmarks, const bool hasClippings, const bool isCurrentPageBookmarked, const bool isBookCompleted,
-    const bool autoPageTurnActive, const uint16_t autoPageTurnIntervalSeconds, const bool showReadingPaceReset)
+    const bool autoPageTurnActive, const uint16_t autoPageTurnIntervalSeconds, const bool showReadingPaceReset, const bool hasPrintedPages)
     : Activity("EpubReaderMenu", renderer, mappedInput),
       menuItems(
-          buildMenuItems(hasFootnotes, hasBookmarks, hasClippings, isCurrentPageBookmarked, isBookCompleted, showReadingPaceReset)),
+          buildMenuItems(hasFootnotes, hasBookmarks, hasClippings, isCurrentPageBookmarked, isBookCompleted, showReadingPaceReset, hasPrintedPages)),
       title(title),
       pendingOrientation(currentOrientation),
       currentPage(currentPage),
@@ -101,7 +104,8 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
                                                                                      bool hasClippings,
                                                                                      bool isCurrentPageBookmarked,
                                                                                      bool isBookCompleted,
-                                                                                     bool showReadingPaceReset) {
+                                                                                     bool showReadingPaceReset,
+                                                                                     bool hasPrintedPages) {
   std::vector<MenuItem> items;
   const auto layout = loadBookMenuLayout();
   items.reserve(layout.size());
@@ -129,6 +133,9 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
       case BookMenuItemId::CREATE_CLIPPING: items.push_back({MenuAction::CREATE_CLIPPING,StrId::STR_CREATE_CLIPPING}); break;
       case BookMenuItemId::VIEW_CLIPPINGS: if(hasClippings)items.push_back({MenuAction::VIEW_CLIPPINGS,StrId::STR_CLIPPINGS}); break;
       case BookMenuItemId::DICTIONARY: if(!dictionaryLookupAssignedToButton())items.push_back({MenuAction::DICTIONARY,StrId::STR_DICTIONARY}); break;
+      case BookMenuItemId::GO_TO_PRINTED_PAGE: if(hasPrintedPages)items.push_back({MenuAction::GO_TO_PRINTED_PAGE,StrId::STR_GO_TO_PRINTED_PAGE}); break;
+      case BookMenuItemId::READING_PROFILES: items.push_back({MenuAction::READING_PROFILES,StrId::STR_READING_PROFILES}); break;
+      case BookMenuItemId::BLUETOOTH: items.push_back({MenuAction::BLUETOOTH,StrId::STR_BT_PAGE_TURNER}); break;
       default: break;
     }
   }
@@ -191,6 +198,57 @@ void EpubReaderMenuActivity::loop() {
                                pendingOrientation = SETTINGS.orientation;  // sync in case orientation changed
                                requestUpdate();
                              });
+      return;
+    }
+
+    if (selectedAction == MenuAction::READING_PROFILES) {
+      // Per-book presets: font size + line spacing, remembered for this book only.
+      // Entry 0 removes the override so the book follows the global settings again.
+      struct Profile {
+        uint8_t fontSize;
+        uint8_t lineHeightPercent;
+      };
+      static constexpr Profile kProfiles[] = {{InkMODSettings::MEDIUM, 100},
+                                              {InkMODSettings::EXTRA_LARGE, 130},
+                                              {InkMODSettings::SMALL, 90}};
+      constexpr uint8_t kProfileCount = 3;
+      std::vector<std::string> names = {tr(STR_PROFILE_GLOBAL), tr(STR_PROFILE_NORMAL), tr(STR_PROFILE_LARGE),
+                                        tr(STR_PROFILE_COMPACT)};
+      std::vector<std::string> details = {tr(STR_PROFILE_GLOBAL_DETAIL), tr(STR_PROFILE_NORMAL_DETAIL),
+                                          tr(STR_PROFILE_LARGE_DETAIL), tr(STR_PROFILE_COMPACT_DETAIL)};
+      uint8_t current = 0;
+      if (book_overrides::bookHasOverride()) {
+        for (uint8_t i = 0; i < kProfileCount; ++i) {
+          if (SETTINGS.fontSize == kProfiles[i].fontSize &&
+              SETTINGS.lineHeightPercent == kProfiles[i].lineHeightPercent) {
+            current = static_cast<uint8_t>(i + 1);
+          }
+        }
+      }
+      startActivityForResult(
+          std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "ReadingProfileSelect",
+                                                    StrId::STR_READING_PROFILES, std::move(names), current, true, true,
+                                                    std::move(details)),
+          [this](const ActivityResult& result) {
+            if (!result.isCancelled) {
+              const auto& pick = std::get<OptionSelectionResult>(result.data);
+              if (pick.index <= kProfileCount) {
+                book_overrides::Record record;
+                if (pick.index > 0) {
+                  record.present = true;
+                  record.values = {kProfiles[pick.index - 1].fontSize, kProfiles[pick.index - 1].lineHeightPercent};
+                }
+                settingsChanged = book_overrides::setForBook(record) || settingsChanged;
+              }
+            }
+            requestUpdate();
+          });
+      return;
+    }
+
+    if (selectedAction == MenuAction::BLUETOOTH) {
+      startActivityForResult(std::make_unique<BleSettingsActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { requestUpdate(); });
       return;
     }
 

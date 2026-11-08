@@ -1,0 +1,6 @@
+.hint { color: var(--label-color); font-size: 0.9em; margin: 4px 0 12px; }
+.pl-meta { color: var(--label-color); font-size: 0.85em; margin-bottom: 8px; }
+.pl-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.pl-root { margin-top: 10px; }
+.pl-log { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 160px; overflow: auto; background: var(--accent-soft); border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 8px; }
+.pl-err { color: #b3261e; }

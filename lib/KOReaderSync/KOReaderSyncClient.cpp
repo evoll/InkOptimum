@@ -1,5 +1,7 @@
 #include "KOReaderSyncClient.h"
 
+#include "KOReaderProgressReply.h"
+
 #include <ArduinoJson.h>
 #ifdef SIMULATOR
 #include <ArduinoJsonStringCompat.h>
@@ -14,6 +16,7 @@
 #include <SecureHttpClient.h>
 #include <base64.h>
 #endif
+#include <TlsTrust.h>
 
 #include <cstdio>
 #include <cstring>
@@ -25,14 +28,8 @@
 #include <string>
 
 #include "KOReaderCredentialStore.h"
+#include "OpdsProfile.h"
 
-#ifndef SIMULATOR
-// wolfSSL is built with DEBUG_WOLFSSL, whose Arduino backend expects the app to
-// provide this print hook (the stock definition lives in <wolfssl.h>, which no
-// translation unit here includes). Route it through the firmware logger, same
-// as upstream CrossPoint's HttpDownloader.cpp.
-extern "C" void wolfSSL_Arduino_Serial_Print(const char* const msg) { LOG_DBG("WOLFSSL", "%s", msg); }
-#endif
 
 int KOReaderSyncClient::lastHttpCode = 0;
 int KOReaderSyncClient::lastTransportError = 0;
@@ -144,6 +141,10 @@ void addAuthHeaders(HTTPClient& http) {
   http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
   http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password().c_str());
   http.setAuthorization(KOREADER_STORE.getUsername().c_str(), KOREADER_STORE.getPassword().c_str());
+  opds_profile::Header extra;
+  if (opds_profile::parseHeaderLine(KOREADER_STORE.getCustomHeader(), extra) && !extra.empty()) {
+    http.addHeader(extra.name.c_str(), extra.value.c_str());
+  }
 }
 
 bool isHttpsUrl(const std::string& url) { return url.rfind("https://", 0) == 0; }
@@ -163,6 +164,12 @@ void applyAuthHeaders(freeink::SecureHttpClient& http) {
     const std::string credentials = KOREADER_STORE.getUsername() + ":" + KOREADER_STORE.getPassword();
     const String encoded = base64::encode(credentials.c_str());
     http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+  }
+
+  // Per-profile extra header (reverse-proxy token, Cloudflare Access, ...).
+  opds_profile::Header extra;
+  if (opds_profile::parseHeaderLine(KOREADER_STORE.getCustomHeader(), extra) && !extra.empty()) {
+    http.addHeader(extra.name, extra.value);
   }
 }
 
@@ -232,7 +239,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
   return SERVER_ERROR;
 #else
   freeink::SecureHttpClient http;
-  http.setInsecure();
+  TlsTrust::apply(http);
   // The public CrossPoint endpoint is fronted by a normal HTTPS edge and may
   // redirect during maintenance/canonicalization.  Auth only needs one request,
   // so force Connection: close to avoid waiting on a keep-alive body terminator
@@ -293,7 +300,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::createUser() {
   serializeJson(doc, body);
 
   freeink::SecureHttpClient http;
-  http.setInsecure();
+  TlsTrust::apply(http);
   if (!http.begin(url)) {
     LOG_ERR("KOSync", "Bad URL: %s", url.c_str());
     return NETWORK_ERROR;
@@ -321,7 +328,11 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
     return NO_CREDENTIALS;
   }
 
-  const std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash;
+  // Calibre-Web NextGen withholds a percentage-only position (one its web reader or a Kobo wrote)
+  // from a client that does not say it can seek to one; servers without the parameter route on the
+  // path and ignore it.
+  const std::string url =
+      KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash + "?position_kinds=locator,percentage";
   LOG_DBG("KOSync", "Getting progress: %s (heap: %u)", url.c_str(), (unsigned)ESP.getFreeHeap());
   if (insufficientHeap()) return LOW_MEMORY;
 
@@ -362,12 +373,10 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
       return JSON_ERROR;
     }
 
-    outProgress.document = documentHash;
-    outProgress.progress = doc["progress"].as<std::string>();
-    outProgress.percentage = doc["percentage"].as<float>();
-    outProgress.device = doc["device"].as<std::string>();
-    outProgress.deviceId = doc["device_id"].as<std::string>();
-    outProgress.timestamp = doc["timestamp"].as<int64_t>();
+    if (!kosync::readProgressRecord(doc, documentHash, outProgress)) {
+      LOG_INF("KOSync", "Empty progress payload — treating as not found");
+      return NOT_FOUND;
+    }
 
     LOG_DBG("KOSync", "Got progress: %.2f%% at %s", outProgress.percentage * 100, outProgress.progress.c_str());
     return OK;
@@ -382,7 +391,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   return SERVER_ERROR;
 #else
   freeink::SecureHttpClient http;
-  http.setInsecure();
+  TlsTrust::apply(http);
   if (!http.begin(url)) {
     LOG_ERR("KOSync", "Bad URL: %s", url.c_str());
     return NETWORK_ERROR;
@@ -419,12 +428,11 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
       return JSON_ERROR;
     }
 
-    outProgress.document = documentHash;
-    outProgress.progress = doc["progress"].as<std::string>();
-    outProgress.percentage = doc["percentage"].as<float>();
-    outProgress.device = doc["device"].as<std::string>();
-    outProgress.deviceId = doc["device_id"].as<std::string>();
-    outProgress.timestamp = doc["timestamp"].as<int64_t>();
+    if (!kosync::readProgressRecord(doc, documentHash, outProgress)) {
+      LOG_INF("KOSync", "Empty progress payload — treating as not found");
+      http.end();
+      return NOT_FOUND;
+    }
 
     outProgress.position.reset();
     if (KOREADER_STORE.usesCrossPointSyncServer()) {
@@ -526,7 +534,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   return SERVER_ERROR;
 #else
   freeink::SecureHttpClient http;
-  http.setInsecure();
+  TlsTrust::apply(http);
   if (!http.begin(url)) {
     LOG_ERR("KOSync", "Bad URL: %s", url.c_str());
     return NETWORK_ERROR;

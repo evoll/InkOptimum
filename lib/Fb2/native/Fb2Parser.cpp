@@ -1,6 +1,6 @@
 #include "Fb2Parser.h"
-#include "Fb2XmlReader.h"
-#include "Base64Decoder.h"
+#include <XmlPullReader.h>
+#include <Base64Decoder.h>
 #include <algorithm>
 #include <cstdlib>
 #include <cctype>
@@ -14,7 +14,7 @@ std::string stripHash(const char* v) {
     return (v[0] == '#') ? std::string(v + 1) : std::string(v);
 }
 
-const char* firstOf(const Fb2XmlReader& r, std::initializer_list<const char*> names) {
+const char* firstOf(const XmlPullReader& r, std::initializer_list<const char*> names) {
     for (auto n : names) {
         if (const char* v = r.attr(n)) return v;
     }
@@ -231,18 +231,18 @@ bool findCoverForFirstSection(IByteReader& reader, uint32_t expectedInnerStartOf
     coverId.clear();
     if (!reader.seek(0)) return false;
 
-    Fb2XmlReader xml(reader, 2048);
+    XmlPullReader xml(reader, 2048);
     bool inDescription = false;
     bool inTitleInfo = false;
     bool inCoverpage = false;
     bool inBody = false;
 
     for (;;) {
-        const Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof || tok == Fb2Token::Error) return false;
+        const XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof || tok == XmlToken::Error) return false;
         const std::string& name = xml.name();
 
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "description") inDescription = true;
             else if (name == "title-info" && inDescription) inTitleInfo = true;
             else if (name == "coverpage" && inTitleInfo) inCoverpage = true;
@@ -258,7 +258,7 @@ bool findCoverForFirstSection(IByteReader& reader, uint32_t expectedInnerStartOf
             }
         }
 
-        if (tok == Fb2Token::EndTag) {
+        if (tok == XmlToken::EndTag) {
             if (name == "coverpage") inCoverpage = false;
             else if (name == "title-info") inTitleInfo = false;
             else if (name == "description") inDescription = false;
@@ -274,7 +274,7 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
     out.stringPool.reserve(reader.size() >= 8ULL * 1024 * 1024 ? kSectionStringPoolReserve : 8 * 1024);
 
     const size_t safeXmlBufferSize = std::max<size_t>(1024, std::min<size_t>(8 * 1024, xmlBufferSize));
-    Fb2XmlReader xml(reader, safeXmlBufferSize);
+    XmlPullReader xml(reader, safeXmlBufferSize);
 
     bool inDescription = false;
     bool inTitleInfo = false;
@@ -296,19 +296,19 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
 
     for (;;) {
         xml.setCaptureText(activeTarget != nullptr || inStylesheet || inAnnotation || inTitle);
-        Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof) break;
-        if (tok == Fb2Token::Error) return false;
+        XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof) break;
+        if (tok == XmlToken::Error) return false;
 
         out.tokenCount++;
-        if (tok == Fb2Token::Text) {
+        if (tok == XmlToken::Text) {
             out.textTokenCount++;
             out.textPayloadBytes += xml.textSize();
             if (inBinaryTag) out.binaryTextBytes += xml.textSize();
         }
 
         const std::string& name = xml.name();
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "description") inDescription = true;
             else if (name == "title-info" && inDescription) inTitleInfo = true;
             else if (name == "author" && inTitleInfo) { inAuthorTag = true; curAuthor = Fb2Author{}; }
@@ -359,7 +359,7 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
                 if (const char* ct = xml.attr("content-type")) assignBoundedFb2(curBinary.contentType, ct, kMaxFb2ContentTypeBytes);
                 curBinary.payloadStartOffset = xml.streamPos();
             }
-        } else if (tok == Fb2Token::Text) {
+        } else if (tok == XmlToken::Text) {
             if (activeTarget) *activeTarget += xml.text();
             else if (inStylesheet) { if (out.metadata.embeddedStylesheetCss.size() < kMaxStylesheetBytes) out.metadata.embeddedStylesheetCss += xml.text(); }
             else if (inAnnotation) { if (annotationBuf.size() < kMaxAnnotationBytes) annotationBuf += xml.text(); }
@@ -368,7 +368,7 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
             else if (currentBodyIndex >= 0 && !sectionStack.empty()) out.sections[sectionStack.back()].approxTextBytes += static_cast<uint32_t>(xml.textSize());
         }
 
-        if (tok == Fb2Token::EndTag) {
+        if (tok == XmlToken::EndTag) {
             if (name == "description") inDescription = false;
             else if (name == "title-info") inTitleInfo = false;
             else if (name == "author" && inAuthorTag) {
@@ -411,7 +411,7 @@ bool Fb2Parser::renderCoverForFirstSection(IByteReader& reader,
 
 bool Fb2Parser::renderAnnotation(IByteReader& reader, Fb2ContentSink& sink,
                                  const reader::ReaderCancellationToken* cancellationToken) {
-    Fb2XmlReader xml(reader, 2048);
+    XmlPullReader xml(reader, 2048);
     xml.seekTo(0);
     bool inTitleInfo = false;
     bool inAnnotation = false;
@@ -430,12 +430,12 @@ bool Fb2Parser::renderAnnotation(IByteReader& reader, Fb2ContentSink& sink,
 
     for (;;) {
         if (cancellationToken && cancellationToken->isCancellationRequested()) return false;
-        const Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof) return true;
-        if (tok == Fb2Token::Error) return false;
+        const XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof) return true;
+        if (tok == XmlToken::Error) return false;
         const std::string& name = xml.name();
 
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "title-info") { inTitleInfo = true; continue; }
             if (!inTitleInfo) continue;
             if (name == "annotation") { inAnnotation = true; continue; }
@@ -450,11 +450,11 @@ bool Fb2Parser::renderAnnotation(IByteReader& reader, Fb2ContentSink& sink,
             else if (name == "sub") ++subDepth;
             continue;
         }
-        if (tok == Fb2Token::Text && inAnnotation) {
+        if (tok == XmlToken::Text && inAnnotation) {
             emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             continue;
         }
-        if (tok == Fb2Token::EndTag) {
+        if (tok == XmlToken::EndTag) {
             if (name == "title-info") return true;
             if (!inAnnotation) continue;
             if (name == "annotation") { if (paragraphOpen) sink.onParagraphEnd(); return true; }
@@ -477,7 +477,7 @@ bool Fb2Parser::renderBodyPreambleForFirstSection(
     // section. scan() deliberately indexes only <section> nodes, so recover
     // that tiny preamble here. This pass terminates at the first section and
     // therefore does not turn chapter rendering into a whole-book rescan.
-    Fb2XmlReader xml(reader, 4096);
+    XmlPullReader xml(reader, 4096);
     xml.seekTo(0);
 
     bool inBody = false;
@@ -501,13 +501,13 @@ bool Fb2Parser::renderBodyPreambleForFirstSection(
 
     for (;;) {
         if (cancellationToken && cancellationToken->isCancellationRequested()) return false;
-        const Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof) return true;
-        if (tok == Fb2Token::Error) return false;
+        const XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof) return true;
+        if (tok == XmlToken::Error) return false;
         const std::string& name = xml.name();
 
         if (!inBody) {
-            if ((tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) && name == "body") {
+            if ((tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) && name == "body") {
                 // The first body is the primary reading flow for the first
                 // section. Notes/comments bodies appear later in normal FB2s.
                 inBody = true;
@@ -515,12 +515,12 @@ bool Fb2Parser::renderBodyPreambleForFirstSection(
             continue;
         }
 
-        if ((tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) && name == "section") {
+        if ((tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) && name == "section") {
             return true;
         }
-        if (tok == Fb2Token::EndTag && name == "body") return true;
+        if (tok == XmlToken::EndTag && name == "body") return true;
 
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "epigraph") {
                 inEpigraph = true;
                 sink.onEpigraphBegin();
@@ -552,12 +552,12 @@ bool Fb2Parser::renderBodyPreambleForFirstSection(
             continue;
         }
 
-        if (tok == Fb2Token::Text && inEpigraph) {
+        if (tok == XmlToken::Text && inEpigraph) {
             emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             continue;
         }
 
-        if (tok == Fb2Token::EndTag && inEpigraph) {
+        if (tok == XmlToken::EndTag && inEpigraph) {
             if (name == "p") sink.onParagraphEnd();
             else if (name == "poem") sink.onPoemEnd();
             else if (name == "stanza") sink.onStanzaEnd();
@@ -590,7 +590,7 @@ bool Fb2Parser::renderSectionTitle(IByteReader& reader,
                                   Fb2ContentSink& sink,
                                   uint8_t level,
                                   const reader::ReaderCancellationToken* cancellationToken) {
-    Fb2XmlReader xml(reader, 2048);
+    XmlPullReader xml(reader, 2048);
     xml.seekTo(section.innerStartOffset);
     bool inTitle = false;
     bool emitted = false;
@@ -608,19 +608,19 @@ bool Fb2Parser::renderSectionTitle(IByteReader& reader,
     };
     for (;;) {
         if (cancellationToken && cancellationToken->isCancellationRequested()) return false;
-        const Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof || tok == Fb2Token::Error) return false;
+        const XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof || tok == XmlToken::Error) return false;
         const std::string& name = xml.name();
         if (!inTitle) {
-            if ((tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) && name == "title") {
+            if ((tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) && name == "title") {
                 inTitle = true; sink.onTitleBegin(level);
-            } else if ((tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) &&
+            } else if ((tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) &&
                        (name == "section" || name == "p" || name == "epigraph" || name == "poem" || name == "cite")) {
                 return false;
             }
             continue;
         }
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "p") {
                 if (titleParagraphSeen) sink.onTitleLineBreak();
                 titleParagraphSeen = true;
@@ -632,8 +632,8 @@ bool Fb2Parser::renderSectionTitle(IByteReader& reader,
             else if (name == "sub") ++subDepth;
             continue;
         }
-        if (tok == Fb2Token::Text) { emitTextNormalizingCombiningStrike(sink, xml.text(), style()); emitted = true; continue; }
-        if (tok == Fb2Token::EndTag) {
+        if (tok == XmlToken::Text) { emitTextNormalizingCombiningStrike(sink, xml.text(), style()); emitted = true; continue; }
+        if (tok == XmlToken::EndTag) {
             if (name == "title") { sink.onTitleEnd(level); return emitted; }
             if (name == "strong" || name == "b") --boldDepth;
             else if (name == "emphasis" || name == "i") --italicDepth;
@@ -649,7 +649,7 @@ bool Fb2Parser::renderSection(IByteReader& reader,
                                const Fb2SectionIndexEntry& section,
                                Fb2ContentSink& sink,
                                const reader::ReaderCancellationToken* cancellationToken) {
-    Fb2XmlReader xml(reader, 4096);
+    XmlPullReader xml(reader, 4096);
     xml.seekTo(section.innerStartOffset);
 
     int boldDepth = 0, italicDepth = 0, underlineDepth = 0, strikeDepth = 0, supDepth = 0, subDepth = 0;
@@ -676,20 +676,20 @@ bool Fb2Parser::renderSection(IByteReader& reader,
 
     for (;;) {
         if (cancellationToken && cancellationToken->isCancellationRequested()) return false;
-        Fb2Token tok = xml.next();
-        if (tok == Fb2Token::Eof) return true;
-        if (tok == Fb2Token::Error) return false;
+        XmlToken tok = xml.next();
+        if (tok == XmlToken::Eof) return true;
+        if (tok == XmlToken::Error) return false;
         const std::string& name = xml.name();
 
         if (skipping) {
-            if ((tok == Fb2Token::StartTag) && name == "section") skipDepth++;
-            else if (tok == Fb2Token::EndTag && name == "section") { if (--skipDepth == 0) skipping = false; }
+            if ((tok == XmlToken::StartTag) && name == "section") skipDepth++;
+            else if (tok == XmlToken::EndTag && name == "section") { if (--skipDepth == 0) skipping = false; }
             continue;
         }
-        if (tok == Fb2Token::StartTag && name == "section") { skipping = true; skipDepth = 1; continue; }
-        if (tok == Fb2Token::EndTag && name == "section") return true;
+        if (tok == XmlToken::StartTag && name == "section") { skipping = true; skipDepth = 1; continue; }
+        if (tok == XmlToken::EndTag && name == "section") return true;
 
-        if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
+        if (tok == XmlToken::StartTag || tok == XmlToken::SelfClosing) {
             if (name == "title") { inTitleTag = true; continue; }
             if (inTitleTag) {
                 if (name == "image") {
@@ -738,14 +738,14 @@ bool Fb2Parser::renderSection(IByteReader& reader,
             }
         }
 
-        if (tok == Fb2Token::Text) {
+        if (tok == XmlToken::Text) {
             if (inTitleTag) { }
             else if (inSubtitle || inTextAuthor) emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             else if (inTableCell) cellBuf += xml.text();
             else emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
         }
 
-        if (tok == Fb2Token::EndTag) {
+        if (tok == XmlToken::EndTag) {
             if (name == "title") { inTitleTag = false; continue; }
             if (inTitleTag) continue;
             if (name == "p") sink.onParagraphEnd();

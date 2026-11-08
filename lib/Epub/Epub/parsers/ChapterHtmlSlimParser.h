@@ -8,7 +8,9 @@
 #include <string>
 #include <vector>
 
+#include "Epub/FlowContext.h"
 #include "Epub/FootnoteEntry.h"
+#include "Epub/Page.h"
 #include "Epub/ParsedText.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
@@ -37,7 +39,24 @@ class ChapterHtmlSlimParser {
   std::function<void()> popupFn;  // Popup callback
   int depth = 0;
   int skipUntilDepth = INT_MAX;
+  // Depth of the element whose text is dropped because it is declared too small to read (a
+  // font-size:1px watermark span). Unlike skipUntilDepth only text is dropped, not structure/images.
+  int hiddenTextUntilDepth = INT_MAX;
   int skipEndElementStateUntilDepth = INT_MAX;
+  // <ruby> annotation capture (furigana/pinyin). The base words are laid out normally; the text of
+  // <rt> is collected here and attached to the whole base group when </ruby> closes.
+  bool rubyActive = false;
+  size_t rubyBaseStart = 0;      // index of the first base token in currentTextBlock
+  int rtUntilDepth = INT_MAX;    // depth of the open <rt>, whose text is captured instead of laid out
+  std::string rubyText;
+  // Open inline bidi elements (dir, <bdi>, <bdo>, unicode-bidi): the controls each opened, innermost last.
+  struct BidiElem {
+    int depth;
+    uint8_t nOpen;
+    uint32_t opens[2];
+  };
+  std::vector<BidiElem> bidiStack_;
+  void closeBidiElement();
   int boldUntilDepth = INT_MAX;
   int italicUntilDepth = INT_MAX;
   int underlineUntilDepth = INT_MAX;
@@ -57,6 +76,19 @@ class ChapterHtmlSlimParser {
   uint8_t paragraphAlignment;
   uint16_t viewportWidth;
   uint16_t viewportHeight;
+  // The section's frame (FlowContext.h): decided once, at the first element outside <html>'s tag and any <head>.
+  // A vertical-rl section is laid out as a horizontal one in the turned frame, so viewportWidth and viewportHeight
+  // trade places from then on; readerViewportWidth_ is the width the reader's page has (a page's block extent).
+  VerticalText verticalRequest_ = VerticalText::Off;
+  uint16_t readerViewportWidth_ = 0;
+  bool vertical_ = false;
+  bool frameDecided_ = false;
+  int headDepth_ = -1;
+  CssWritingMode htmlWritingMode_ = CssWritingMode::Unset;
+  void decideFrame(CssWritingMode rootMode);
+  // The element's margins and padding, read in the reader's frame, as the turned frame has them: the reader's right
+  // is the block start (the turned top), its bottom the inline end (right), and so around.
+  static void turnBox(CssStyle& style);
   bool hyphenationEnabled;
   bool bionicReadingEnabled;
   bool guideReadingEnabled;
@@ -111,6 +143,13 @@ class ChapterHtmlSlimParser {
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
   CssStyle currentCssStyle;
+  struct BlockCssEntry {
+    int depth;
+    CssStyle previous;
+  };
+  std::vector<BlockCssEntry> blockCssStack;
+  void enterBlockCssStyle(const CssStyle& css);
+  bool leaveBlockCssStyle();
   bool effectiveBold = false;
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
@@ -242,10 +281,14 @@ class ChapterHtmlSlimParser {
         paragraphAlignment(paragraphAlignment),
         viewportWidth(viewportWidth),
         viewportHeight(viewportHeight),
+        readerViewportWidth_(viewportWidth),
         hyphenationEnabled(hyphenationEnabled),
         bionicReadingEnabled(bionicReadingEnabled),
         guideReadingEnabled(guideReadingEnabled),
-        completePageFn(completePageFn),
+        completePageFn([this, completePageFn](std::unique_ptr<Page> page, const uint16_t a, const uint16_t b) {
+          if (vertical_ && page) page->verticalBlockExtent = readerViewportWidth_;
+          completePageFn(std::move(page), a, b);
+        }),
         popupFn(popupFn),
         cssParser(cssParser),
         embeddedStyle(embeddedStyle),
@@ -260,6 +303,7 @@ class ChapterHtmlSlimParser {
   void addLineToPage(std::shared_ptr<TextBlock> line);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
   bool wasLowMemoryFallbackTriggered() const { return lowMemoryImageFallback; }
+  bool isVertical() const { return vertical_; }
   bool wasLowMemoryAbortTriggered() const { return lowMemoryAbort; }
   bool wasCancellationTriggered() const { return cancelled; }
 };

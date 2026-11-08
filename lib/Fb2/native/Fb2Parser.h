@@ -28,27 +28,28 @@
 
 #pragma once
 #include <functional>
-#include "IByteReader.h"
-#include "Fb2Types.h"
+#include <IByteReader.h>
+#include <FictionBookTypes.h>
+#include <FictionBookParser.h>
 
 namespace reader {
 class ReaderCancellationToken;
 }
 
-class Fb2Parser {
+class Fb2Parser final : public FictionBookParser {
 public:
     // Returns false only on a hard read error / clearly-not-FB2 input.
     // Missing individual metadata fields are not an error - FB2 files are
     // frequently missing <document-info>, <lang>, a cover, etc.
     bool scan(IByteReader& reader, Fb2ScanResult& outResult,
-              size_t xmlBufferSize = 8192);
+              size_t xmlBufferSize = 8192) override;
 
     // Emits the metadata cover only when `section` is the first body
     // section. This is intentionally separate from renderSection() so callers
     // can place the cover before generated title/annotation content.
     bool renderCoverForFirstSection(IByteReader& reader,
                                     const Fb2SectionIndexEntry& section,
-                                    Fb2ContentSink& sink);
+                                    Fb2ContentSink& sink) override;
 
     // Emits direct body-level epigraphs that appear before the first <section>.
     // A number of FB2 books use this legal shape for a book/part epigraph; the
@@ -58,26 +59,26 @@ public:
     // Render <description><title-info><annotation> with inline FB2 styles preserved.
     // Used for the synthetic front-matter page so <emphasis> works exactly as in body text.
     bool renderAnnotation(IByteReader& reader, Fb2ContentSink& sink,
-                          const reader::ReaderCancellationToken* cancellationToken = nullptr);
+                          const reader::ReaderCancellationToken* cancellationToken = nullptr) override;
 
     bool renderBodyPreambleForFirstSection(IByteReader& reader,
                                            Fb2ContentSink& sink,
-                                           const reader::ReaderCancellationToken* cancellationToken = nullptr);
+                                           const reader::ReaderCancellationToken* cancellationToken = nullptr) override;
 
     // Re-renders only the direct <title> of this section, preserving inline emphasis.
     bool renderSectionTitle(IByteReader& reader, const Fb2SectionIndexEntry& section, Fb2ContentSink& sink,
-                            uint8_t level, const reader::ReaderCancellationToken* cancellationToken = nullptr);
+                            uint8_t level, const reader::ReaderCancellationToken* cancellationToken = nullptr) override;
 
     // sectionIndex must be an index into the vector scan() filled in.
     // Body content only: coverpage is handled by renderCoverForFirstSection().
     bool renderSection(IByteReader& reader,
                         const Fb2SectionIndexEntry& section,
                         Fb2ContentSink& sink,
-                        const reader::ReaderCancellationToken* cancellationToken = nullptr);
+                        const reader::ReaderCancellationToken* cancellationToken = nullptr) override;
 
-    using BinaryOutputFn = std::function<void(const uint8_t* data, size_t len)>;
+    using BinaryOutputFn = FictionBookParser::BinaryOutputFn;
     bool decodeBinary(IByteReader& reader,
                        const Fb2BinaryIndexEntry& binary,
                        const BinaryOutputFn& out,
-                       const reader::ReaderCancellationToken* cancellationToken = nullptr);
+                       const reader::ReaderCancellationToken* cancellationToken = nullptr) override;
 };

@@ -1,0 +1,14 @@
+<div class="card">
+  <h2 data-i18n="dict.title">Dictionaries</h2>
+  <p class="hint" data-i18n="dict.intro">Prepared dictionaries stored on the reader. Add new ones in the File Manager (it converts StarDict and similar sources in the browser).</p>
+  <div id="dcList"></div>
+</div>
+<div class="card">
+  <h2 data-i18n="dict.try">Try a lookup</h2>
+  <div class="dc-row">
+    <select id="dcSelect"></select>
+    <input type="text" id="dcWord" data-i18n-placeholder="dict.word_ph" placeholder="Word or phrase" autocomplete="off" />
+    <button class="btn btn-primary" id="dcGo" data-i18n="dict.search">Look up</button>
+  </div>
+  <div id="dcResult" class="dc-result"></div>
+</div>

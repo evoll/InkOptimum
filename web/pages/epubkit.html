@@ -49,6 +49,8 @@
     <label><input id="epubkitMetadata" type="checkbox" checked><span><b data-i18n="epubkit.metadata">Clean metadata</b><small data-i18n="epubkit.metadata_desc">Remove store and Calibre-only tags</small></span></label>
     <label><input id="epubkitText" type="checkbox" checked><span><b data-i18n="epubkit.text_cleanup">Text cleanup</b><small data-i18n="epubkit.text_cleanup_desc">Repair common OCR and encoding artifacts</small></span></label>
     <label><input id="epubkitLightNovel" type="checkbox"><span><b data-i18n="epubkit.light_novel">Light Novel mode</b><small data-i18n="epubkit.light_novel_desc">Rotate or split landscape illustrations</small></span></label>
+    <label class="epubkit-select"><span><b data-i18n="epubkit.split">Split large chapters</b><small data-i18n="epubkit.split_desc">Cut huge chapter files into parts so they open faster and use less memory; links are updated</small></span>
+      <select id="epubkitSplit"><option value="0" data-i18n="epubkit.split_off">Off</option><option value="64">64 KB</option><option value="128">128 KB</option><option value="256">256 KB</option><option value="512">512 KB</option></select></label>
   </div>
 
   <div class="epubkit-quality">

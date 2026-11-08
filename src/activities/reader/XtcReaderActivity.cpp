@@ -23,6 +23,8 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
+#include "XtcReaderNavigation.h"
+#include "EpubReaderPercentSelectionActivity.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/boot_sleep/SleepCoverAssets.h"
@@ -117,6 +119,20 @@ bool XtcReaderActivity::handleShortcutAction(const uint8_t rawAction) {
   }
 }
 
+void XtcReaderActivity::openPercentSelection() {
+  if (!xtc || xtc->getPageCount() == 0) return;
+  const uint32_t clampedPage = currentPage >= xtc->getPageCount() ? xtc->getPageCount() - 1 : currentPage;
+  startActivityForResult(
+      std::make_unique<EpubReaderPercentSelectionActivity>(renderer, mappedInput,
+                                                           static_cast<int>(xtc->calculateProgress(clampedPage))),
+      [this](const ActivityResult& result) {
+        const auto* percent = std::get_if<PercentResult>(&result.data);
+        if (!result.isCancelled && percent && xtc && xtc->getPageCount() > 0) {
+          currentPage = xtcPageForPercent(static_cast<float>(percent->percent), xtc->getPageCount());
+        }
+      });
+}
+
 void XtcReaderActivity::loop() {
   // XTC used to be the odd reader out: only the hardware buttons were wired
   // to page turning/chapter selection. Keep the same touch contract as
@@ -155,8 +171,24 @@ void XtcReaderActivity::loop() {
     }
   }
 
-  // Confirm or a center-screen tap enters chapter selection.
+  // A long Confirm press jumps to a percent of the book.
+  if (!longPressConfirmHandled && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
+      mappedInput.getHeldTime() >= 700) {
+    longPressConfirmHandled = true;
+    openPercentSelection();
+    return;
+  }
+  if (longPressConfirmHandled && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    longPressConfirmHandled = false;
+    return;
+  }
+
+  // Confirm or a center-screen tap enters chapter selection (or the percent jump when the book has no chapters).
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || touchMenu) {
+    if (!xtc || !xtc->hasChapters() || xtc->getChapters().empty()) {
+      openPercentSelection();
+      return;
+    }
     if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
       startActivityForResult(
           std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
@@ -407,7 +439,33 @@ bool XtcReaderActivity::executeLongPressBackAction() {
   }
 }
 
+// A page turn from the Bluetooth remote; a chapter turn skips ten pages, as a long press does. Forward from the
+// end-of-book screen does nothing (the buttons go home there; an accidental remote press must not).
+bool XtcReaderActivity::remoteTurn(const bool forward, const bool chapter) {
+  if (!xtc) return false;
+  const uint32_t pageCount = xtc->getPageCount();
+  if (pageCount == 0 || currentPage >= pageCount) return false;
+  const uint32_t step = chapter ? 10 : 1;
+  if (forward) {
+    currentPage += step;
+    if (currentPage >= pageCount) {
+      currentPage = pageCount;  // the end-of-book screen
+      markBookCompletedIfNeeded();
+    }
+  } else {
+    if (currentPage == 0) return false;
+    currentPage = currentPage >= step ? currentPage - step : 0;
+  }
+  requestUpdate();
+  return true;
+}
+
 void XtcReaderActivity::render(RenderLock&&) {
+  // A Bluetooth remote may turn the page once render() has run (see acceptsRemoteInput).
+  struct ShownGuard {
+    std::atomic<bool>& flag;
+    ~ShownGuard() { flag.store(true, std::memory_order_release); }
+  } shownGuard{pageShown};
   if (!xtc) {
     return;
   }
@@ -1003,6 +1061,8 @@ ScreenshotInfo XtcReaderActivity::getScreenshotInfo() const {
     // Clamp to last valid page to avoid sentinel value (currentPage == pageCount)
     uint32_t clampedPage = (pageCount > 0 && currentPage >= pageCount) ? pageCount - 1 : currentPage;
     info.progressPercent = pageCount > 0 ? xtc->calculateProgress(clampedPage) : 0;
+    // XTC progress already counts the visible page as read.
+    info.endProgressPercent = info.progressPercent;
     info.currentPage = static_cast<int>(clampedPage) + 1;
   } else {
     info.currentPage = currentPage + 1;

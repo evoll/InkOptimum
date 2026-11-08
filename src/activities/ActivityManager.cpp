@@ -1,10 +1,15 @@
 #include "ActivityManager.h"
 
+#include <BlePageTurner.h>
+
 #include <HalDisplay.h>
 #include <HalPowerManager.h>
 
 #include <algorithm>
 
+#ifndef SIMULATOR
+#include "network/BootHealth.h"
+#endif
 #include "InkMODState.h"
 #include "InkMODSettings.h"
 #include "GlobalActions.h"
@@ -51,7 +56,19 @@ void ActivityManager::renderTaskLoop() {
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
       display.setInverted(SETTINGS.screenInverted != 0);
+      // Boot/sleep/recovery screens are not proof of a healthy reader UI.
+      const bool healthScreen =
+          currentActivity->name != "Boot" && currentActivity->name != "Sleep" && currentActivity->name != "SdFirmwareUpdate";
+      renderPassActive.store(true, std::memory_order_release);
+      const uint32_t renderingVisit = screenVisit;
       currentActivity->render(std::move(lock));
+      paintedVisit.store(renderingVisit, std::memory_order_release);
+      renderPassActive.store(false, std::memory_order_release);
+#ifndef SIMULATOR
+      if (healthScreen) boot_health::rendered();
+#else
+      (void)healthScreen;
+#endif
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
     TaskHandle_t waiter = nullptr;
@@ -156,13 +173,21 @@ void ActivityManager::loop() {
       return;
     }
 
+    // A requested transition (especially sleep) must not run one more activity tick: it could turn the
+    // page or start background work after the user stopped reading. (Paperio-Reader 27ef95f.)
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
-    currentActivity->loop();
+    if (pendingAction == PendingAction::None) currentActivity->loop();
   } else {
     mappedInput.setPowerAsConfirmInReaderMode(false);
   }
 
   while (pendingAction != PendingAction::None) {
+    // The page turner's radio gives its heap back before the next screen allocates. Its teardown
+    // can span loop passes and runs outside the render lock.
+    if (pendingAction != PendingAction::ReplaceForSleep &&
+        !bleturner::beforeScreenChange(0, pendingActivity && pendingActivity->isReaderActivity())) {
+      return;
+    }
     if (pendingAction == PendingAction::Pop) {
       RenderLock lock;
 
@@ -173,6 +198,7 @@ void ActivityManager::loop() {
         continue;
       }
 
+      ++screenVisit;
       ActivityResult pendingResult = std::move(currentActivity->result);
 
       // Destroy the current activity
@@ -218,7 +244,7 @@ void ActivityManager::loop() {
       // Current activity has requested a new activity to be launched
       RenderLock lock;
 
-      if (pendingAction == PendingAction::Replace) {
+      if (pendingAction == PendingAction::Replace || pendingAction == PendingAction::ReplaceForSleep) {
         // Destroy the current activity
         exitActivity(lock);
         // Clear the stack
@@ -239,6 +265,7 @@ void ActivityManager::loop() {
         stackActivities.push_back(std::move(currentActivity));
         LOG_DBG("ACT", "Pushed to activity stack, new size = %zu", stackActivities.size());
       }
+      ++screenVisit;
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
 
@@ -345,6 +372,7 @@ void ActivityManager::goToSleep(bool fromTimeout) {
   const bool canSnapshotOverlay = currentActivity && currentActivity->canSnapshotForSleepOverlay();
   replaceActivity(
       std::make_unique<SleepActivity>(renderer, mappedInput, canSnapshotOverlay, getCurrentBookPath(), fromTimeout));
+  if (pendingAction == PendingAction::Replace) pendingAction = PendingAction::ReplaceForSleep;
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
@@ -406,6 +434,40 @@ bool ActivityManager::isReaderActivity() const {
 
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity && activity->isReaderActivity(); });
+}
+
+bool ActivityManager::isForegroundReader() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->isReaderActivity();
+}
+
+bool ActivityManager::isRemoteReaderContext() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->acceptsRemoteInput();
+}
+
+bool ActivityManager::remoteClick(const RemoteButton button) {
+  if (!isRemoteReaderContext() || RenderLock::peek() || requestedUpdate) return false;
+  return mappedInput.injectRemoteClick(button);
+}
+
+bool ActivityManager::isForegroundHomeShown() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "Home" &&
+         paintedVisit.load(std::memory_order_acquire) == screenVisit;
+}
+
+bool ActivityManager::remoteShortcut(const bool readerMenu) {
+  if (!isRemoteReaderContext() || mappedInput.hasRemoteClick()) return false;
+  if (RenderLock::peek() || currentActivity->remoteInputBlocked()) return false;
+  return currentActivity->remoteShortcut(readerMenu);
+}
+
+bool ActivityManager::remoteTurn(const bool forward, const bool chapter) {
+  if (!isRemoteReaderContext() || mappedInput.hasRemoteClick()) return false;
+  // A menu or panel over the page owns the keys: the turn goes to it as a click, as a device key would.
+  if (currentActivity->remoteInputBlocked()) {
+    return !chapter && remoteClick(forward ? RemoteButton::Next : RemoteButton::Previous);
+  }
+  if (RenderLock::peek() || requestedUpdate) return false;
+  return currentActivity->remoteTurn(forward, chapter);
 }
 
 bool ActivityManager::isCurrentReaderActivity() const {
@@ -520,6 +582,10 @@ RequestUpdateResult ActivityManager::requestUpdateAndWait() {
 RenderLock::RenderLock() {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
   isLocked = true;
+}
+
+RenderLock::RenderLock(const Mode mode) {
+  isLocked = xSemaphoreTake(activityManager.renderingMutex, mode == Mode::Try ? 0 : portMAX_DELAY) == pdTRUE;
 }
 
 RenderLock::RenderLock([[maybe_unused]] Activity&) {

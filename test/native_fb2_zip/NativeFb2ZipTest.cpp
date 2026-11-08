@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "Base64Decoder.h"
-#include "Fb2XmlReader.h"
-#include "ZipReader.h"
+#include <Base64Decoder.h>
+#include "XmlPullReader.h"
+#include <ZipReader.h>
 
 namespace {
 
@@ -194,21 +194,21 @@ TEST(NativeFb2Xml, ScanOnlyLongRunKeepsBinaryOffsetsExact) {
   xmlText += "</binary><p>A&amp;B</p>";
 
   MemoryReader reader(xmlText);
-  Fb2XmlReader xml(reader, 8192);
+  XmlPullReader xml(reader, 8192);
   xml.setCaptureText(false);
 
-  ASSERT_EQ(xml.next(), Fb2Token::StartTag);
+  ASSERT_EQ(xml.next(), XmlToken::StartTag);
   ASSERT_EQ(xml.name(), "binary");
   EXPECT_EQ(xml.streamPos(), 8u);
 
   size_t payloadBytes = 0;
   for (;;) {
-    const Fb2Token tok = xml.next();
-    if (tok == Fb2Token::Text) {
+    const XmlToken tok = xml.next();
+    if (tok == XmlToken::Text) {
       payloadBytes += xml.textSize();
       continue;
     }
-    ASSERT_EQ(tok, Fb2Token::EndTag);
+    ASSERT_EQ(tok, XmlToken::EndTag);
     ASSERT_EQ(xml.name(), "binary");
     EXPECT_EQ(xml.tokenStartOffset(), 8u + kPayloadSize);
     break;
@@ -222,20 +222,20 @@ TEST(NativeFb2Xml, ScanOnlyLongPathStillCountsEntitiesByDecodedLength) {
   xmlText += "&amp;B</p>";
 
   MemoryReader reader(xmlText);
-  Fb2XmlReader xml(reader, 512);
+  XmlPullReader xml(reader, 512);
   xml.setCaptureText(false);
 
-  ASSERT_EQ(xml.next(), Fb2Token::StartTag);
+  ASSERT_EQ(xml.next(), XmlToken::StartTag);
   ASSERT_EQ(xml.name(), "p");
 
   size_t decodedBytes = 0;
   for (;;) {
-    const Fb2Token tok = xml.next();
-    if (tok == Fb2Token::Text) {
+    const XmlToken tok = xml.next();
+    if (tok == XmlToken::Text) {
       decodedBytes += xml.textSize();
       continue;
     }
-    ASSERT_EQ(tok, Fb2Token::EndTag);
+    ASSERT_EQ(tok, XmlToken::EndTag);
     break;
   }
   EXPECT_EQ(decodedBytes, 302u);  // 300 x + '&' + 'B'

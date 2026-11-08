@@ -1,0 +1,10 @@
+Удалите из проекта (файлы перенесены в lib/FictionBookCore, lib/Fb3, lib/Markdown):
+lib/Fb2/native/Base64Decoder.h
+lib/Fb2/native/Fb2Types.h
+lib/Fb2/native/Fb2XmlReader.h
+lib/Fb2/native/FsFileReader.h
+lib/Fb2/native/IByteReader.h
+lib/Fb2/native/Inflate.cpp
+lib/Fb2/native/Inflate.h
+lib/Fb2/native/ZipReader.cpp
+lib/Fb2/native/ZipReader.h

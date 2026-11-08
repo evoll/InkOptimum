@@ -17,6 +17,7 @@
 #include <SPI.h>
 
 #include "../src/bus/EpdBus.h"
+#include "GrayscaleCapabilities.h"
 
 namespace freeink {
 
@@ -24,6 +25,8 @@ class PanelDriver;
 
 class FreeInkDisplay {
  public:
+  // Legacy pin arguments are retained for source compatibility. begin() uses
+  // BoardConfig::ACTIVE.display, including any runtime-selected board profile.
   FreeInkDisplay(int8_t sclk, int8_t mosi, int8_t cs, int8_t dc, int8_t rst, int8_t busy);
   ~FreeInkDisplay() = default;
 
@@ -37,9 +40,38 @@ class FreeInkDisplay {
   // M5 PaperColor: run the next refresh's OTP waveform to completion (one-shot).
   void requestCompleteWaveformNextRefresh();
 
+  // M5 PaperColor: make every FULL_REFRESH run the complete OTP waveform
+  // (~15 s, DC-balanced, true white, full color) instead of an interrupted
+  // full-panel pass. For consumers whose Full refreshes are all standing
+  // images (clock/dashboard apps); readers that page with Full keep the
+  // default (off). No-op on other panels.
+  void setFullRefreshCompletesWaveform(bool enabled);
+
+  // M5 PaperColor (Spectra-6) accent color planes: 1-bit buffers with the
+  // framebuffer's geometry/layout. A set bit recolors that pixel's ink (a
+  // 0/black framebuffer bit) to the slot's `colorCode` on complete-waveform
+  // refreshes; interrupted refreshes render it as plain ink (color pigments
+  // never settle in a cut-off waveform), so accents appear only on standing
+  // images. Up to 4 slots — the lowest slot with a set bit wins on overlap;
+  // nullptr clears a slot; the caller owns the buffers. No-op on other panels.
+  void setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode);
+  // ED2208 Spectra-6 controller color codes for setAccentPlaneSlot().
+  static constexpr uint8_t SPECTRA_BLACK = 0x0;
+  static constexpr uint8_t SPECTRA_WHITE = 0x1;
+  static constexpr uint8_t SPECTRA_YELLOW = 0x2;
+  static constexpr uint8_t SPECTRA_RED = 0x3;
+  static constexpr uint8_t SPECTRA_BLUE = 0x5;
+  static constexpr uint8_t SPECTRA_GREEN = 0x6;
+
   // M5 PaperColor: interrupted-refresh cutoff (ms). The cut freezes the gate
   void setFastRefreshCutoffMs(uint16_t ms);
   uint16_t fastRefreshCutoffMs() const;
+
+  // Hold the periodic anti-ghost full refresh through a live interaction (slider
+  // drag): while held, fast refreshes are never promoted to a full. Clear it and
+  // force one full afterward to scrub any ghost. No-op on panels without the
+  // periodic-full cadence (currently the EEGO A4's UC8279C driver).
+  void setHoldPeriodicFullRefresh(bool hold);
 
   void begin();
 
@@ -57,6 +89,10 @@ class FreeInkDisplay {
   // runtime-selected; a single-device build gets exactly that panel's size.
   static constexpr uint32_t MAX_BUFFER_SIZE = BoardConfig::MAX_FRAMEBUFFER_BYTES;
 
+  // Selected controller/backend identity; nullptr until a driver is selected by begin().
+  // Read-only: never probes hardware or substitutes the board profile default.
+  const char* getControllerName() const;
+
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
   uint16_t getDisplayHeight() const { return displayHeight; }
@@ -65,8 +101,10 @@ class FreeInkDisplay {
 
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;
-  void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
-  void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
+  void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                 bool fromProgmem = false) const;
+  void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                            bool fromProgmem = false) const;
   // Persistent black/white output inversion. Framebuffers remain in their
   // normal logical colors, so callers keep drawing exactly as before; the
   // facade transforms frames only while sending them to the panel. The first
@@ -92,21 +130,37 @@ class FreeInkDisplay {
   // follows. X3 uses the OEM differential base waveform; other panels display
   // normally with `fallback` mode. See PanelDriver::displayGrayscaleBase.
   void displayGrayscaleBase(RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
+  // Starts a mode-bound pass. Absolute uploads must cover both complete planes
+  // (full buffers or consecutive strips per plane) before displayGrayBuffer().
+  // False means the requested mode is unavailable; no base was painted.
+  bool displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
   void copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer);
   void copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer);
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
+  // Current mode availability, including output inversion and base readiness.
+  // A query does not alter the pending refresh or the plane encoding.
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const;
+  // Compatibility wrappers for Overlay mode.
+  bool supportsBusyGrayscaleStaging() const;
+  void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
+  // True when displayGrayscaleBase() defers the base activation so the gray
+  // planes join it in one waveform (Paper Mono) - see PanelDriver.
+  bool combinesGrayscaleBase() const;
   // Restore controller RAM and frameBuffer to the given BW baseline after
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
-  // Uses frameBufferActive as the source (falls back to frameBuffer when the
-  // secondary buffer has been released). Call once per page-turn after
-  // displayGrayBuffer() to ensure the next BW draw targets a valid BW frame.
+  // frameBufferActive is the only valid source: the caller is always inside a
+  // grayscale plane pass, which has left frameBuffer holding a PLANE, so there is
+  // no fallback. With the secondary away (lent or released) the driver is told
+  // there is no baseline and takes a clean sync on its next push. Call once per
+  // page-turn after displayGrayBuffer() to ensure the next BW draw targets a
+  // valid BW frame.
   void cleanupGrayscaleWithPreviousBuffer();
 #endif
 
@@ -143,6 +197,16 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
+  // End-of-frame idle power policy, currently Picco only. Call under the same
+  // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
+  // Completes pending refreshes, then powers down analog circuitry, not RAM.
+  void powerOffBetweenFrames();
+  // True when the selected driver can use an ordinary deferred B/W refresh as
+  // the base for a following grayscale pass.
+  bool supportsAsyncGrayscaleBase() const;
+  bool supportsDeferredGrayscaleBase() const;
+  // Framebuffer must remain unchanged until waitRefreshComplete().
+  bool displayGrayscaleBaseAsync(RefreshMode fallback = FAST_REFRESH);
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.
@@ -216,12 +280,23 @@ class FreeInkDisplay {
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
+  void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
   void skipInitialResync();
+  void beginDisplayWork();
+  void abortPostRefresh();
+  bool postRefreshAborted() const;
+  // True when the last display sequence actually reached the panel. Panels
+  // which paint synchronously always report true, so refresh-cadence callers
+  // behave exactly as before on them.
+  bool displayCommitted() const;
+  void runMaintenance();
+  bool hasPendingMaintenance() const;
+  void controllerIdle();
 
   // debug function
   void grayscaleRevert();
@@ -353,7 +428,6 @@ class FreeInkDisplay {
   RefreshMode resolveReleasedMode(RefreshMode mode) const;
 #endif
 
-  EpdPins _pins;
   EpdBus _bus;
   PanelDriver* _driver = nullptr;
 
@@ -364,9 +438,19 @@ class FreeInkDisplay {
   // baseline again).
   // One pending flag for every deferred refresh (X4 async fire, X3 split);
   // drained by syncPendingAsync() through the driver's displayFinish().
+  GrayscaleMode _grayscaleMode = GrayscaleMode::Overlay;
+  uint16_t _grayRows[2] = {0, 0};
+  bool _grayPassFailed = false;
+  void cancelGrayscalePass();
+  bool acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows);
   bool _refreshPending = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Frame submitted to the pending update: the shadow for redraw-safe async,
+  // or the live frame for entry points requiring it to remain untouched.
+  const uint8_t* _pendingSingleBufferFrame = nullptr;
+#endif
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

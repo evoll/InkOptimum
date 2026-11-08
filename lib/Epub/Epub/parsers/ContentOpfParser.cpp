@@ -5,6 +5,8 @@
 #include <Serialization.h>
 #include <XmlParserUtils.h>
 
+#include <strings.h>
+
 #include <cctype>
 #include <cstring>
 
@@ -18,6 +20,15 @@ constexpr char itemCacheFile[] = "/.items.bin";
 constexpr size_t SERIALIZED_COMPARE_CHUNK = 64;
 
 enum class SerializedStringMatch : uint8_t { Error, No, Yes };
+
+// Manifest ids that name the cover by convention, compared without regard to case.
+bool isCoverItemId(const std::string_view id) {
+  for (const char* name : {"cover", "cover-image", "cover_image", "coverimage", "cover-img", "cover_img", "coverimg",
+                           "coverpage", "cover-page", "cover_page"}) {
+    if (id.size() == std::strlen(name) && strncasecmp(id.data(), name, id.size()) == 0) return true;
+  }
+  return false;
+}
 
 bool startsWithImageMediaType(const char* mediaType) {
   if (!mediaType) return false;
@@ -247,8 +258,25 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       if (startsWithImageMediaType(mediaType)) {
         self->coverItemHref = href;
       } else {
-        LOG_DBG("COF", "Ignoring meta cover item '%.*s' with non-image media type: %s",
-                static_cast<int>(itemId.size()), itemId.data(), mediaType);
+        // A page, not a picture: kept for Epub to look inside when nothing better turns up.
+        LOG_DBG("COF", "Meta cover item '%.*s' is a page, not a picture: %s", static_cast<int>(itemId.size()),
+                itemId.data(), href.c_str());
+        if (self->metaCoverPageHref.empty()) self->metaCoverPageHref = href;
+      }
+    }
+
+    // A cover by its id alone (id="cover", "cover-image", ...), for a book that declares none. A JPEG
+    // or PNG is the picture; an SVG or XHTML page is one to look inside, never the picture itself,
+    // since cover generation decodes no SVG. A picture wins over a page whatever the manifest order.
+    // Ported from witchhunt-reader (9118e285, bc5932ea).
+    if (isCoverItemId(itemId)) {
+      const bool picture = startsWithImageMediaType(mediaType) && (FsHelpers::hasJpgExtension(std::string_view{href}) ||
+                                                                   FsHelpers::hasPngExtension(std::string_view{href}));
+      const bool page = !picture && (strcmp(mediaType, "application/xhtml+xml") == 0 ||
+                                     strcmp(mediaType, "image/svg+xml") == 0);
+      if ((picture && !self->coverIdItemIsPicture_) || (page && self->coverIdItemHref.empty())) {
+        self->coverIdItemHref = href;
+        self->coverIdItemIsPicture_ = picture;
       }
     }
 
@@ -341,7 +369,14 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       if (strcmp(atts[i], "type") == 0) {
         type = atts[i + 1];
       } else if (strcmp(atts[i], "href") == 0) {
-        guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
+        // A reference names a document: split the fragment off before decoding (an escaped '#' stays
+        // part of a filename), otherwise "Text/c1.xhtml#start" matches no spine item.
+        const std::string_view raw(atts[i + 1]);
+        const std::string_view docPart = raw.substr(0, raw.find('#'));
+        if (!docPart.empty()) {
+          guideHref =
+              FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + std::string(docPart)));
+        }
       }
     }
     if (!guideHref.empty()) {

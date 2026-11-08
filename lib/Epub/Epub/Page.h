@@ -56,6 +56,8 @@ class PageImage final : public PageElement {
   PageElementTag getTag() const override { return TAG_PageImage; }
   static std::unique_ptr<PageImage> deserialize(FsFile& file);
   const ImageBlock& getImageBlock() const { return *imageBlock; }
+  // On a vertical page: the picture is drawn in the reader's frame, in the rectangle the turned frame's block covers.
+  void renderTurned(GfxRenderer& renderer, int readerWidth, int xOffset, int yOffset);
 };
 
 class PageHorizontalRule final : public PageElement {
@@ -132,6 +134,10 @@ class Page {
   std::vector<PublisherPageMarker> publisherPageMarkers;
   // Synthetic FB2 cover/annotation pages should not inherit the first body
   // chapter title in the status bar. Serialized with the page cache.
+  // A page of a vertical-rl section: the block extent its columns fill, the reader's viewport width; 0 on a
+  // horizontal page. Such a page draws in the turned frame (TurnedFrame.h).
+  uint16_t verticalBlockExtent = 0;
+  bool isVertical() const { return verticalBlockExtent != 0; }
   bool suppressChapterTitle = false;
   // True for synthetic FB2 cover/metadata/body-preamble pages. The reader uses
   // this to restart the visible page counter at the first real <section>.

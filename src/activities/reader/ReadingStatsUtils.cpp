@@ -47,7 +47,7 @@ const char* localizedMonthName(const uint8_t month) {
 // old "Jan"/"Feb" style) instead of the full localized name. Takes the first 3
 // Unicode codepoints rather than the first 3 bytes so multi-byte UTF-8 scripts
 // (Cyrillic, etc.) aren't cut mid-character - this happens to match the
-// conventional 3-letter abbreviation in English, Russian, and Ukrainian alike
+// conventional 3-letter abbreviation in English and Russian alike
 // (e.g. "Январь" -> "Янв", "Січень" -> "Січ").
 std::string abbreviatedMonthName(const uint8_t month) {
   const char* full = localizedMonthName(month);

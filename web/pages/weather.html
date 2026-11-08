@@ -1,0 +1,41 @@
+<div class="card">
+  <h2 data-i18n="wx.title">Weather</h2>
+  <p class="hint" data-i18n="wx.intro">The forecast is downloaded by this browser (Open-Meteo) and handed to the reader, so it can show it offline later.</p>
+  <div id="wxStatus" class="wx-status"></div>
+  <div id="wxNow" class="wx-now"></div>
+</div>
+
+<div class="card" id="wxHourlyCard" hidden>
+  <h2 data-i18n="wx.hourly">Next 48 hours</h2>
+  <div id="wxChart" class="wx-chart"></div>
+  <div id="wxHours" class="wx-hours"></div>
+</div>
+
+<div class="card" id="wxDailyCard" hidden>
+  <h2 data-i18n="wx.daily">Daily forecast</h2>
+  <div id="wxDays"></div>
+</div>
+
+<div class="card">
+  <h2 data-i18n="wx.location">Location</h2>
+  <div class="wx-search">
+    <input type="text" id="wxQuery" data-i18n-placeholder="wx.search_ph" placeholder="City name" autocomplete="off" />
+    <button class="btn btn-primary" id="wxSearchBtn" data-i18n="wx.search">Search</button>
+  </div>
+  <div id="wxResults"></div>
+</div>
+
+<div class="card">
+  <h2 data-i18n="wx.settings">Units and display</h2>
+  <div class="wx-row"><span data-i18n="wx.temp_unit">Temperature</span>
+    <select id="wxTemp"><option value="0">°C</option><option value="1">°F</option></select></div>
+  <div class="wx-row"><span data-i18n="wx.wind_unit">Wind speed</span>
+    <select id="wxWind"><option value="0">km/h</option><option value="1">m/s</option><option value="2">mph</option><option value="3">kn</option></select></div>
+  <div class="wx-row"><span data-i18n="wx.precip_unit">Precipitation</span>
+    <select id="wxPrecip"><option value="0">mm</option><option value="1">in</option></select></div>
+  <div class="wx-row"><span data-i18n="wx.days">Forecast days</span>
+    <select id="wxDaysSel"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+  <div class="wx-row"><span data-i18n="wx.on_home">Show Weather on the home screen</span>
+    <input type="checkbox" id="wxHome" /></div>
+  <p class="hint" id="wxSaved"></p>
+</div>

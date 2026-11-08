@@ -10,7 +10,11 @@ extern const char STRINGS_EN_DATA[];
 extern const uint16_t OFFSETS_EN[];
 extern const char STRINGS_RU_DATA[];
 extern const uint16_t OFFSETS_RU[];
-extern const char STRINGS_UK_DATA[];
-extern const uint16_t OFFSETS_UK[];
+extern const char STRINGS_ZH_DATA[];
+extern const uint16_t OFFSETS_ZH[];
+extern const char STRINGS_JA_DATA[];
+extern const uint16_t OFFSETS_JA[];
+extern const char STRINGS_KO_DATA[];
+extern const uint16_t OFFSETS_KO[];
 
 }  // namespace i18n_strings

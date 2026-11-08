@@ -28,6 +28,7 @@ class ControlsOptionsActivity final : public Activity {
   bool currentSettingUsesOptionMenu(const SettingInfo& setting) const;
   void openEnumOptionPicker(const SettingInfo& setting);
   void toggleCurrentSetting();
+  void showButtonBackupResult(const char* message);
 
  public:
   explicit ControlsOptionsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

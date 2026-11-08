@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "Inflate.h"
+#include <Inflate.h>
 #include "src/reader/core/io/IByteReader.h"
 
 namespace {

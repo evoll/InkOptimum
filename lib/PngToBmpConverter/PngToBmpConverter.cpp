@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "BitmapHelpers.h"
+#include "PngBitDepth.h"
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS - Same as JpegToBmpConverter for consistency
@@ -526,6 +527,11 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
 
   if (compression != 0 || filter != 0) {
     LOG_ERR("PNG", "Unsupported compression/filter method");
+    return false;
+  }
+
+  if (!png::isValidBitDepth(colorType, bitDepth)) {
+    LOG_ERR("PNG", "Invalid bit depth %u for color type %u", bitDepth, colorType);
     return false;
   }
 

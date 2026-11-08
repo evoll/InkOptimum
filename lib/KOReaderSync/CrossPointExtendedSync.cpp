@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
+#include <TlsTrust.h>
 #include <base64.h>
 #include <esp_mac.h>
 #include <mbedtls/sha256.h>
@@ -569,7 +570,7 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
   if (!KOREADER_STORE.usesCrossPointSyncServer() || documentHash.empty() || !epub) return result;
 
   freeink::SecureHttpClient http;
-  http.setInsecure();
+  TlsTrust::apply(http);
   http.setReuse(true);
   http.setTimeout(12000);
   http.setUserAgent("inkMOD-KOSync/1.1-ext");

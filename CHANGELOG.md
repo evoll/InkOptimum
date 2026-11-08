@@ -1,5 +1,363 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+- Ukrainian localization (interface strings, web portal, Ukrainian on-screen keyboard layout, humor lines) is no longer supported. A stored `UK` language falls back to English. Ukrainian hyphenation patterns and glyph coverage for books stay.
+
+### Added
+- **Bidi markup in books**: `dir` on inline elements, `<bdi>`, `<bdo dir>` and CSS `unicode-bidi`
+  (`embed`, `isolate`, `bidi-override`, `isolate-override`, `plaintext`) now steer the line's bidi pass. The controls
+  live beside the words (never in their text), carry across line breaks and paragraphs inside the element, and an
+  empty element leaves nothing behind. CSS cache version 18, section cache unchanged.
+- **Status bar text size** (Settings → Status bar): small / medium (UI 10) / large (UI 12). The reader's bottom band
+  grows by the font's extra line height, so the text area re-lays out accordingly.
+- Settings > System > Screen Calibration (from CrossInk): per-device edges of the viewable area (Top, Right, Bottom, Left, 0-32 px; reset to the factory 9/3/3/3), applied live, stored in NVS (not in the SD settings or backups) and loaded at boot. `GfxRenderer` takes the margins from `ScreenInsets` instead of constants. Not tried on a device.
+- Bidi at witchhunt level: `lib/MiniBidi` replaced with witchhunt's (marks, extended classes, Arabic forms; its tests ported), new `lib/Epub/Epub/BidiLine` (UAX #9 over the whole line instead of per word: a word is split into pieces where its characters land apart, brackets mirror, digits resolve against neighbours) and `lib/TextShaping` (Hebrew). `ParsedText::extractLine` uses it for RTL/mixed lines; `TextBlock` keeps the logical text of each piece and a display form (new serialized field, section cache version 79); `BidiBaseDir::VISUAL` draws a display form without a second bidi pass. Lines with bionic splits, guide dots, ruby or CJK shifts keep the word-order path. Not ported yet: `dir`/`<bdi>`/`<bdo>`/`unicode-bidi` from the markup, niqqud anchors, RTL lists and tables. Tests `BidiLineTest`, `ParsedTextBidi.*`.
+- BLE page turner: the `NoBond` rule of CrossPoint (no remote chosen: a book or Home does not start the radio, the link note is not shown) with tests. New opt-in environments `x4classic-ble` and `x3x4-ble` next to `x4pro-ble`; the C3 one adds the flash-only controller (`CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY`, `scripts/patch_arduino_ble_controller.py`) and ROM libc as in CrossPoint's `firmware_tuned_c3`. Core-rebuild builds could not be run in the development sandbox: not compiled, not tested on a device.
+- Reader > Word Spacing (from CrossInk): −4…+4 steps (+10 px per step, −20 % of the gap per step, never below 1 px); the value is part of the section cache header. Tests `ParsedText.WordSpacing…`.
+- Settings > System > Wi-Fi Transmit Power (maximum, 15, 11, 8.5, 5 dBm), applied when the station interface starts.
+- Plugin catalog lists put plugins with an update first (per page).
+- Plugin `tools/plugin-hub/plugins/dropbox`: sign in with your own Dropbox app key (PKCE), browse folders, download one book or all books of a folder to the SD (the book fetches the file from a temporary link). Not tested on a device.
+- OpenType shaping for Indic scripts (Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala) in TTF/OTF fonts (X4 Pro and X4 Classic): the engine of witchhunt PR #603 (`lib/OtShaper`, HarfBuzz-derived Indic shaper, matches HarfBuzz on the test words) shapes each Indic run of a word through the font's GSUB/GPOS/GDEF (`lib/EpdFont/FtShaper`) before layout. The shaped word travels as *glyph keys* (`lib/Utf8/GlyphKey.h`): a glyph ID plus the GPOS offset of a mark and a no-advance flag in a six-byte "extended UTF-8" form, so measuring, wrapping, drawing and the section cache carry glyphs unchanged and `TtfEpdFont` rasterizes them by glyph ID. Needs a font with the script (Noto Sans Devanagari etc. in `/.fonts/`); `.cpfont` and flash fonts are not shaped. Section cache version 78. Not tested on a device.
+- Vertical text (vertical-rl) for Chinese and Japanese books: sections with `writing-mode: vertical-rl` are laid out in a turned frame and drawn down their columns; page turns run right to left. New setting Reader > Vertical Text (Auto / On / Off). Section cache version 77, CSS cache version 17. Experimental, not tested on a device.
+- Whole-em grid for Chinese and Japanese books: a paragraph with CJK text gets a text width of whole ems (half of the cut on each side) and a first-line indent of whole ems, so pure CJK lines fill exactly and characters line up in columns. Justified lines with CJK gaps end flush at the margin. Section cache version 76.
+- Plugin relay streams the reply to the browser instead of buffering it (limit 64 KB, was 32 KB); the web server answers discovery on a plain UDP socket and closes a WebSocket client that is silent for two minutes.
+- Go to percent in XTC books (from CrossInk): a long press of Confirm opens the percent slider; in a book without chapters a short Confirm press does too (`XtcReaderNavigation.h`, test `xtc_navigation`).
+- TTF/OTF fonts for books (X4 Pro and X4 Classic only, i.e. boards with PSRAM; `lib/EpdFont/TtfEpdFont`, `freeink-sdk/libs/font/FreeInkFont`): a folder `/.fonts/<Family>/` (or `/fonts/<Family>/`) with `.ttf`/`.otf`/`.ttc` and no `.cpfont` shows up as a font family that renders at any size (10-24 pt in the size menu). `Family-Bold`, `-Italic`, `-BoldItalic` files are used for those styles, otherwise bold/italic are synthesized (variable `wght`/`ital` axes, embolden, oblique). Glyphs are rasterized on demand with kerning (GPOS/`kern`) and `fi/fl/ff` ligatures and cached in PSRAM; files up to 4 MB are held in PSRAM, larger ones stream from the card. Boards without PSRAM (X3/X4) ignore `.ttf` files: convert them to `.cpfont` (`lib/EpdFont/scripts`). OpenType CFF outlines (`.otf` with PostScript outlines) are not enabled.
+- `/api/crypto` (hash, random, AES-CBC, RSA, PKCS#12 primitives; `api.crypto` on the plugin page) and `/api/book-key` (`api.bookKey`): a content key stored as `<book>.key`, wrapped to this device (AES-256-GCM under a key derived from an NVS secret, `lib/DeviceSecret`, `lib/Epub/BookKey`). The EPUB reader opens content-protected books through `ContentProtection` (decrypt-on-read, nothing decrypted is written to SD) and enforces the loan date against `lib/TrustedTime`, a monotonic clock floor kept in NVS and snapped by SNTP on every Wi-Fi join; a book with a due date and no trustworthy clock does not open. `/api/status.pluginCapabilities` now reports the same catalog capability list as CrossPoint.
+- New home theme **Grid** (Settings > Display > Theme): a bordered "continue reading" card (cover, title, author, total time, average session, percent, progress bar) above a 2×3 grid of rounded buttons (Browse Files, Search, Recent Books, Library, Apps, Settings), with touch hit-testing on the same geometry (`src/components/themes/grid`).
+- **Apps** screen (`src/activities/apps`): lists the installed built-in apps (Weather, Reading stats, Bookmarks, OPDS, File transfer) and, when Plugins is on, the SD plugins; a plugin opens its catalog or README. Plugins are still enabled in Settings > System > Plugins.
+- CrossPoint compatibility: the firmware identifies as family `crosspoint` (`inkmod` entries stay visible) and advertises `catalog.item_details`; catalog item Details page (`details_url`, `details_format`, `detail_author`, `repository`; bounded to 24 KiB, never blocks install/update; shown before install/update in version-tracked catalogs); `{md5}` in sidecars; event handler `toast` and `connect` (Wi-Fi is brought up at sleep entry only, battery ≥20 %, ≤10 s); plugin lists show the events each plugin receives; `reader.session` counts dwells of 2..1800 s and skips pages reached by reverse turns and jumps.
+- Firmware signatures are enforced when a key is configured (`src/network/FirmwareSigningKey.h`, all zeros = off, behaviour unchanged): OTA downloads `<asset>.sig` from the release and checks it against the staged image before flashing (and never streams straight into the partition), and the update-from-SD screen needs `<image>.sig` beside the file. The emergency trigger files stay unsigned on purpose, so recovery still works.
+- Plugin events (`lib/PluginEvents`, `src/util/PluginEventBus`): `reader.open`, `reader.exit`, `reader.session`, `book.downloaded` and `sleep.enter` are queued per plugin on the card and delivered through the `request`/`download` handlers of `device.json` when Wi-Fi is up (on connect and on the way into sleep). `/api/fetch` downloads in resumable segments.
+- Plugin catalogs on the device (`device.json`, CrossPoint-compatible): browse JSON catalogs with lists, notices and paging, Installed/Update badges by version, compatibility filtering, token and config files, single-file and multi-file bundle downloads staged as `.new`/`.part` and swapped in only when complete (`lib/PluginCatalog`, `src/activities/plugins/PluginCatalogActivity`). Also XML catalogs (WebDAV/Atom/any list with folders), sign-in (silent password and on-screen device code with QR, token re-issue after 401), the download sidecar and a `dest_dir` override from the config file.
+- Web plugins: page `/plugins` hosts each `plugin.js` with `api.relay/fetchToSd/writeFile/mkdir/registerAction`; endpoints `/api/plugins`, `/plugin`, `/api/relay`, `/api/fetch`, `/api/plugin-fs`, the job queue `/api/plugin-jobs*` (`lib/PluginJobs`) and the headless runner `/plugins-run`; `/api/status` reports `firmwareFamily`, `pluginApi` and `pluginCapabilities`. Everything answers 403 while Plugins is off.
+- `tools/plugin-hub`: a stdlib-only Python server and a static catalog generator for hosting your own plugins, a sample plugin and a ready catalog plugin for the card; structure and hosting guide in `docs/plugin-hub.md`.
+- Server certificate trust (Settings > System): trust on first use (default, pins the SHA-256 of the server certificate), strict (your CA in `/.inkmod/ca.pem`, chain and host name checked) or off; "Forget server certificates". Applies to KOReader sync and plugin traffic. Needs `-DKEEP_PEER_CERT` in wolfSSL for pinning (`lib/TlsPolicy`, `lib/TlsTrust`).
+- Background preparation of the next chapter: on the last two pages of a chapter, while the reader is idle, the next chapter's page cache is built so the chapter change shows no loading popup. Any button press cancels it at the next 1 KiB parser step. Skipped for FB2, for chapters with images (they need the frame buffer), and when the heap is not in the normal range; the unpacked chapter source stays cached either way.
+- SD-card plugins, first stage (CrossPoint-compatible layout; `docs/sd-plugins.md`): **Settings > System > Plugins** switches them on, **Home > Plugins** lists the plugin folders found under `/.inkmod/plugins`, `/.crosspoint/plugins`, `/plugins` and `/.plugins`, and a plugin's `README.md` opens as paged text. A card that already holds plugins is switched on once automatically.
+- Interface languages 中文, 日本語 and 한국어 (about 330 of the most visible strings each; the rest falls back to English). The built-in interface fonts have no ideographs, so CJK interface text takes its glyphs from the SD reading font (`.cpfont`): pick a font with CJK coverage to see it. Glyphs are read from the card once per screen and remembered until the font cache is cleared.
+- Ruby (furigana, pinyin): `<ruby>/<rt>` annotations are drawn at half size above their base text; `<rp>` and `<rtc>` are dropped. A group is never split across lines, the base is widened when the reading is wider, and lines with ruby get extra height. Chapter caches are rebuilt (section format 71).
+- CJK paragraphs now wrap without hyphenation: every ideograph, kana and fullwidth sign is its own break opportunity (Korean keeps word spaces), no space is inserted between CJK characters, and justification spreads the slack between characters. The layout engine has a native test suite (`test/parsed_text`).
+- OPDS 2.0 (JSON) catalogues: navigation, groups, publications with authors, description, ISBN/ASIN, series and acquisition links, next/previous pages and the search template. The format is detected from the first byte of the feed, so an OPDS 2.0 URL is added like any other catalogue; Atom feeds are unchanged.
+
+### Fixed
+- Bidi: mirrored brackets (rule L4) were chosen by levels that no longer matched the characters after the runs were reversed, so a bracket pair inside a Latin run of an RTL line could come out mirrored. Test `MiniBidi.BracketsInsideALatinRunStay…`.
+- Web server: one POST with a body that is not multipart/form-data (any other Content-Type) to an upload route (`/upload`, `/api/books/*`, `/api/fonts/upload`, `/api/plugin-fs`) dereferenced null in `server->upload()` and rebooted the reader. These routes now take multipart only (`MultipartRoute`) and answer 415 otherwise.
+- Settings > System > Plugins was not reachable on the device; it is now in the System list.
+- OTA update and release check verify the server name in the certificate again (the common-name check was switched off).
+- X4 Pro: the «last book cover» sleep screen falls back to the stored thumbnail when the full cover is missing or cannot be opened (from evoll `421fe32`).
+- The first start of a freshly flashed (or never confirmed) firmware no longer goes straight back to deep sleep when the reset looks like a plain USB power-on. Normal behaviour returns once the image has been confirmed healthy.
+
+### Changed
+- Dictionary lookup returns every article stored under the same headword (up to four, separated by a blank line) instead of the first one only (`lib/DictArticles`).
+- Cover fallbacks: when the OPF names no cover, the nav `landmarks` entry of type `cover` is used, then an image file named like a cover (`cover.jpg`, `front-cover.png`, ...).
+- NCX and nav parsing reuse scratch strings for URI decoding and path normalisation, so each TOC entry allocates less.
+- Firmware images can be signed with Ed25519 (`lib/FirmwareSignature`, Monocypher, `tools/sign_firmware.sh`). The library only verifies for now: no key is configured and the update screens do not call it yet, so updates behave as before.
+- The RTL text workspace is one shared buffer allocated on first use instead of two static ones.
+- A corrupt `.cpfont` glyph entry is drawn as missing instead of being read as pixels.
+- OPDS 1 downloads whose link names no format (no type, an empty one or `application/octet-stream`) get their format from the file name when the link is a direct acquisition.
+- CJK line breaking follows kinsoku rules: a closing bracket, stop, small kana or iteration mark never starts a line, an opening bracket never ends one, and a two-character dash or ellipsis is not split (`lib/CjkBreak`).
+- Opening an EPUB for the first time reads the ZIP central directory in 4 KB blocks instead of several small reads per entry (chapter size lookup, name lookup, path listing): on a 2000-entry book about 100 storage calls instead of about 6000.
+- The CSS rules cache is written in 1 KB blocks instead of a byte or two per call; the file format is unchanged, so existing caches stay valid.
+
+### Fixed
+- Wi-Fi screens cut long network names by width instead of bytes, so non-Latin names are no longer split mid-character.
+- A custom sleep image folder without usable images no longer hides the next one (`/.sleep`, then `/sleep`).
+
+### Changed
+- An activity no longer runs one more tick after a transition (such as sleep) has been requested.
+- A CSS rule is read from the cache in one call instead of about thirty, which shortens section builds.
+
+### Fixed (web)
+- Web uploads (files and fonts) now refuse with an error instead of crashing the device when the heap is too fragmented for the write buffer.
+- A font upload is written to a side file and replaces the font only after it is complete and valid; a dropped connection no longer leaves a truncated `.cpfont`.
+- Saving settings from the web portal reports an error when the SD card write fails.
+- Dictionary folders with long names (up to 255 characters) are found instead of being cut to a wrong path.
+- Deleting a folder from the web portal no longer risks a stack overflow on deeply nested trees.
+- EPUB: a guide reference with a fragment (`c1.xhtml#start`) opens its chapter; covers are also found through `<meta name="cover">` pointing at a page and through a manifest item whose id says cover.
+
+## [v1.1.9] - 2026-09-24
+
+### Fixed
+- Fixed X4 Pro wake-up by short Power press when sleep is assigned to long press.
+- Fixed conflict between reader page-turn swipe and the left-edge Back gesture.
+- Fixed Home button settings when opened from the reader.
+- Added reader-menu invocation by control/gesture and full-screen tap page turning.
+- Renamed the Russian chapter picker label from "Выберите главу" to "Оглавление".
+- Improved X4 Pro line-spacing fine adjustment with side buttons.
+- Fixed clipped USB connection message on X4 Pro.
+- Improved X4 Pro CW2017 battery handling and power management.
+- Improved stability when many custom fonts are installed.
+- Restored missing letters in Russian and Ukrainian touch keyboard layouts.
+
+## [v1.1.8] - 2026-09-15
+
+### Added
+- Added first-class **Xteink X4 Pro** support with a separate ESP32-S3/PSRAM build and release image.
+- Added GT911 touch integration, capacitive Home-key handling, warm/cold frontlight controls and the X4 Pro Control Center.
+- Added direct touch navigation across Home, settings, file browser, Wi-Fi, OPDS, reader menus, dictionaries, bookmarks, statistics, clipping selection and touch keyboard flows.
+- Added touch controls for the built-in easter egg, including on-screen confirmation and in-game controls.
+- Added persistent file-browser position: the last directory and selected item are restored on X3, X4 and X4 Pro.
+- Added short cover-based drag navigation for the Lyra Carousel on X4 Pro.
+
+### Changed
+- Release automation now builds and publishes separate `firmware-x3x4-*` and `firmware-x4pro-*` artifacts while keeping the legacy X3/X4 OTA alias.
+- X4 Pro touch input is handled locally by each UI where necessary instead of globally converting every swipe into a virtual hardware button.
+- Lyra Carousel touch navigation now begins on the visible book cover and uses a short horizontal drag, leaving Home menu tap targets unchanged.
+- File Browser now restores the previous directory and selected book after returning from reading, including across reboot.
+
+### Fixed
+- Fixed Recent Books list rows on X4 Pro not selecting reliably by touch because the hitbox height differed from the rendered two-line row height.
+- Fixed touch-only utility/dialog screens that still exposed actions only through physical-button input.
+- Fixed easter-egg entry and controls on touch-only X4 Pro use.
+
+## [v1.1.7] - 2026-09-03
+
+### Added
+- Quick Sync for KOReader progress synchronization.
+- OPDS catalog caching and improved book downloads.
+- Browser-side cache preparation for EPUB, FB2 and supported ZIP books.
+
+### Changed
+- Improved FB2 synchronization accuracy.
+- Improved EPUB/FB2 image and cover handling.
+- Improved X3/X4 theme compatibility and stability.
+- Restored fast page-by-page scrolling in the file browser.
+
+### Fixed
+- Fixed FB2 empty lines, subtitles, poetry and citation synchronization.
+- Fixed EPUB SVG covers and some blank image pages.
+- Fixed EPUB/EPUB.ZIP covers in home themes.
+- Fixed X3 cover generation issues in Lyra themes.
+- Fixed large interface font layout issues.
+- Fixed X3 header date placement across themes.
+- Fixed font ZIP uploads containing Windows-style paths.
+- Improved file handle cleanup and backup rotation.
+## [v1.1.6] - 2026-08-27
+
+### Added
+- Expanded FB2 semantic styling for annotations, epigraphs, headings, subtitles, quotations, poems, stanzas and text authors.
+- Added faithful `<emphasis>` handling in FB2.
+- Added Create Clipping as an assignable button / long-press action.
+- Added held-button repeat for ordinary menus and lists.
+- Added improved PNG/BMP handling in File Browser and sleep-screen selection.
+
+### Changed
+- Reworked large FB2/FB2.ZIP and EPUB processing around low-memory streaming.
+- Improved preservation of author formatting during streaming.
+- Improved verse wrapping and continuation indentation.
+- Improved logical chapter pagination across internally split spine fragments.
+- Dictionary article pagination was heavily optimized.
+- File extension setting renamed to “Show file extensions” with corrected switch semantics.
+
+### Fixed
+- Fixed rare split words such as `п ривет` caused by streaming boundaries.
+- Fixed logical chapter counters jumping from values such as `40/40` to `41/45`.
+- Fixed the first clipping-selection press sometimes being ignored.
+- Fixed PNG/BMP format reporting in File Browser.
+- Fixed custom sleep-screen selection changing the Lock Screen mode.
+- Removed the need to create a duplicate `/sleep.bmp` when setting a new custom image.
+
+## [v1.1.5] - 2026-08-20
+
+### Added
+- Added safe factory-calibration based display revision selection for Xteink X3/X4 without probing the E-Ink bus before display initialization.
+- Added full X3 UC8279 revision routing through the dedicated `XteinkX3Uc8279` hardware profile while keeping original X3 units on UC8253.
+- Added known X4 UC8179/UC8279 revision selection with fail-safe fallback to SSD1677 when factory calibration is missing or unknown.
+- Added emergency SD-card firmware recovery: place a compatible firmware image named `inkmod-recovery.bin` in the root of the SD card and restart the reader. Successful recovery renames it to `inkmod-recovery.applied.bin` to prevent a reflash loop.
+- Added a dedicated `RECOVERY.md` guide and versioned 1.1.5 release notes.
+
+### Changed
+- X4 EPD SPI now uses the manufacturer-compatible 10 MHz rate for additional signal margin across display revisions.
+- SSD1677-specific booster setup is emitted only when the selected X4 controller is actually SSD1677.
+- Unknown X3/X4 factory display identifiers now fail closed to the original controller for that device family instead of guessing another panel controller.
+
+### Fixed
+- Fixed Lyra Carousel reading-progress percentage clipping at the right edge.
+- Removed the unsafe early display-bus auto-probe path that could leave the reader apparently frozen before normal UI/button processing.
+
+### Recovery
+- Normal manual flashing remains at application offset `0x10000`.
+- Ordinary updates should not use `erase_flash`; preserving factory NVS keeps the display-revision calibration used by 1.1.5.
+- See `RECOVERY.md` for USB and SD-card recovery procedures.
+
+## [v1.1.4] - 2026-08-14
+
+### Added
+- Added a separate power-button **Quick Resume sleep** action that uses the same preserved-frame wake path as automatic timeout sleep, without changing the existing normal Sleep action.
+- Added a built-in **DejaVu Sans** reader family using DejaVu Sans 12 pt (regular, bold, italic and bold-italic) as a starter font while preserving existing SD-card font selections.
+- Added an on-device **Diagnostics** screen with firmware variant, device type, free heap, largest allocatable block, SD size, reset reason and crash-report status.
+- Added a low-overhead RTC breadcrumb trail for release builds. OOM-triggered restarts now persist the last reader actions into `/crash_report.txt` on the next boot, even when serial logging is compiled out.
+- Added **Book information** to the File Browser long-press menu with format, source size, cache state and a lightweight load-profile hint.
+- Added separate timeout sleep-screen profiles, including a dedicated custom overlay/image for automatic sleep while preserving Quick Resume behavior.
+
+### Release engineering
+- GitHub Releases now build the real `release` PlatformIO environment and publish `firmware-release-v<version>.bin`, matching what release OTA clients search for.
+- CI now builds both developer and release environments. Release validation rejects an accidentally re-enabled runtime EPUB pre-splitter and verifies the production artifact naming path.
+
+### Changed
+- Runtime EPUB opening now uses the proven direct EPUB → BMC → ERS pipeline. The optional pre-splitter remains in-tree for future work/tests but is no longer called from `ReaderActivity`, eliminating a release-only reboot observed before normal cache creation.
+- Large EPUB logical fragments are prepared on demand instead of synchronously paginating all sibling fragments before showing the first page.
+- Large FB2 indexing uses a compact pooled section index and safer ZIP extraction thresholds to reduce persistent heap pressure on ESP32-C3.
+- Lyra Carousel now keeps equal safe margins at both screen edges with seven icons, including the selection highlight.
+- Cover mode/filter stay visible in Sleep Screen settings instead of disappearing when another wallpaper mode is selected.
+
+### Fixed
+- Fixed the inverted master clock switch in the web settings page.
+- Sleep-screen mode, timeout screen, cover fit and cover filter are now all available in the device settings.
+- Reader screen margins now start at 5; the legacy value 1 is no longer offered.
+- Reading-statistics cards now use rounded corners, and the no-clock device summary has a concise title.
+- Removed the redundant `Back — НЕТ / OK — ДА` text from the easter-egg prompt because the actual button hints are already rendered at the bottom.
+- Removed the experimental idle light-sleep path that could freeze X4 after USB disconnect while keeping safe low-frequency idle behavior.
+
+
+### Added
+- Added a single reader-work controller for EPUB, FB2 and FB2.ZIP chapter preparation. Navigation invalidates obsolete work at bounded ZIP/XML/image checkpoints without starting a second parser, SD reader, or background worker.
+- Added adaptive `normal`, `safe`, and `survival` layout modes. Under memory pressure the reader progressively releases the SD font and omits optional CSS, images, hyphenation, and reading effects before reporting an out-of-memory error.
+
+### Changed
+- Rapid page and chapter input is now coalesced while an uncached section is being prepared. Only the final requested position is rendered, and accumulated page turns carry across internal chapter fragments.
+- Large section page indexes are spooled as linked fixed records inside the temporary section cache instead of growing a RAM vector with every generated page or opening another SD file.
+- The reader prepares only the requested virtual fragment. It no longer pre-paginates every sibling fragment of the same logical chapter while holding the render lock.
+- Sleep-screen preparation is now cache-only. It never starts an invisible chapter rebuild while the device is trying to sleep.
+- Lazy FB2 image decoding now uses a fixed 4 KiB write buffer and removes truncated output after cancellation, read failure, or SD write failure.
+
+### Fixed
+- Cancelled section builds are written to temporary files and discarded before promotion, so rapid navigation cannot replace a valid cache with a partial one.
+- Section cache promotion preserves the previous file as a short-lived backup and restores it after an interrupted replacement.
+- Safe and survival layouts use separate cache names and are reused by the reader, logical chapter counter, and sleep-page renderer without overwriting full-quality caches.
+
+## [v1.1.3] - 2026-08-10
+
+### Added
+- Added a dedicated browser-side EPUB Kit page with X3/X4 profiles, Quick/Full/Custom presets, metadata editing, the original 20-stage optimization flow, and direct upload of the finished EPUB to a selected device folder.
+- EPUB Kit now prepares 4-level Floyd–Steinberg images, baseline JPEGs, Light Novel spreads, XHTML/CSS/metadata cleanup, font removal, generated covers, repaired references, and regenerated NCX tables of contents in the browser.
+- EPUB Kit repackages books with lazy ZIP reads and zero-copy reuse of unchanged compressed entries, keeping only the current image or document in working memory for phone-friendly processing.
+- Reader dictionaries with word selection, an article popup, multi-page definitions, and switching between installed dictionaries.
+- Browser-side dictionary preparation and upload from folders or ZIP archives. StarDict, DSL, TSV, CSV, and TXT sources are converted into a compact on-device binary-search index before transfer.
+- StarDict synonym tables (`.syn`) can now be prepared in the browser, allowing inflected word forms to resolve directly to their canonical dictionary articles without on-device morphology processing.
+- System settings now include a protected "Boot other firmware slot" action.
+  It validates the inactive OTA image before confirmation and then restarts
+  into it, making rollback possible without exposing a blind slot toggle.
+- Sleep-screen cover mode now includes a black background for letterboxed cover art on dark-bezel readers.
+- Internal reader-core milestone: EPUB metadata and chapter information now
+  have a format-neutral, fixed-buffer catalog adapter. This does not change the
+  current reading screen yet; it prepares the unified EPUB/FB2 reader without
+  adding a second full-book memory copy.
+- FB2 now has the same internal catalog boundary, reusing its on-SD section
+  index instead of scanning or rendering the source again for library data.
+- Internal reader-core now includes a format-neutral `ReaderSession` with an
+  eight-entry fixed page-anchor history; it is not yet the active reader UI.
+- Reader preparation now has a fixed-capacity internal job queue for explicit
+  extract, index, pagination, image, and cache-cleanup phases.
+- EPUB and FB2 now share an internal byte-based progress estimator that stays
+  independent of the selected font and page layout.
+- New reader cache namespaces now have a stable internal book identity derived
+  from the source path and signature, ready for versioned cache migration.
+- Added a format-neutral bounded render-command executor, separating page
+  layout from the future e-ink display adapter.
+- EPUB chapter preparation for the new reader now streams one spine entry into
+  a versioned, atomically-written SD cache source instead of buffering HTML in RAM.
+- The internal reader state now has a compact versioned binary record with a
+  CRC check. It preserves the selected page-counter mode and logical position
+  safely across a future sleep/wake integration.
+
+### Documentation
+- Added a coursework-ready architecture summary with module mapping, embedded
+  memory constraints, verification procedure, and staged migration limits.
+
+### Changed
+- Reading-statistics time-of-day and weekday summaries now show exact text durations instead of relative bars.
+- Large StarDict dictionaries are now decompressed, indexed, and sorted in bounded chunks backed by browser storage. ZIP entries are streamed directly as well, keeping preparation usable on phones instead of retaining the complete archive, article data, and synonym index in RAM.
+
+### Fixed
+- Removed four embedded NUL bytes from the home-screen carousel cache-key source. The separators and cache-key behaviour are unchanged, but the C++ compiler no longer reports `null character(s) preserved in literal`.
+- Idle operation no longer starts a battery ADC conversion on every main-loop pass or polls the X3 fuel gauge over I2C dozens of times per second. Release builds also stop emitting unchanged heap telemetry every ten seconds, while error and out-of-memory diagnostics remain available.
+- `Loading chapter` is shown over the last visible reader page again. Parser callbacks no longer redisplay the framebuffer while it is being reused for illustration conversion, preventing both the white-background regression and temporary decoder pixels behind the popup.
+- EPUB spine items above the safe pagination size are now split into bounded logical fragments from about 300 KB instead of only after 1 MB. Discovery metadata is released before extraction, ZIP entry names are staged on SD instead of retained as an unbounded RAM list, existing v48 EPUB page caches remain reusable, and generated fragments retain the original `<body>` styling while still appearing as one chapter.
+- Large FB2 sections now place virtual text and illustration-slice boundaries between complete text blocks instead of inside a paragraph, preventing torn sentences and artificial blank space at internal chapter joins.
+- Dictionary articles now expose dictionary cycling on the visible confirm-button slot; side Up/Down shortcuts remain available, while Left/Right continue paging through the article.
+- EPUB/FB2 books now increment `Completed books` when the real End-of-Book screen is reached even if the optional 99% prompt was skipped. XTC/XTCH books now persist the same one-time completion marker and are included in per-book home statistics.
+- Dictionary lookup now searches the complete highlighted word before any line-break spelling variant, so `ку-да` and `реше-ний` can no longer resolve to the valid but unrelated short entries `ку` and `реш`.
+- Dictionary articles now use the active book font directly and prewarm only the visible article page. Their typeface and size match the reader, while comprehensive SD fonts load Wiktionary IPA characters before drawing instead of showing replacement diamonds.
+- Two-bit XTC/XTCH pages now pause briefly after their grayscale LUT pass so rapid page turning cannot start the next BW refresh while the panel is still settling; one-bit XTC timing is unchanged.
+- Dictionary selection now excludes surrounding punctuation, treats visible line-break fragments as one word, skips the second fragment during horizontal navigation, and tries both joined and retained-hyphen spellings during lookup.
+- Dictionary articles now follow the reader's text-size range, leave the unused confirm-button slot blank, and vertically center the page counter above the button row.
+- Dictionary word selection now prewarms the active reader font before redrawing the page, preventing custom SD-card fonts such as Bookerly from showing every book glyph as a replacement diamond.
+- Cached FB2/FB2.ZIP books can now rebuild a chapter after a font or layout change even if the prepared source copy was evicted: the cache keeps the original book path and repairs the prepared source in place without clearing progress, bookmarks, statistics, or already-built chapter caches.
+- X4 Sunlight Fading Fix now explicitly powers down the SSD1677 analog/clock rails after a fast refresh when enabled, without adding an extra white/black image flash; X3 display drivers are unchanged.
+- Controls settings validation now accepts the six front-button actions actually exposed by the UI instead of logging a false submenu-count error.
+- Opening consecutive chapters in an illustrated FB2 no longer rebuilds a
+  full in-memory cross-reference table for every page, avoiding heap
+  fragmentation and restarts on ESP32-C3.
+- Reading-statistics buckets with no reading time now display `0 min` instead
+  of `< 1 min`; only a real non-zero sub-minute session uses the latter label.
+- Opening a cached, illustration-heavy FB2 no longer loads the complete book-wide image index into RAM for every chapter; only the current chapter's images are retained while it is rendered.
+- Prevented EPUB opening from restarting the device when an unusually large package manifest is inspected after other books: optional streaming preparation now safely skips that non-essential pass.
+- Web uploads now optimise every oversized embedded FB2 illustration, not only the cover image.
+- When a chapter must skip images because of low memory, the reader now stays
+  on the text page instead of replacing it with a blocking warning screen.
+- Backspace in the on-screen keyboard now removes a complete UTF-8 character.
+  Russian and Ukrainian letters no longer leave an unknown-symbol marker in
+  search fields; cursor-mode left/right movement also stays on character edges.
+- Opening an EPUB, TXT, or XTC now handles a reader-object allocation failure
+  as a recoverable error instead of relying on throwing `new` on ESP32-C3.
+- FB2 preparation now reports 100% only after its final metadata and cache
+  maintenance work completes.
+- Looking up FB2 chapter sizes no longer allocates temporary strings while
+  scanning the on-SD section index, reducing heap fragmentation on large books.
+- FB2 virtual chapters split around illustrations now retain balanced
+  paragraphs, quotes, poems, and tables. Illustration-heavy books no longer
+  stop at a later "mismatched tag" XML error after initially opening normally.
+- Glyph drawing now clips at the logical display edge before entering the
+  framebuffer path. Malformed or intentionally offset typography can no longer
+  flood the serial log with out-of-range pixel writes.
+- Valid image-only FB2 sections no longer appear as metadata-cache errors while
+  their reading-progress estimate is being assembled.
+- Oversized EPUB spine files can now use the existing SD-streaming splitter at
+  safe X4 heap levels instead of being rejected before preparation.
+- FB2 collections with named main bodies now retain their real book and chapter
+  titles in the table of contents instead of falling back to `Section N`.
+
+## [v1.1.2] - 2026-08-07
+
+### Changed
+- The accessibility setting **Increase interface text** now also enlarges search fields, the on-screen keyboard, and keyboard help text, while keeping the reader's book font independent.
+- EPUB layout now respects semantic book containers such as chapter title groups and figures, and honours image `max-width` rules. This preserves more of publishers' printed-edition composition, including half-page illustrations.
+- EPUBs that use standard `figleft` and `figright` image classes now wrap the following text around drop capitals and side illustrations.
+- Drop-cap illustrations now align with the first text line instead of retaining a paragraph-sized gap above it.
+- Float reservations now continue past figure captions, so following text no longer draws through right-aligned illustrations.
+- EPUB poetry and typographic compositions now preserve per-line inline offsets, including the curved layout of "Mouse's Tale".
+- The reader now uses the supplied Bookerly and Roboto SD-card font pack. Bookerly is the default, and the size menu shows every size present in the selected family.
+- Rebranded the firmware and web portal as inkMOD, with a new boot, sleep-screen, and web logo.
+- EPUB and FB2 readers no longer pre-index the next chapter while you are still reading, avoiding unexpected work when leaving image-heavy books.
+- Plain `.zip` files are now identified by their contents when opened, so EPUB and FB2 books no longer need `.epub`, `.fb2`, or `.fb2.zip` in their filename.
+- Large EPUB, FB2, and image uploads now enable browser-side optimization by default, keeping image preparation off the reader.
+- The on-screen keyboard now stays clear of the side buttons and supports English, Russian, and Ukrainian layouts.
+- Moving the reader clock to the bottom no longer reserves an empty row at the top of the page.
+
+### Fixed
+- List rows now derive their height from the active interface font, preventing large-text labels from touching neighbouring rows. The current-theme marker is a compact reserved pill instead of covering the selected title.
+- FB2 loading now keeps its progress bar moving while the on-demand chapter map is built, and no longer probes every not-yet-created virtual chapter file.
+- EPUBs that use `div img { max-width:100% }` now display chapter illustrations at full text width instead of their small source thumbnail size.
+- Opening several books before an illustration-heavy FB2 no longer carries the previous reader font cache into the next image decode; FB2 chapters now split after two images to keep decoding within the X4 memory budget.
+- EPUB line-level poem offsets now reserve a readable line width instead of pushing text into a narrow column at the screen edge.
+- The reader's "By book" page counter now remains selected after waking from sleep.
+- JPEG illustrations now remain available at safe memory levels where the previous PNG-sized memory reserve unnecessarily skipped them.
+- Very large FB2 files now write their chapter slices directly to the SD-card index instead of allocating a second in-memory chapter list during import, preventing X4 restarts while indexing illustration-heavy books.
+- Search results no longer incorrectly label the first result as the selected value.
+- Changing the reader clock between top and bottom now repaginates the chapter, preventing text from overlapping the status bar.
+- File search now ignores Russian and Ukrainian letter case and starts its keyboard in the interface language.
+- Reset Reader Data now clears every `.inkmod` entry except `wifi.json` and `inkmod-settings.json`.
+- OTA releases now embed their GitHub release tags to prevent repetitive update prompts.
+- The search keyboard now reserves an additional gutter around the X3/X4 side-button column and wraps its help text inside that safe area; Lyra's selected-value pill has a visible right inset.
+- Large keyboard keys no longer draw their small alternate symbols over the main glyph. Empty subtitle callbacks no longer turn simple system lists into tall two-line rows.
+
+### Removed
+- Removed the online font-management screen and downloaded-font size-range setting.
+
 ## [v1.1.10] - 2026-10-22
 
 ### Added

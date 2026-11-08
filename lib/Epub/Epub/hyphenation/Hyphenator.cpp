@@ -1,5 +1,6 @@
 #include "Hyphenator.h"
 
+#include <CjkBreak.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -257,6 +258,10 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   std::vector<Hyphenator::BreakInfo> breaks;
   breaks.reserve(indexes.size());
   for (const size_t idx : indexes) {
+    // Kinsoku: no break before a closing bracket or stop, none after an opening bracket.
+    if (idx > 0 && idx < cps.size() && !cjk_break::breakAllowed(cps[idx - 1].value, cps[idx].value)) {
+      continue;
+    }
     // CJK characters can break without inserting a visible hyphen.
     // Check the codepoint at the break position: if it's a CJK character,
     // no hyphen is needed since CJK scripts don't use hyphenation.

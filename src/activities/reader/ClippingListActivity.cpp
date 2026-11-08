@@ -11,6 +11,7 @@
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 constexpr int ROW_HEIGHT = 78;
@@ -136,6 +137,19 @@ void ClippingListActivity::loop() {
   const int perPage = pageItems();
 
   if (mappedInput.hasTouch()) {
+    {
+      // Swipe a row to the left: ask to delete that clipping.
+      const auto& swipeMetrics = UITheme::getInstance().getMetrics();
+      const int swipeTop = swipeMetrics.topPadding + swipeMetrics.headerHeight + LIST_GAP;
+      const int row = TouchListNavigation::swipeDeleteRow(
+          mappedInput, selectedIndex_, total, Rect{0, swipeTop, renderer.getScreenWidth(), perPage * ROW_HEIGHT},
+          ROW_HEIGHT);
+      if (row >= 0) {
+        selectedIndex_ = row;
+        openDeleteMenu(false);
+        return;
+      }
+    }
     const auto swipe = mappedInput.wasSwipe();
     if (swipe == MappedInputManager::SwipeDir::Up) {
       selectedIndex_ = ButtonNavigator::nextPageIndex(selectedIndex_, total, perPage);

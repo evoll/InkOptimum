@@ -9,6 +9,8 @@
 
 #include <algorithm>
 
+#include "network/FirmwareSigning.h"
+
 #include "MappedInputManager.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -49,6 +51,8 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
     return;
   }
   firmwarePath = path->path;
+  untaggedAccepted = false;
+  needsUntaggedConsent = false;
   LOG_DBG("FW", "Selected: %s", firmwarePath.c_str());
 
   {
@@ -58,6 +62,10 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
   requestUpdateAndWait();
 
   if (!validateFirmware()) {
+    if (needsUntaggedConsent) {
+      promptUntaggedWarning();
+      return;
+    }
     RenderLock lock(*this);
     state = State::FAILED;
     requestUpdate();
@@ -65,6 +73,42 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
   }
 
   promptConfirmation();
+}
+
+// Image has no board marker (stock / third-party build) on a chip shared by X4 Pro and X4 Classic.
+// Flashing it is possible, but only after an explicit "at your own risk" acknowledgement.
+void SdFirmwareUpdateActivity::promptUntaggedWarning() {
+  {
+    RenderLock lock(*this);
+    state = State::CONFIRMING;
+  }
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_FIRMWARE_UNTAGGED_TITLE),
+                                             tr(STR_FIRMWARE_UNTAGGED_BODY)),
+      [this](const ActivityResult& result) {
+        if (result.isCancelled) {
+          if (recoveryMode) {
+            launchPicker();
+            return;
+          }
+          finish();
+          return;
+        }
+        untaggedAccepted = true;
+        needsUntaggedConsent = false;
+        {
+          RenderLock lock(*this);
+          state = State::VALIDATING;
+        }
+        requestUpdateAndWait();
+        if (!validateFirmware()) {
+          RenderLock lock(*this);
+          state = State::FAILED;
+          requestUpdate();
+          return;
+        }
+        promptConfirmation();
+      });
 }
 
 bool SdFirmwareUpdateActivity::validateFirmware() {
@@ -98,13 +142,17 @@ bool SdFirmwareUpdateActivity::validateFirmware() {
   // trailer) that the shared firmware-flasher applies right before raw-writing otadata. This
   // catches truncated or corrupted .bin files at confirmation time, before the user ever sees
   // the "Updating…" progress bar.
-  const auto vr = firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit);
+  const auto vr = firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit, untaggedAccepted);
   if (vr != firmware_flash::Result::OK) {
     LOG_ERR("FW", "image validation failed: %s", firmware_flash::resultName(vr));
     if (vr == firmware_flash::Result::TOO_LARGE) {
       errorMessage = tr(STR_FIRMWARE_TOO_LARGE);
     } else if (vr == firmware_flash::Result::TOO_SMALL) {
       errorMessage = tr(STR_FIRMWARE_TOO_SMALL);
+    } else if (vr == firmware_flash::Result::UNTAGGED_IMAGE) {
+      needsUntaggedConsent = true;
+    } else if (vr == firmware_flash::Result::INCOMPATIBLE_BOARD || vr == firmware_flash::Result::INCOMPATIBLE_CHIP) {
+      errorMessage = tr(STR_FIRMWARE_WRONG_BOARD);
     } else {
       errorMessage = tr(STR_INVALID_FIRMWARE);
     }
@@ -166,7 +214,19 @@ void SdFirmwareUpdateActivity::performUpdate() {
   // pre-confirmation pass. The alreadyValidated parameter on the API stays
   // for callers (e.g. an OTA staging path) where the same byte stream was
   // just hashed and there's no removable-media gap.
-  const auto result = firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this);
+  // With a signing key configured the image needs "<image>.sig" beside it (made by tools/sign_firmware.sh).
+  if (firmware_signing::required() &&
+      firmware_signing::verifyFile(firmwarePath.c_str(), (firmwarePath + ".sig").c_str()) !=
+          firmware_signing::Verdict::Valid) {
+    LOG_ERR("FW", "SD firmware refused: signature missing or invalid");
+    errorMessage = tr(STR_FIRMWARE_SIGNATURE_BAD);
+    RenderLock lock(*this);
+    state = State::FAILED;
+    requestUpdate();
+    return;
+  }
+
+  const auto result = firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this, /*alreadyValidated=*/false, untaggedAccepted);
   if (result != firmware_flash::Result::OK) {
     LOG_ERR("FW", "flash failed: %s", firmware_flash::resultName(result));
     errorMessage = tr(STR_FIRMWARE_WRITE_FAILED);

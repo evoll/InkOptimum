@@ -1,6 +1,8 @@
 #pragma once
 #include <HalStorage.h>
 
+#include "ZipCentralDirWindow.h"
+
 #include <deque>
 #include <string>
 #include <string_view>
@@ -98,43 +100,14 @@ class ZipFile {
       return false;
     }
 
-    file.seek(zipDetails.centralDirOffset);
-
-    constexpr size_t centralHeaderSize = 46;
-    uint8_t header[centralHeaderSize];
-    char itemName[256];
-
-    auto readLe16 = [](const uint8_t* p) -> uint16_t {
-      return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
-    };
-    auto readLe32 = [](const uint8_t* p) -> uint32_t {
-      return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-             (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-    };
-
-    // Central-directory entries have a fixed 46-byte prefix. Read that prefix
-    // once instead of issuing several tiny read()/seekCur() operations for the
-    // signature and length fields. EPUB discovery can touch hundreds of ZIP
-    // entries, so this substantially reduces SD/SPI transactions without
-    // changing enumeration semantics or retaining extra heap memory.
-    while (file.read(header, sizeof(header)) == static_cast<int>(sizeof(header))) {
-      if (readLe32(header) != 0x02014b50) {
-        break;
-      }
-
-      const uint16_t nameLen = readLe16(header + 28);
-      const uint16_t extraLen = readLe16(header + 30);
-      const uint16_t commentLen = readLe16(header + 32);
-
-      if (nameLen < sizeof(itemName)) {
-        if (file.read(itemName, nameLen) != static_cast<int>(nameLen)) break;
-        itemName[nameLen] = '\0';
-        callback(std::string_view{itemName, nameLen});
-      } else if (!file.seekCur(nameLen)) {
-        break;
-      }
-
-      if (!file.seekCur(static_cast<int64_t>(extraLen) + commentLen)) break;
+    // Read in blocks and parsed from RAM (see ZipCentralDirWindow.h): EPUB discovery can touch thousands
+    // of entries, and one storage call per field was the cost.
+    zip_cd::Buffer buffer;
+    zip_cd::Window<HalFile> window(file, buffer.data(), buffer.size());
+    window.begin(zipDetails.centralDirOffset);
+    zip_cd::Entry entry;
+    while (window.next(entry)) {
+      if (entry.name) callback(std::string_view{entry.name, entry.nameLen});
     }
 
     if (!wasOpen) {

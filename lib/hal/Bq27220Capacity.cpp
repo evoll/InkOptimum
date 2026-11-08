@@ -4,6 +4,7 @@
 namespace {
 constexpr uint8_t CONTROL = 0x00;
 constexpr uint8_t OPERATION_STATUS = 0x3A;
+constexpr uint8_t FULL_CHARGE_CAPACITY = 0x12;
 constexpr uint8_t DESIGN_CAPACITY = 0x3C;
 constexpr uint8_t MAC_CONTROL = 0x3E;
 constexpr uint8_t MAC_DATA = 0x40;
@@ -29,6 +30,9 @@ constexpr uint32_t FLAG_GIVE_UP_MS = 5000;
 
 uint8_t security(const uint16_t status) { return (status >> 1) & 0b11; }
 uint16_t swapBytes(const uint16_t word) { return static_cast<uint16_t>((word << 8) | (word >> 8)); }
+// A learning cycle lowers Learned Full Charge Capacity by at most 256 mAh (TRM 1.1.3), so a value learned
+// against TI's 3000 mAh default stays far above a small cell and has to be replaced as well.
+bool tooHigh(const uint16_t learned, const uint16_t mah) { return learned > mah + mah / 4; }
 bool due(const uint32_t nowMs, const uint32_t atMs) { return static_cast<int32_t>(nowMs - atMs) >= 0; }
 }  // namespace
 
@@ -44,15 +48,22 @@ void Bq27220Capacity::tick(Bus& bus, const uint32_t nowMs) {
       }
       inConfig = status & CFGUPDATE;
       if (dc == target) {
-        wrote = true;
-        if (inConfig || security(status) != SEC_SEALED) return finish(bus, nowMs, true);
-        outcome = Result::NotNeeded;
+        if (inConfig || security(status) != SEC_SEALED) {
+          wrote = true;  // an earlier load was cut short
+          return finish(bus, nowMs, true);
+        }
+        // Design Capacity is right; the gauge may still carry a Learned FCC from the 3000 mAh default.
+        uint16_t fcc = 0;
+        if (!bus.read(FULL_CHARGE_CAPACITY, fcc) || !tooHigh(fcc, target)) {
+          outcome = Result::NotNeeded;
+          return;
+        }
       } else if (dc != TI_DEFAULT_MAH) {
         outcome = Result::NotNeeded;
-      } else {
-        key = security(status) == SEC_SEALED ? 0 : security(status) == SEC_FULL_ACCESS ? 4 : 2;
-        step = Step::Keys;
+        return;
       }
+      key = security(status) == SEC_SEALED ? 0 : security(status) == SEC_FULL_ACCESS ? 4 : 2;
+      step = Step::Keys;
       return;
 
     case Step::Keys:
@@ -91,7 +102,8 @@ bool Bq27220Capacity::writeParam(Bus& bus, const uint16_t address) {
   if (!bus.write(MAC_CONTROL, address)) return false;
   bus.pause(SELECT_SETTLE_MS);
   if (!bus.read(MAC_DATA, old) || !bus.read(MAC_DATA_SUM, sumAndLength)) return false;
-  if (swapBytes(old) != TI_DEFAULT_MAH) return true;
+  const uint16_t value = swapBytes(old);
+  if (address == DM_LEARNED_FULL_CHARGE_CAPACITY ? !tooHigh(value, target) : value != TI_DEFAULT_MAH) return true;
 
   wrote = true;
   const uint8_t sum =

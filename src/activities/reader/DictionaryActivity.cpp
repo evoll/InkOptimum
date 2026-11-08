@@ -13,7 +13,9 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "DictPhrase.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
 #include "components/UITheme.h"
@@ -306,6 +308,48 @@ bool DictionaryActivity::buildSelectedLookupWords() {
   return true;
 }
 
+// Fills words[0] with the selected word and the following plain words (same line, then the visually
+// adjacent next line) so multi-word entries can be tried. Hyphen-split selections are not extended.
+bool DictionaryActivity::collectFollowingWords(std::vector<std::string>& words) const {
+  words.clear();
+  SelectionSpan span;
+  if (!resolveSelectionSpan(span) || span.count != 1 || span.fragments[0].trailingHyphen) return false;
+
+  auto fragmentText = [this](const SelectionFragment& fragment) {
+    const auto& line = static_cast<const PageLine&>(*page_->elements[fragment.location.elementIndex]);
+    const auto& word = line.getBlock()->getWords()[fragment.location.wordIndex];
+    return word.substr(fragment.startByte, fragment.endByte - fragment.startByte);
+  };
+
+  // Punctuation after a word ("end.", "yes,") closes the phrase: never look across it.
+  auto closesPhrase = [this](const SelectionFragment& fragment) {
+    const auto& line = static_cast<const PageLine&>(*page_->elements[fragment.location.elementIndex]);
+    return fragment.endByte < line.getBlock()->getWords()[fragment.location.wordIndex].size();
+  };
+
+  if (closesPhrase(span.fragments[0])) return false;
+  words.push_back(fragmentText(span.fragments[0]));
+  WordLocation cursor = span.fragments[0].location;
+  while (words.size() < dict_phrase::MAX_PHRASE_WORDS) {
+    const auto& line = static_cast<const PageLine&>(*page_->elements[cursor.elementIndex]);
+    WordLocation next{cursor.elementIndex, cursor.wordIndex + 1};
+    if (next.wordIndex >= line.getBlock()->getWords().size()) {
+      const int nextLine = adjacentLineElement(cursor.elementIndex, 1);
+      if (nextLine < 0 || !linesAreVisuallyAdjacent(cursor.elementIndex, nextLine) ||
+          !firstSelectableWord(nextLine, next)) {
+        break;
+      }
+    }
+    SelectionFragment fragment;
+    // A following token that is not a plain word (punctuation, image) ends the phrase.
+    if (!getSelectionFragment(next, fragment) || fragment.trailingHyphen) break;
+    words.push_back(fragmentText(fragment));
+    if (closesPhrase(fragment)) break;
+    cursor = next;
+  }
+  return words.size() >= 2;
+}
+
 bool DictionaryActivity::selectFirstWord() {
   if (!page_) return false;
 
@@ -440,8 +484,20 @@ bool DictionaryActivity::loadDictionaryArticle(const uint8_t dictionaryIndex) {
   article_[0] = '\0';
   matchedWord_[0] = '\0';
   const uint32_t tLookup = millis();
-  bool found = dictionaries_.lookup(dictionaryIndex, selectedLookupWord_, matchedWord_, sizeof(matchedWord_), article_,
-                                    sizeof(article_));
+  // A phrase entry ("ice cream", "give up") is more specific than the first word's own article.
+  bool found = false;
+  std::vector<std::string> followingWords;
+  if (collectFollowingWords(followingWords)) {
+    for (const auto& phrase : dict_phrase::buildCandidates(followingWords)) {
+      found = dictionaries_.lookup(dictionaryIndex, phrase.c_str(), matchedWord_, sizeof(matchedWord_), article_,
+                                   sizeof(article_));
+      if (found) break;
+    }
+  }
+  if (!found) {
+    found = dictionaries_.lookup(dictionaryIndex, selectedLookupWord_, matchedWord_, sizeof(matchedWord_), article_,
+                                 sizeof(article_));
+  }
   uint32_t lookupMs = millis() - tLookup;
   if (!found && alternateLookupWord_[0] != '\0') {
     const uint32_t tAlt = millis();

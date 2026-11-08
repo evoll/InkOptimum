@@ -16,6 +16,14 @@ struct Clipping {
   char text[513] = {};
 };
 
+struct ClippedBookEntry {
+  std::string title;
+  std::string author;
+  std::string path;
+  std::string bookType;
+  uint16_t count = 0;
+};
+
 class ClippingStore {
  public:
   static constexpr size_t MAX_CLIPPINGS = 256;
@@ -29,6 +37,9 @@ class ClippingStore {
   // range as a user toggle and without appending it to the Kindle export.
   bool upsertFromSync(const Clipping& clipping);
   void clearAll();
+
+  // Scans /.inkmod/clippings/ and lists every book that has clippings (header only, no record parsing).
+  static bool getAllClippedBooks(std::vector<ClippedBookEntry>& out);
 
   const std::vector<Clipping>& getClippings() const { return clippings_; }
   bool empty() const { return clippings_.empty(); }

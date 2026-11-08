@@ -14,6 +14,11 @@ OVERRIDES = f"""
 #endif
 #undef FP_MAX_BITS
 #define FP_MAX_BITS 8192
+/* Arduino-wolfSSL always defines DEBUG_WOLFSSL, but SecureClient turns the trace on only in
+   FREEINK_WOLFSSL_DEBUG builds. Drop it otherwise so the trace code and strings are not linked. */
+#ifndef FREEINK_WOLFSSL_DEBUG
+#undef DEBUG_WOLFSSL
+#endif
 """
 
 

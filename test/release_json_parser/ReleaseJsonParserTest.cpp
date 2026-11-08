@@ -819,6 +819,74 @@ void testChunkedRealisticEveryBoundary() {
 
 // ============================================================================
 
+static void testReleaseNameAndNotes() {
+  ReleaseJsonParser parser;
+  const char* json =
+      R"({"tag_name":"v9.9.9","name":"Big release","body":"## What's new\n- one\n- two","assets":[{"name":"firmware.bin","browser_download_url":"https://x/y","size":5}]})";
+  parser.feed(json, strlen(json));
+  ASSERT_TRUE(parser.foundTag());
+  ASSERT_TRUE(parser.foundFirmware());
+  ASSERT_STREQ(parser.getReleaseName(), "Big release");
+  ASSERT_STREQ(parser.getReleaseNotes(), "## What's new\n- one\n- two");
+  PASS();
+}
+
+static void testLongNotesAreCutButOtherFieldsSurvive() {
+  ReleaseJsonParser parser;
+  std::string json = R"({"tag_name":"v1.2.3","body":")";
+  json += std::string(3000, 'a');
+  json += R"(","assets":[{"name":"firmware.bin","browser_download_url":"https://x/y","size":7}]})";
+  parser.feed(json.data(), json.size());
+  ASSERT_TRUE(parser.foundTag());
+  ASSERT_TRUE(parser.foundFirmware());
+  ASSERT_EQ(strlen(parser.getReleaseNotes()) > 100, true);
+  ASSERT_EQ(strlen(parser.getReleaseNotes()) < 480, true);
+  ASSERT_EQ(parser.getFirmwareSize(), static_cast<size_t>(7));
+  PASS();
+}
+
+static void testOverlongTagStillIgnored() {
+  ReleaseJsonParser parser;
+  std::string json = R"({"tag_name":")" + std::string(700, 'v') + R"("})";
+  parser.feed(json.data(), json.size());
+  ASSERT_EQ(parser.foundTag(), false);
+  PASS();
+}
+
+static void testAssetNameDoesNotLeakIntoReleaseName() {
+  ReleaseJsonParser parser;
+  const char* json = R"({"tag_name":"v1","assets":[{"name":"firmware.bin","browser_download_url":"u","size":1}]})";
+  parser.feed(json, strlen(json));
+  ASSERT_STREQ(parser.getReleaseName(), "");
+  ASSERT_STREQ(parser.getReleaseNotes(), "");
+  PASS();
+}
+
+static bool matchesTaggedBuild(const char* name) { return strcmp(name, "inkmod-x3x4.bin") == 0; }
+
+static void testSignatureAssetIsPairedWithTheChosenFirmware() {
+  // The .sig of another build comes first; only "<chosen asset>.sig" counts, in any order.
+  ReleaseJsonParser parser(matchesTaggedBuild);
+  const char* json =
+      R"({"tag_name":"v1","assets":[)"
+      R"({"name":"inkmod-s3.bin.sig","browser_download_url":"https://h/s3.sig","size":64},)"
+      R"({"name":"inkmod-x3x4.bin.sig","browser_download_url":"https://h/x.sig","size":64},)"
+      R"({"name":"inkmod-x3x4.bin","browser_download_url":"https://h/x.bin","size":9,"digest":"sha256:ab"}]})";
+  parser.feed(json, strlen(json));
+  ASSERT_TRUE(parser.foundFirmware());
+  ASSERT_STREQ(parser.getFirmwareUrl(), "https://h/x.bin");
+  ASSERT_STREQ(parser.getFirmwareSignatureUrl(), "https://h/x.sig");
+  PASS();
+}
+
+static void testNoSignatureAssetMeansEmptyUrl() {
+  ReleaseJsonParser parser;
+  const char* json = R"({"tag_name":"v1","assets":[{"name":"firmware.bin","browser_download_url":"u","size":1}]})";
+  parser.feed(json, strlen(json));
+  ASSERT_STREQ(parser.getFirmwareSignatureUrl(), "");
+  PASS();
+}
+
 int main() {
   printf("=== ReleaseJsonParser Tests ===\n\n");
 
@@ -854,6 +922,12 @@ int main() {
   testSizeZero();
   testMinimalValidJson();
   testChunkedRealisticEveryBoundary();
+  testReleaseNameAndNotes();
+  testSignatureAssetIsPairedWithTheChosenFirmware();
+  testNoSignatureAssetMeansEmptyUrl();
+  testLongNotesAreCutButOtherFieldsSurvive();
+  testOverlongTagStillIgnored();
+  testAssetNameDoesNotLeakIntoReleaseName();
 
   printf("\n=== Results: %d passed, %d failed ===\n", testsPassed, testsFailed);
   return testsFailed > 0 ? 1 : 0;

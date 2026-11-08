@@ -313,6 +313,19 @@ let allSettings = [];
         '<span class="setting-control"><input type="password" id="wifi-pass-' + id + '" placeholder="' + (net.hasPassword ? escapeHtml(t('settings.password_unchanged')) : '') + '"></span>' +
       '</div>' +
       lastConnected +
+      '<div class="setting-row">' +
+        '<span class="setting-name">' + escapeHtml(t('settings.opds_user_agent')) + '</span>' +
+        '<span class="setting-control"><input type="text" id="opds-ua-' + id + '" maxlength="120" placeholder="inkMOD-ESP32" value="' + escapeHtml(srv.userAgent || '') + '">' +
+          '<button type="button" class="btn-small" onclick="document.getElementById(\'opds-ua-' + id + '\').value=\'KOReader/2024.11 (https://koreader.rocks/)\'">KOReader</button></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">' + escapeHtml(t('settings.opds_header')) + '</span>' +
+        '<span class="setting-control"><input type="text" id="opds-hdr-' + id + '" maxlength="240" placeholder="X-Api-Token: ..." value="' + escapeHtml(srv.customHeader || '') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">' + escapeHtml(t('settings.opds_download_folder')) + '</span>' +
+        '<span class="setting-control"><input type="text" id="opds-dir-' + id + '" maxlength="64" placeholder="/My downloads" value="' + escapeHtml(srv.downloadFolder || '') + '"></span>' +
+      '</div>' +
       '<div class="opds-actions">' +
         '<button class="btn-small btn-save-server" onclick="saveWifiNetwork(' + idx + ')">' + escapeHtml(t('settings.save_btn')) + '</button>' +
         (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteWifiNetwork(' + idx + ')">' + escapeHtml(t('settings.delete_btn')) + '</button>') +
@@ -488,6 +501,9 @@ let allSettings = [];
       url: document.getElementById('opds-url-' + id).value,
       username: document.getElementById('opds-user-' + id).value,
       filenameFormat: document.getElementById('opds-filename-' + id).value,
+      userAgent: document.getElementById('opds-ua-' + id).value,
+      customHeader: document.getElementById('opds-hdr-' + id).value,
+      downloadFolder: document.getElementById('opds-dir-' + id).value,
     };
     // Only include password in payload when the user actually typed something;
     // omitting it tells the server to keep the existing password.
@@ -549,10 +565,96 @@ let allSettings = [];
     if (accessPointMode) {
       document.getElementById('wifi-container').innerHTML = '';
       document.getElementById('opds-container').innerHTML = '';
+      document.getElementById('koprof-container').innerHTML = '';
       return;
     }
     await loadWifiNetworks();
     await loadOpdsServers();
+    await loadKoProfiles();
   }
+
+
+  // --- KOReader sync profiles ---
+  // Several named sync servers (own URL, account, optional header); "Activate" copies one into the live
+  // KOReader settings. Passwords are never sent back to the browser.
+  let koProfiles = [];
+  let koActive = '';
+
+  function koField(id, key, value, type, extra) {
+    return '<div class="setting-row"><span class="setting-name">' + escapeHtml(t(key)) + '</span>' +
+      '<span class="setting-control"><input type="' + (type || 'text') + '" id="' + id + '" value="' + escapeHtml(value || '') + '"' + (extra || '') + '></span></div>';
+  }
+
+  function renderKoProfile(p, idx) {
+    const id = idx >= 0 ? String(idx) : 'new';
+    const isActive = idx >= 0 && p.name === koActive;
+    return '<div class="opds-server" id="koprof-' + id + '">' +
+      koField('koprof-name-' + id, 'koprof.name', p.name, 'text', ' maxlength="24"' + (idx >= 0 ? ' readonly' : '')) +
+      koField('koprof-url-' + id, 'koprof.url', p.serverUrl, 'text', ' placeholder="https://"') +
+      koField('koprof-user-' + id, 'koprof.user', p.username) +
+      koField('koprof-pass-' + id, 'koprof.pass', '', 'password', ' placeholder="' + (p.hasPassword ? escapeHtml(t('settings.password_unchanged')) : '') + '"') +
+      koField('koprof-hdr-' + id, 'koprof.header', p.header, 'text', ' maxlength="240" placeholder="X-Api-Token: ..."') +
+      '<div class="opds-actions">' +
+        '<button class="btn-small btn-save-server" onclick="saveKoProfile(' + idx + ')">' + escapeHtml(t('settings.save_btn')) + '</button>' +
+        (idx >= 0 ? '<button class="btn-small" onclick="activateKoProfile(' + idx + ')"' + (isActive ? ' disabled' : '') + '>' +
+          escapeHtml(isActive ? t('koprof.active') : t('koprof.activate')) + '</button>' +
+          '<button class="btn-small btn-delete" onclick="deleteKoProfile(' + idx + ')">' + escapeHtml(t('settings.delete_btn')) + '</button>' : '') +
+      '</div></div>';
+  }
+
+  function renderKoProfiles() {
+    const c = document.getElementById('koprof-container');
+    if (!c) return;
+    let html = '<div class="card"><h2>' + escapeHtml(t('koprof.title')) + '</h2>';
+    if (!koProfiles.length) html += '<p style="color:var(--label-color);text-align:center;">' + escapeHtml(t('koprof.none')) + '</p>';
+    koProfiles.forEach(function(p, i) { html += renderKoProfile(p, i); });
+    html += '<button class="btn-small btn-add" onclick="addKoProfile()">' + escapeHtml(t('koprof.add')) + '</button></div>';
+    c.innerHTML = html;
+  }
+
+  async function loadKoProfiles() {
+    try {
+      const r = await fetch('/api/koreader/profiles');
+      if (!r.ok) return;
+      const d = await r.json();
+      koProfiles = d.profiles || [];
+      koActive = d.active || '';
+      renderKoProfiles();
+    } catch (e) { console.error('KOReader profiles load error:', e); }
+  }
+
+  function addKoProfile() {
+    if (document.getElementById('koprof-new')) return;
+    const c = document.getElementById('koprof-container');
+    const btn = c.querySelector('.btn-add');
+    btn.insertAdjacentHTML('beforebegin', renderKoProfile({name: '', serverUrl: '', username: '', hasPassword: false, header: ''}, -1));
+  }
+
+  async function koPost(url, body, okKey) {
+    try {
+      const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      if (!r.ok) {
+        const msg = (await r.text()).trim();
+        showMessage(t('koprof.err_' + msg) !== 'koprof.err_' + msg ? t('koprof.err_' + msg) : msg, true);
+        return;
+      }
+      showMessage(t(okKey), false);
+      await loadKoProfiles();
+    } catch (e) { showMessage(String(e), true); }
+  }
+
+  function saveKoProfile(idx) {
+    const id = idx >= 0 ? String(idx) : 'new';
+    const g = function(k) { return document.getElementById('koprof-' + k + '-' + id).value; };
+    koPost('/api/koreader/profiles', {name: g('name'), serverUrl: g('url'), username: g('user'), password: g('pass'), header: g('hdr')}, 'koprof.saved');
+  }
+  function activateKoProfile(idx) { koPost('/api/koreader/profiles/activate', {name: koProfiles[idx].name}, 'koprof.activated'); }
+  function deleteKoProfile(idx) {
+    if (!confirm(t('koprof.confirm_delete'))) return;
+    koPost('/api/koreader/profiles/delete', {name: koProfiles[idx].name}, 'koprof.deleted');
+  }
+  window.saveKoProfile = saveKoProfile; window.activateKoProfile = activateKoProfile;
+  window.deleteKoProfile = deleteKoProfile; window.addKoProfile = addKoProfile;
+  document.addEventListener('i18n:changed', function() { renderKoProfiles(); });
 
   initialiseSettingsPage();

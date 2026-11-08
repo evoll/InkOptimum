@@ -93,6 +93,13 @@ bool DiagnosticManager::snapshot(const char* activity, const char* book) {
 bool DiagnosticManager::createReport() {
   begin();
   if (!Storage.ready()) return false;
+  const String report = buildReport();
+  Storage.ensureDirectoryExists("/diagnostics");
+  return Storage.writeFile(REPORT_PATH, report);
+}
+
+String DiagnosticManager::buildReport() {
+  begin();
   const auto mem = MemoryBudget::snapshot();
   String report;
   report.reserve(1400);
@@ -111,8 +118,7 @@ bool DiagnosticManager::createReport() {
     report += "\n--- crash_report.txt ---\n";
     report += Storage.readFile("/crash_report.txt");
   }
-  Storage.ensureDirectoryExists("/diagnostics");
-  return Storage.writeFile(REPORT_PATH, report);
+  return report;
 }
 
 void DiagnosticManager::clearFiles() {

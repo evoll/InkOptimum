@@ -236,6 +236,7 @@
                 : `<td>${escapeHtml(file.name.split('.').pop().toUpperCase())}</td>`);
           fileTableContent += `<td>${formatFileSize(file.size)}</td>`;
           fileTableContent += `<td class="actions-col"><div class="action-icon-group">`;
+          if (file.isEpub) fileTableContent += `<button class="info-btn" onclick="openBookInfo('${filePath.replaceAll("'", "\\'")}', '${file.name.replaceAll("'", "\\'")}')" title="${escapeHtml(t('files.about_book'))}">ℹ️</button>`;
           fileTableContent += `<button class="move-btn" onclick="openMoveModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}' )" title="${escapeHtml(t('files.title_move_file'))}">📂</button>`;
           fileTableContent += `<button class="rename-btn" onclick="openRenameModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}', false)" title="${escapeHtml(t('files.title_rename_file'))}">✏️</button>`;
           fileTableContent += `<button class="delete-btn" onclick="openDeleteModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}', false)" title="${escapeHtml(t('files.title_delete_file'))}">🗑️</button>`;
@@ -4656,7 +4657,7 @@ function joinRemotePath(base, seg) {
  */
 async function ensureRemoteFolderPath(fullPath) {
   if (!fullPath || fullPath === '/') return;
-  const segments = fullPath.split('/').filter(Boolean);
+  const segments = fullPath.split('/').filter(Boolean).map(nfcName);
   let current = '';
   for (const seg of segments) {
     const parent = current === '' ? '/' : current;
@@ -4691,10 +4692,18 @@ async function ensureRemoteFolderPath(fullPath) {
 }
 
 
+// A Mac hands the browser NFD names (letter + combining accent) for files from Finder, and FAT stores
+// what arrives; the card would then hold a name that matches nothing typed elsewhere. Every name that
+// goes from the browser to the card passes through here.
+function nfcName(name) {
+  const s = String(name == null ? '' : name);
+  try { return s.normalize ? s.normalize('NFC') : s; } catch (e) { return s; }
+}
+
 function uploadTransportBasename(file) {
   const raw = String((file && file.name) || 'book').replace(/\\/g, '/');
   const slash = raw.lastIndexOf('/');
-  return (slash >= 0 ? raw.slice(slash + 1) : raw) || 'book';
+  return nfcName((slash >= 0 ? raw.slice(slash + 1) : raw) || 'book');
 }
 
 function uploadFileWebSocket(file, onProgress, onComplete, onError, targetPath) {
@@ -5171,7 +5180,7 @@ function uploadFile() {
     // freshly-constructed File below, which does not carry webkitRelativePath.
     const relPath = originalFile.webkitRelativePath || '';
     const relDir = relPath ? relPath.slice(0, relPath.length - originalFile.name.length).replace(/\/+$/, '') : '';
-    const targetPath = relDir ? joinRemotePath(currentPath, relDir) : currentPath;
+    const targetPath = relDir ? joinRemotePath(currentPath, nfcName(relDir)) : currentPath;
     // Keep WebSocket as the primary transport for large files too. The device
     // streams each WS frame directly to SD and provides backpressure via the
     // browser's bufferedAmount. HTTP remains only a fallback after a real WS
@@ -5426,7 +5435,7 @@ function uploadFile() {
 
       if (preparedCompanion) {
         progressText.textContent = `Uploading prepared cache for ${file.name}...`;
-        const remoteBookPath = joinRemotePath(targetPath, file.name);
+        const remoteBookPath = joinRemotePath(targetPath, nfcName(file.name));
         if (preparedFb2Package) {
           await uploadPreparedFb2Package(preparedFb2Package, remoteBookPath);
         } else if (preparedWrappedEpub) {
@@ -5556,7 +5565,7 @@ function retryAllFailedUploads() {
 }
 
   function createFolder() {
-    const folderName = document.getElementById('folderName').value.trim();
+    const folderName = nfcName(document.getElementById('folderName').value.trim());
 
     if (!folderName) {
       alert(t('files.please_enter_folder_name'));
@@ -5613,7 +5622,7 @@ function retryAllFailedUploads() {
 
   function confirmRename() {
     const path = document.getElementById('renameItemPath').value;
-    const newName = document.getElementById('renameNewName').value.trim();
+    const newName = nfcName(document.getElementById('renameNewName').value.trim());
 
     if (!newName) {
       alert(t('files.please_enter_new_name'));
@@ -5833,7 +5842,7 @@ function retryAllFailedUploads() {
   }
 
   function dictionaryBaseName(path) {
-    return dictionaryPathName(path).replace(/\.(?:dict\.dz|idx\.gz|ifo|idx|dict|syn|dsl|tsv|csv|txt|zip|gz)$/i, '');
+    return dictionaryPathName(path).replace(/\.(?:dict\.dz|idx\.gz|syn\.dz|syn\.gz|ifo|idx|dict|syn|dsl|tsv|csv|txt|zip|gz)$/i, '');
   }
 
   function dictionaryUtf8CodepointSize(codepoint) {
@@ -5991,7 +6000,7 @@ function retryAllFailedUploads() {
   }
 
   function dictionaryIsSupportedSource(path) {
-    return /\.(?:ifo|idx|idx\.gz|dict|dict\.dz|syn|dsl|tsv|csv|txt)$/i.test(path || '');
+    return /\.(?:ifo|idx|idx\.gz|dict|dict\.dz|syn|syn\.dz|syn\.gz|dsl|tsv|csv|txt)$/i.test(path || '');
   }
 
   async function dictionaryZipEntryStream(file, entry) {
@@ -6155,7 +6164,9 @@ function retryAllFailedUploads() {
         if (!/[A-Za-z]/.test(type) || !takeField(type, false)) break;
       }
     }
-    if (fields.length === 0) fields.push(dictionaryDecodeText(raw));
+    // Inline-typed entries (no sametypesequence) that hold only empty or binary fields have no text: the
+    // caller skips them instead of showing the raw bytes.
+    if (fields.length === 0 && sequence) fields.push(dictionaryDecodeText(raw));
     return dictionaryPlainArticle(fields.join('\n'));
   }
 
@@ -6295,6 +6306,7 @@ function retryAllFailedUploads() {
       else if (lower.endsWith('.ifo')) { base = lower.slice(0, -4); type = 'ifo'; }
       else if (lower.endsWith('.idx')) { base = lower.slice(0, -4); type = 'idx'; }
       else if (lower.endsWith('.dict')) { base = lower.slice(0, -5); type = 'dict'; }
+      else if (lower.endsWith('.syn.dz') || lower.endsWith('.syn.gz')) { base = lower.slice(0, -7); type = 'syn'; }
       else if (lower.endsWith('.syn')) { base = lower.slice(0, -4); type = 'syn'; }
       if (type) {
         if (!starDictGroups.has(base)) starDictGroups.set(base, {base});
@@ -6663,7 +6675,7 @@ function retryAllFailedUploads() {
   async function dictionaryProcessStarDictSynonyms(parsed, sourceOffsets, sourceLengths, bucketWriters) {
     const source = parsed.group.syn;
     if (!source) return 0;
-    const stream = await dictionarySourceStream(source, false);
+    const stream = await dictionarySourceStream(source, /\.(?:dz|gz)$/i.test(source.path));
     const reader = stream.getReader();
     let carry = new Uint8Array(0);
     let parsedCount = 0;
@@ -6990,8 +7002,9 @@ function retryAllFailedUploads() {
     let synonymBytes = null;
     let synonymCapacity = 0;
     if (parsed.synonymSource && sourceToEntry) {
-      synonymBytes = await parsed.synonymSource.bytes();
-      synonymCapacity = Math.max(0, parsed.synonymCount || 0) || dictionaryCountSynonymRecords(synonymBytes);
+      synonymBytes = await dictionarySourceBytes(parsed.synonymSource, /\.(?:dz|gz)$/i.test(parsed.synonymSource.path));
+      // The .ifo count is only a hint (some dictionaries state it wrongly): count the records actually present.
+      synonymCapacity = Math.max(Math.max(0, parsed.synonymCount || 0), dictionaryCountSynonymRecords(synonymBytes));
     }
     const recordCapacity = encoded.length + synonymCapacity;
     const maximumIndexSize = DICTIONARY_INDEX_HEADER_SIZE + recordCapacity * DICTIONARY_INDEX_RECORD_SIZE;
@@ -7163,3 +7176,339 @@ function retryAllFailedUploads() {
     }
   }
   hydrate();
+
+
+// ---- About book (EPUB metadata, read in the browser) ---------------------------------------
+async function openBookInfo(path, name) {
+  const modal = document.getElementById('bookInfoModal');
+  const body = document.getElementById('bookInfoBody');
+  body.textContent = t('files.about_loading');
+  modal.classList.add('open');
+  try {
+    const response = await fetch('/download?path=' + encodeURIComponent(path));
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const blob = await response.blob();
+    const zip = await JSZip.loadAsync(blob);
+    const parse = text => new DOMParser().parseFromString(text, 'application/xml');
+    const byLocal = (root, tag) => Array.from(root.getElementsByTagName('*')).filter(n => (n.localName || '').toLowerCase() === tag);
+    const text = (root, tag) => { const n = byLocal(root, tag)[0]; return n ? n.textContent.trim() : ''; };
+
+    const container = parse(await zip.file('META-INF/container.xml').async('string'));
+    const opfPath = byLocal(container, 'rootfile')[0].getAttribute('full-path');
+    const opfText = await zip.file(opfPath).async('string');
+    const opf = parse(opfText);
+    const dir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+    bookEdit = { path, name, zip, opfPath, opfText, dir, original: blob, meta: opfReadMetadata(opfParse(opfText)) };
+
+    const items = byLocal(opf, 'item');
+    const spineCount = byLocal(opf, 'itemref').length;
+    const imageCount = items.filter(i => /^image\//.test(i.getAttribute('media-type') || '')).length;
+    let coverItem = items.find(i => (i.getAttribute('properties') || '').split(/\s+/).includes('cover-image'));
+    if (!coverItem) {
+      const meta = byLocal(opf, 'meta').find(m => (m.getAttribute('name') || '').toLowerCase() === 'cover');
+      if (meta) coverItem = items.find(i => i.getAttribute('id') === meta.getAttribute('content'));
+    }
+
+    const rows = [];
+    const add = (label, value) => { if (value) rows.push([label, value]); };
+    add(t('files.about_title'), text(opf, 'title'));
+    add(t('files.about_author'), byLocal(opf, 'creator').map(n => n.textContent.trim()).filter(Boolean).join(', '));
+    add(t('files.about_language'), text(opf, 'language'));
+    add(t('files.about_publisher'), text(opf, 'publisher'));
+    add(t('files.about_date'), text(opf, 'date'));
+    add(t('files.about_chapters'), String(spineCount));
+    add(t('files.about_images'), String(imageCount));
+    add(t('files.about_size'), formatFileSize(blob.size));
+    add(t('files.about_file'), name);
+
+    body.textContent = '';
+    if (coverItem) {
+      const cover = zip.file(decodeURIComponent(dir + coverItem.getAttribute('href')));
+      if (cover) {
+        const img = document.createElement('img');
+        img.className = 'book-info-cover';
+        img.src = URL.createObjectURL(await cover.async('blob'));
+        body.appendChild(img);
+      }
+    }
+    const table = document.createElement('table');
+    table.className = 'book-info-table';
+    for (const [label, value] of rows) {
+      const tr = table.insertRow();
+      const th = document.createElement('th'); th.textContent = label; tr.appendChild(th);
+      const td = tr.insertCell(); td.textContent = value;
+    }
+    body.appendChild(table);
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'rename-btn-confirm';
+    editBtn.textContent = t('files.edit_btn');
+    editBtn.onclick = bookEditStart;
+    body.appendChild(editBtn);
+
+    const description = text(opf, 'description');
+    if (description) {
+      const d = document.createElement('div');
+      d.className = 'book-info-desc';
+      // Descriptions are often HTML-escaped markup: show it as plain text.
+      d.textContent = new DOMParser().parseFromString(description, 'text/html').body.textContent.trim();
+      body.appendChild(d);
+    }
+  } catch (e) {
+    body.textContent = t('files.about_error');
+  }
+}
+
+// ---- EPUB metadata / cover / OPF editing (About book) --------------------------------------
+// <opfedit-begin>
+const OPF_DC_NS = 'http://purl.org/dc/elements/1.1/';
+
+function opfLocal(node) { return (node.localName || '').toLowerCase(); }
+function opfByLocal(root, tag) { return Array.from(root.getElementsByTagName('*')).filter(n => opfLocal(n) === tag); }
+
+function opfParse(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('OPF is not well-formed XML');
+  return doc;
+}
+
+function opfSerialize(doc) {
+  let out = new XMLSerializer().serializeToString(doc);
+  if (!/^\s*<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
+  return out;
+}
+
+function opfMetaValue(doc, name) {
+  const m = opfByLocal(doc, 'meta').find(n => (n.getAttribute('name') || '') === name);
+  return m ? (m.getAttribute('content') || '') : '';
+}
+
+function opfIsbnOf(value) {
+  const v = String(value || '').replace(/^urn:isbn:/i, '').replace(/^isbn:/i, '').replace(/[\s-]/g, '').toUpperCase();
+  return /^(\d{13}|\d{9}[\dX])$/.test(v) ? v : '';
+}
+
+function opfReadMetadata(doc) {
+  const first = tag => { const n = opfByLocal(doc, tag)[0]; return n ? n.textContent.trim() : ''; };
+  let isbn = '';
+  for (const n of opfByLocal(doc, 'identifier')) { isbn = opfIsbnOf(n.textContent); if (isbn) break; }
+  return {
+    title: first('title'),
+    authors: opfByLocal(doc, 'creator').map(n => n.textContent.trim()).filter(Boolean),
+    language: first('language'),
+    publisher: first('publisher'),
+    date: first('date'),
+    description: first('description'),
+    isbn,
+    series: opfMetaValue(doc, 'calibre:series'),
+    seriesIndex: opfMetaValue(doc, 'calibre:series_index')
+  };
+}
+
+function opfMetadataRoot(doc) {
+  const m = opfByLocal(doc, 'metadata')[0];
+  if (!m) throw new Error('OPF has no metadata section');
+  return m;
+}
+
+function opfSetDc(doc, tag, value) {
+  const existing = opfByLocal(doc, tag)[0];
+  if (!value) { if (existing) existing.remove(); return; }
+  if (existing) { existing.textContent = value; return; }
+  const el = doc.createElementNS(OPF_DC_NS, 'dc:' + tag);
+  el.textContent = value;
+  opfMetadataRoot(doc).appendChild(el);
+}
+
+function opfSetMeta(doc, name, value) {
+  const existing = opfByLocal(doc, 'meta').find(n => (n.getAttribute('name') || '') === name);
+  if (!value) { if (existing) existing.remove(); return; }
+  if (existing) { existing.setAttribute('content', value); return; }
+  const root = opfMetadataRoot(doc);
+  const el = doc.createElementNS(root.namespaceURI, 'meta');
+  el.setAttribute('name', name);
+  el.setAttribute('content', value);
+  root.appendChild(el);
+}
+
+// `changed` holds only the fields the user actually edited, so untouched metadata (file-as, roles,
+// refines...) is never rewritten.
+function opfApplyMetadata(doc, changed) {
+  for (const tag of ['title', 'language', 'publisher', 'date', 'description']) {
+    if (tag in changed) opfSetDc(doc, tag, changed[tag]);
+  }
+  if ('authors' in changed) {
+    opfByLocal(doc, 'creator').forEach(n => n.remove());
+    for (const a of changed.authors) {
+      const el = doc.createElementNS(OPF_DC_NS, 'dc:creator');
+      el.textContent = a;
+      opfMetadataRoot(doc).appendChild(el);
+    }
+  }
+  if ('isbn' in changed) {
+    const ids = opfByLocal(doc, 'identifier');
+    const current = ids.find(n => opfIsbnOf(n.textContent));
+    if (!changed.isbn) { if (current) current.remove(); }
+    else if (current) current.textContent = 'urn:isbn:' + changed.isbn;
+    else {
+      const el = doc.createElementNS(OPF_DC_NS, 'dc:identifier');
+      el.textContent = 'urn:isbn:' + changed.isbn;
+      opfMetadataRoot(doc).appendChild(el);
+    }
+  }
+  if ('series' in changed) opfSetMeta(doc, 'calibre:series', changed.series);
+  if ('seriesIndex' in changed) opfSetMeta(doc, 'calibre:series_index', changed.seriesIndex);
+}
+
+// Returns { path, mediaType, exists } for the cover image inside the zip (path relative to the zip root).
+// When the book has no cover yet, a manifest entry is created and exists=false.
+function opfEnsureCover(doc, dir) {
+  const items = opfByLocal(doc, 'item');
+  let item = items.find(i => (i.getAttribute('properties') || '').split(/\s+/).includes('cover-image'));
+  if (!item) {
+    const meta = opfByLocal(doc, 'meta').find(m => (m.getAttribute('name') || '').toLowerCase() === 'cover');
+    if (meta) item = items.find(i => i.getAttribute('id') === meta.getAttribute('content'));
+  }
+  if (item && /^image\//.test(item.getAttribute('media-type') || '')) {
+    return { path: decodeURIComponent(dir + item.getAttribute('href')), mediaType: item.getAttribute('media-type'), exists: true };
+  }
+  const manifest = opfByLocal(doc, 'manifest')[0];
+  if (!manifest) throw new Error('OPF has no manifest');
+  const used = new Set(items.map(i => i.getAttribute('id')));
+  let id = 'cover-image';
+  for (let n = 2; used.has(id); n++) id = 'cover-image' + n;
+  const el = doc.createElementNS(manifest.namespaceURI, 'item');
+  el.setAttribute('id', id);
+  el.setAttribute('href', 'images/cover.jpg');
+  el.setAttribute('media-type', 'image/jpeg');
+  el.setAttribute('properties', 'cover-image');
+  manifest.appendChild(el);
+  opfSetMeta(doc, 'cover', id);
+  return { path: dir + 'images/cover.jpg', mediaType: 'image/jpeg', exists: false };
+}
+
+// Fields from the edit form compared with the values read from the OPF.
+function opfDiffFields(orig, form) {
+  const changed = {};
+  for (const tag of ['title', 'language', 'publisher', 'date', 'description', 'isbn', 'series', 'seriesIndex']) {
+    if ((form[tag] || '') !== (orig[tag] || '')) changed[tag] = form[tag] || '';
+  }
+  if (form.authors.join('\n') !== orig.authors.join('\n')) changed.authors = form.authors;
+  return changed;
+}
+// <opfedit-end>
+
+let bookEdit = null;
+
+function bookEditBackToInfo() {
+  if (bookEdit) openBookInfo(bookEdit.path, bookEdit.name);
+}
+
+function bookEditRender() {
+  const body = document.getElementById('bookInfoBody');
+  const m = bookEdit.meta;
+  const field = (id, label, value, extra) => '<label class="book-edit-row"><span>' + escapeHtml(label) + '</span><input id="be-' + id + '" value="' + escapeHtml(value || '') + '"' + (extra || '') + '></label>';
+  body.innerHTML =
+    '<div class="book-edit">' +
+    field('title', t('files.about_title'), m.title) +
+    field('authors', t('files.edit_authors'), m.authors.join(', ')) +
+    field('series', t('files.edit_series'), m.series) +
+    field('seriesIndex', t('files.edit_series_no'), m.seriesIndex, ' inputmode="decimal" style="max-width:6em"') +
+    field('language', t('files.about_language'), m.language, ' style="max-width:8em"') +
+    field('publisher', t('files.about_publisher'), m.publisher) +
+    field('date', t('files.about_date'), m.date, ' style="max-width:10em"') +
+    field('isbn', 'ISBN', m.isbn, ' style="max-width:12em"') +
+    '<label class="book-edit-row"><span>' + escapeHtml(t('files.edit_desc')) + '</span><textarea id="be-description" rows="5">' + escapeHtml(m.description || '') + '</textarea></label>' +
+    '<label class="book-edit-row"><span>' + escapeHtml(t('files.edit_cover')) + '</span><input type="file" id="be-cover" accept="image/jpeg,image/png,image/webp"></label>' +
+    '<label class="book-edit-check"><input type="checkbox" id="be-backup" checked> ' + escapeHtml(t('files.edit_backup')) + '</label>' +
+    '<div class="book-edit-actions"><button class="rename-btn-confirm" id="be-save" onclick="bookEditSave()">' + escapeHtml(t('files.edit_save')) + '</button>' +
+    '<button class="delete-btn-cancel" onclick="bookEditBackToInfo()">' + escapeHtml(t('files.edit_cancel')) + '</button></div>' +
+    '<div id="be-status" class="book-edit-status"></div></div>';
+}
+
+function bookEditStart() {
+  if (!bookEdit) return;
+  bookEditRender();
+}
+
+// Re-encode the picked image into the format the book already declares (keeps manifest + references valid).
+function bookEditEncodeCover(file, mediaType) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const maxSide = 1600;
+      const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * k));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * k));
+      const ctx = canvas.getContext('2d');
+      if (mediaType === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(b => b ? b.arrayBuffer().then(resolve, reject) : reject(new Error('encode')), mediaType === 'image/png' ? 'image/png' : 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
+    img.src = url;
+  });
+}
+
+async function bookEditSave() {
+  const st = document.getElementById('be-status');
+  const saveBtn = document.getElementById('be-save');
+  const val = id => document.getElementById('be-' + id).value.trim();
+  try {
+    const form = {
+      title: val('title'), language: val('language'), publisher: val('publisher'), date: val('date'),
+      description: val('description'), series: val('series'), seriesIndex: val('seriesIndex'),
+      authors: val('authors').split(/\s*[,;]\s*/).filter(Boolean), isbn: ''
+    };
+    const isbnRaw = val('isbn');
+    if (isbnRaw) {
+      form.isbn = opfIsbnOf(isbnRaw);
+      if (!form.isbn) { st.textContent = t('files.edit_bad_isbn'); return; }
+    }
+    if (!form.title) { st.textContent = t('files.edit_bad_title'); return; }
+    const coverFile = document.getElementById('be-cover').files[0];
+    const changed = opfDiffFields(bookEdit.meta, form);
+    if (!Object.keys(changed).length && !coverFile) { st.textContent = t('files.edit_nothing'); return; }
+
+    saveBtn.disabled = true;
+    st.textContent = t('files.edit_saving');
+    const doc = opfParse(bookEdit.opfText);
+    opfApplyMetadata(doc, changed);
+    const zip = bookEdit.zip;
+    if (coverFile) {
+      const cover = opfEnsureCover(doc, bookEdit.dir);
+      zip.file(cover.path, await bookEditEncodeCover(coverFile, cover.mediaType));
+    }
+    zip.file(bookEdit.opfPath, opfSerialize(doc));
+    // The EPUB container requires an uncompressed "mimetype" entry that stays first.
+    const mt = zip.file('mimetype');
+    if (mt) zip.file('mimetype', await mt.async('string'), { compression: 'STORE' });
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip', compression: 'DEFLATE' });
+
+    // Sanity check before touching the device copy: the result must reopen and keep its spine.
+    const check = await JSZip.loadAsync(blob);
+    opfParse(await check.file(bookEdit.opfPath).async('string'));
+
+    if (document.getElementById('be-backup').checked) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(bookEdit.original);
+      a.download = bookEdit.name.replace(/\.epub$/i, '') + '.backup.epub';
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+
+    const dirPath = bookEdit.path.slice(0, bookEdit.path.lastIndexOf('/')) || '/';
+    await uploadFileHTTP(new File([blob], bookEdit.name, { type: 'application/epub+zip' }), null, null, null, dirPath);
+    st.textContent = t('files.edit_saved');
+    setTimeout(() => { closeBookInfo(); window.location.reload(); }, 900);
+  } catch (e) {
+    st.textContent = t('files.edit_failed') + ' ' + (e && e.message ? e.message : e);
+    saveBtn.disabled = false;
+  }
+}
+
+function closeBookInfo() {
+  document.getElementById('bookInfoModal').classList.remove('open');
+}

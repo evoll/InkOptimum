@@ -1,6 +1,8 @@
 #include "CssParser.h"
 
-#include <Arduino.h>
+#include "CssFontSize.h"
+
+#include <BufferedWriter.h>
 #include <Logging.h>
 
 #include <algorithm>
@@ -43,13 +45,6 @@ constexpr size_t MAX_RULES = 1500;
 
 // Maximum number of two-part descendant rules (ancestor subject) to store
 constexpr size_t MAX_DESCENDANT_RULES = CssParser::MAX_DESCENDANT_RULES;
-
-// Style lookup itself is allocation-light: it probes already-loaded maps and
-// merges a small CssStyle value.  Returning an empty style at 48 KiB silently
-// stripped publisher formatting exactly when image-heavy chapters were under
-// pressure.  Keep only a true emergency floor; allocation-producing parser
-// paths have their own guards.
-constexpr size_t MIN_FREE_HEAP_FOR_CSS = 16 * 1024;
 
 // Maximum length for a single selector string
 // Prevents parsing of extremely long or malformed selectors
@@ -382,6 +377,14 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
   } else if (iequalsAscii(name, "font-weight")) {
     style.fontWeight = interpretFontWeight(value);
     style.defined.fontWeight = 1;
+  } else if (iequalsAscii(name, "font-size")) {
+    // Only the "too small to read" case is interpreted (see CssFontSize.h); sizes themselves are
+    // the reader's setting.
+    CssLength length;
+    if (tryInterpretLength(stripTrailingImportant(value), length) && length.value > 0.0f) {
+      style.hiddenText = css_font_size::isUnreadablySmall(length);
+      style.defined.hiddenText = 1;
+    }
   } else if (iequalsAscii(name, "font-variant")) {
     // Only the small-caps keyword is handled - "normal", "all-small-caps"
     // etc. fall through to false (regular text), same as an unrecognized
@@ -479,6 +482,33 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
     } else if (iequalsAscii(directionValue, "ltr")) {
       style.direction = CssTextDirection::Ltr;
       style.defined.direction = 1;
+    }
+  } else if (iequalsAscii(name, "unicode-bidi")) {
+    const std::string_view v = stripTrailingImportant(value);
+    if (iequalsAscii(v, "embed")) style.unicodeBidi = 1;
+    else if (iequalsAscii(v, "isolate")) style.unicodeBidi = 2;
+    else if (iequalsAscii(v, "bidi-override")) style.unicodeBidi = 3;
+    else if (iequalsAscii(v, "isolate-override")) style.unicodeBidi = 4;
+    else if (iequalsAscii(v, "plaintext")) style.unicodeBidi = 5;
+    else if (iequalsAscii(v, "normal")) style.unicodeBidi = 7;
+  } else if (iequalsAscii(name, "writing-mode") || iequalsAscii(name, "-webkit-writing-mode") ||
+             iequalsAscii(name, "-epub-writing-mode") || iequalsAscii(name, "-ms-writing-mode")) {
+    // The SVG 1.1 and IE values CSS Writing Modes 3 maps; anything else (inherit, unset) is the parent's mode.
+    const std::string_view mode = stripTrailingImportant(value);
+    CssWritingMode parsed = CssWritingMode::Unset;
+    if (iequalsAscii(mode, "horizontal-tb") || iequalsAscii(mode, "lr") || iequalsAscii(mode, "lr-tb") ||
+        iequalsAscii(mode, "rl") || iequalsAscii(mode, "rl-tb")) {
+      parsed = CssWritingMode::HorizontalTb;
+    } else if (iequalsAscii(mode, "vertical-rl") || iequalsAscii(mode, "tb") || iequalsAscii(mode, "tb-rl") ||
+               iequalsAscii(mode, "sideways-rl")) {
+      parsed = CssWritingMode::VerticalRl;
+    } else if (iequalsAscii(mode, "vertical-lr") || iequalsAscii(mode, "tb-lr") ||
+               iequalsAscii(mode, "sideways-lr")) {
+      parsed = CssWritingMode::VerticalLr;
+    }
+    if (parsed != CssWritingMode::Unset) {
+      style.writingMode = parsed;
+      style.defined.writingMode = 1;
     }
   } else if (iequalsAscii(name, "vertical-align")) {
     if (iequalsAscii(value, "super")) {
@@ -766,16 +796,7 @@ bool CssParser::loadFromStream(FsFile& source) {
 
 CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view classAttr,
                                  const std::vector<CssAncestorEntry>& ancestors) const {
-  static bool lowHeapWarningLogged = false;
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CSS) {
-    if (!lowHeapWarningLogged) {
-      lowHeapWarningLogged = true;
-      LOG_DBG("CSS", "Warning: low heap (%u bytes) below MIN_FREE_HEAP_FOR_CSS (%u), returning empty style",
-              ESP.getFreeHeap(), static_cast<unsigned>(MIN_FREE_HEAP_FOR_CSS));
-    }
-    return CssStyle{};
-  }
-
+  // Lookup borrows the stored rules (string_view keys, scalar merges) and never allocates, so no heap guard.
   CssStyle result;
 
   // 1. Apply element-level style (lowest priority). The map's hash/equal are
@@ -854,15 +875,9 @@ bool CssParser::saveToCache(const bool complete) const {
     return false;
   }
 
-  bool writeOk = true;
-  auto writeBytes = [&file, &writeOk](const void* data, const size_t len) -> bool {
-    if (!writeOk) return false;
-    if (len == 0) return true;
-    if (file.write(reinterpret_cast<const uint8_t*>(data), len) != len) {
-      writeOk = false;
-    }
-    return writeOk;
-  };
+  // The record writers below emit a byte or two at a time; the buffer turns them into block writes.
+  BufferedWriter<FsFile> out(file);
+  auto writeBytes = [&out](const void* data, const size_t len) -> bool { return out.write(data, len); };
   auto writeByte = [&writeBytes](const uint8_t value) -> bool { return writeBytes(&value, sizeof(value)); };
 
   // Write header
@@ -888,7 +903,9 @@ bool CssParser::saveToCache(const bool complete) const {
         !writeLength(style.imageHeight) || !writeLength(style.imageWidth) || !writeLength(style.imageMaxWidth) ||
         !writeByte(static_cast<uint8_t>(style.display)) ||
         !writeByte(static_cast<uint8_t>(style.backgroundBlack ? 1 : 0)) ||
-        !writeByte(static_cast<uint8_t>(style.verticalAlign)) || !writeByte(static_cast<uint8_t>(style.direction))) {
+        !writeByte(static_cast<uint8_t>(style.verticalAlign)) || !writeByte(static_cast<uint8_t>(style.direction)) ||
+        !writeByte(static_cast<uint8_t>(style.smallCaps ? 1 : 0)) ||
+        !writeByte(static_cast<uint8_t>((style.hiddenText ? 1 : 0) | ((static_cast<unsigned>(style.writingMode) & 3u) << 2) | ((style.unicodeBidi & 7u) << 4)))) {
       return false;
     }
     uint32_t definedBits = 0;
@@ -912,6 +929,9 @@ bool CssParser::saveToCache(const bool complete) const {
     if (style.defined.backgroundBlack) definedBits |= 1 << 16;
     if (style.defined.verticalAlign) definedBits |= 1 << 17;
     if (style.defined.direction) definedBits |= 1 << 18;
+    if (style.defined.smallCaps) definedBits |= 1 << 20;
+    if (style.defined.hiddenText) definedBits |= 1 << 21;
+    if (style.defined.writingMode) definedBits |= 1 << 22;
     return writeBytes(&definedBits, sizeof(definedBits));
   };
 
@@ -939,7 +959,7 @@ bool CssParser::saveToCache(const bool complete) const {
     }
   }
 
-  if (!writeOk) {
+  if (!out.flush()) {
     LOG_ERR("CSS", "Failed to write temporary CSS cache");
     file.close();
     Storage.remove(tmpPath.c_str());
@@ -1056,48 +1076,57 @@ bool CssParser::loadFromCache() {
 
   constexpr size_t CSS_LENGTH_FIELD_COUNT = 12;
   constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
-  constexpr size_t CSS_FIXED_STYLE_BYTES =
-      4 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + 4 * sizeof(uint8_t) + sizeof(uint32_t);
+  // One style as written by the cache writer: 4 enums, 12 lengths (float + unit), display, backgroundBlack,
+  // verticalAlign, direction, smallCaps, hiddenText, then the 32-bit defined mask.
+  constexpr size_t CSS_FIXED_STYLE_BYTES = 4 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) +
+                                           6 * sizeof(uint8_t) + sizeof(uint32_t);
+  static_assert(CSS_FIXED_STYLE_BYTES == 74, "CSS cache style record changed: update the writer, reader and version");
 
-  auto readLength = [&file](CssLength& len) -> bool {
-    if (file.read(&len.value, sizeof(len.value)) != sizeof(len.value)) return false;
-    uint8_t unitVal;
-    if (file.read(&unitVal, 1) != 1) return false;
-    len.unit = static_cast<CssUnit>(unitVal);
-    return true;
-  };
-
+  // The record is read in one call and taken apart in RAM: a field at a time was ~30 SdFat calls a
+  // rule, paid for every rule each time a section build loads the ruleset.
+  // Idea from witchhunt-reader commit 3f8a4a47.
   auto readStyle = [&](CssStyle& style) -> bool {
-    uint8_t enumVal;
-    if (file.read(&enumVal, 1) != 1) return false;
-    style.textAlign = static_cast<CssTextAlign>(enumVal);
-    if (file.read(&enumVal, 1) != 1) return false;
-    style.fontStyle = static_cast<CssFontStyle>(enumVal);
-    if (file.read(&enumVal, 1) != 1) return false;
-    style.fontWeight = static_cast<CssFontWeight>(enumVal);
-    if (file.read(&enumVal, 1) != 1) return false;
-    style.textDecoration = static_cast<CssTextDecoration>(enumVal);
-    if (!readLength(style.textIndent) || !readLength(style.marginTop) || !readLength(style.marginBottom) ||
-        !readLength(style.marginLeft) || !readLength(style.marginRight) || !readLength(style.paddingTop) ||
-        !readLength(style.paddingBottom) || !readLength(style.paddingLeft) || !readLength(style.paddingRight) ||
-        !readLength(style.imageHeight) || !readLength(style.imageWidth) || !readLength(style.imageMaxWidth)) {
-      return false;
+    uint8_t payload[CSS_FIXED_STYLE_BYTES];
+    if (file.read(payload, sizeof(payload)) != static_cast<int>(sizeof(payload))) return false;
+    size_t at = 0;
+    const auto get = [&payload, &at](void* out, const size_t n) {
+      memcpy(out, payload + at, n);
+      at += n;
+    };
+    const auto getByte = [&get]() {
+      uint8_t v = 0;
+      get(&v, 1);
+      return v;
+    };
+    const auto getLength = [&get, &getByte](CssLength& len) {
+      get(&len.value, sizeof(len.value));
+      len.unit = static_cast<CssUnit>(getByte());
+    };
+
+    style.textAlign = static_cast<CssTextAlign>(getByte());
+    style.fontStyle = static_cast<CssFontStyle>(getByte());
+    style.fontWeight = static_cast<CssFontWeight>(getByte());
+    style.textDecoration = static_cast<CssTextDecoration>(getByte());
+    for (CssLength* length :
+         {&style.textIndent, &style.marginTop, &style.marginBottom, &style.marginLeft, &style.marginRight,
+          &style.paddingTop, &style.paddingBottom, &style.paddingLeft, &style.paddingRight, &style.imageHeight,
+          &style.imageWidth, &style.imageMaxWidth}) {
+      getLength(*length);
     }
-    uint8_t displayVal;
-    if (file.read(&displayVal, 1) != 1) return false;
-    style.display = static_cast<CssDisplay>(displayVal);
-    uint8_t backgroundBlackVal = 0;
-    if (file.read(&backgroundBlackVal, 1) != 1) return false;
-    style.backgroundBlack = backgroundBlackVal != 0;
-    uint8_t verticalAlignVal = 0;
-    if (file.read(&verticalAlignVal, 1) != 1) return false;
-    style.verticalAlign = static_cast<CssVerticalAlign>(verticalAlignVal);
-    uint8_t directionVal = 0;
-    if (file.read(&directionVal, 1) != 1) return false;
-    style.direction = static_cast<CssTextDirection>(directionVal);
+    style.display = static_cast<CssDisplay>(getByte());
+    style.backgroundBlack = getByte() != 0;
+    style.verticalAlign = static_cast<CssVerticalAlign>(getByte());
+    style.direction = static_cast<CssTextDirection>(getByte());
+    style.smallCaps = getByte() != 0;
+    {
+      const uint8_t flags = getByte();
+      style.hiddenText = (flags & 1) != 0;
+      style.writingMode = static_cast<CssWritingMode>((flags >> 2) & 3u);
+      style.unicodeBidi = static_cast<uint8_t>((flags >> 4) & 7u);
+    }
 
     uint32_t definedBits = 0;
-    if (file.read(&definedBits, sizeof(definedBits)) != sizeof(definedBits)) return false;
+    get(&definedBits, sizeof(definedBits));
     style.defined.textAlign = (definedBits & 1 << 0) != 0;
     style.defined.fontStyle = (definedBits & 1 << 1) != 0;
     style.defined.fontWeight = (definedBits & 1 << 2) != 0;
@@ -1118,6 +1147,9 @@ bool CssParser::loadFromCache() {
     style.defined.backgroundBlack = (definedBits & 1 << 16) != 0;
     style.defined.verticalAlign = (definedBits & 1 << 17) != 0;
     style.defined.direction = (definedBits & 1 << 18) != 0;
+    style.defined.smallCaps = (definedBits & 1 << 20) != 0;
+    style.defined.hiddenText = (definedBits & 1 << 21) != 0;
+    style.defined.writingMode = (definedBits & 1 << 22) != 0;
     return true;
   };
 

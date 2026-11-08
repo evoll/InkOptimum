@@ -9,6 +9,7 @@
 
 #include <Xtc.h>
 
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -18,10 +19,13 @@ class XtcReaderActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
 
   uint32_t currentPage = 0;
+  std::atomic<bool> pageShown{false};  // set once render() has put a page on screen
   int pagesUntilFullRefresh = 0;
   bool longPowerPageTurnHandled = false;
   bool frontButtonLongPressHandled = false;
   bool longPressBackHandled = false;
+  bool longPressConfirmHandled = false;
+  void openPercentSelection();  // "Go to percent": Confirm without chapters, or a long Confirm press
 
   // 2-bit XTC burst protection.
   // Fast repeated turns are allowed without forcing a full flash on every page.
@@ -55,6 +59,8 @@ class XtcReaderActivity final : public Activity {
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
   bool handleShortcutAction(uint8_t rawAction) override;
+  bool acceptsRemoteInput() const override { return pageShown.load(std::memory_order_acquire); }
+  bool remoteTurn(bool forward, bool chapter) override;
   std::string getCurrentBookPath() const override { return xtc ? xtc->getPath() : std::string{}; }
 
   // Renders the last saved page to the frame buffer without flushing to display.

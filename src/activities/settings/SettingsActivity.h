@@ -19,6 +19,7 @@ enum class SettingAction {
   RemapFrontButtonsReader,
   CustomiseStatusBar,
   KOReaderSync,
+  BluetoothPageTurner,
   OPDSBrowser,
   DisplaySleepScreen,
   DisplayScreenCleanup,
@@ -28,6 +29,8 @@ enum class SettingAction {
   ControlsHomeButton,
   ControlsFrontButtons,
   ControlsSideButtons,
+  BackupButtons,
+  RestoreButtons,
   SystemDevice,
   SystemFilesCache,
   SystemReadingStats,
@@ -37,6 +40,7 @@ enum class SettingAction {
   RestoreStats,
   ResetGlobalStats,
   ClearCache,
+  ForgetTlsPins,
   CheckForUpdates,
   SdFirmwareUpdate,
   SwitchOtaSlot,
@@ -47,6 +51,8 @@ enum class SettingAction {
   BookMenuSettings,
   SupportInkMOD,
   SystemDiagnostics,
+  Weather,
+  ScreenCalibration,
 };
 
 struct SettingInfo {

@@ -37,10 +37,10 @@
 
 #include <algorithm>
 #include <cctype>
-#include <iterator>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,10 +66,18 @@ class SecureHttpClient {
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
+  // Bulk download: lend wolfSSL a full-record buffer once the request is sent
+  // (see SecureClient::reserveFullRecord()). Applies to https connections.
+  void setReserveFullRecord(bool on) { _reserveFullRecord = on; }
   // Verify against a single PEM root. Clears the insecure flag.
   void setCACert(const char* rootCA) {
     _rootCA = rootCA;
     _insecure = false;
+  }
+  // InkOptimum patch: peer check run after every new TLS handshake, before a request is written.
+  void setPeerCheck(SecureClient::PeerCheck check, void* ctx) {
+    _peerCheck = check;
+    _peerCheckCtx = ctx;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
   // Progress reporting for response bodies (download meters). Called after
@@ -102,13 +110,13 @@ class SecureHttpClient {
   // Identify the client. Sent on every request: several CDNs (notably
   // Cloudflare in front of OPDS catalogs) answer UA-less requests with 403.
   void setUserAgent(const std::string& ua) { _userAgent = ua; }
+  // InkOptimum patch: prefer the smaller TLS 1.2 working set for large downloads on ESP32-C3.
+  void setPreferTls12(bool prefer) { _secure.setPreferTls12(prefer); }
   // Keep the connection open between requests to the same scheme://host:port
   // (the default). Reusing the TLS session skips a full handshake per request —
   // seconds of latency plus the ECC/RSA heap spike on PSRAM-less boards.
   // setReuse(false) restores connection-per-request behavior.
   void setReuse(bool reuse) { _reuse = reuse; }
-  // Prefer the smaller TLS 1.2 working set for large downloads on ESP32-C3.
-  void setPreferTls12(bool prefer) { _preferTls12 = prefer; _secure.setPreferTls12(prefer); }
 
   // Parse the URL and reset per-request state. Returns false on a malformed
   // URL.
@@ -121,9 +129,18 @@ class SecureHttpClient {
   // Closes the kept-alive connection (if any). Call when done with a server;
   // the next request transparently reconnects.
   void end() { closeConnection(); }
+  // Opens (or keeps) the connection for the URL given to begin(). Optional:
+  // sendRequest() connects on demand. Connecting before addHeader() keeps large
+  // headers out of the heap while the TLS handshake needs its working set.
+  bool connect(const AbortCallback& shouldAbort = nullptr) { return ensureConnected(shouldAbort); }
 
   void addHeader(const std::string& name, const std::string& value) {
-    _headers.push_back(name + ": " + value + "\r\n");
+    // Sized once: chained operator+ grows the string by doubling, so a few-KB
+    // cookie would take twice its size from the block the TLS handshake needs.
+    std::string line;
+    line.reserve(name.size() + value.size() + 4);
+    line.append(name).append(": ").append(value).append("\r\n");
+    _headers.push_back(std::move(line));
   }
 
   int GET() { return sendRequest("GET", nullptr, 0); }
@@ -213,13 +230,14 @@ class SecureHttpClient {
     for (int attempt = 0; attempt < 2; ++attempt) {
       const bool reusing = connectionMatches();
       if (isAborted(shouldAbort)) return -1;
-      if (!ensureConnected()) return -1;
+      if (!ensureConnected(shouldAbort)) return -1;
 
       if (!writeRequest(method, payload, payloadLen)) {
         closeConnection();
         if (reusing && attempt == 0) continue;
         return -1;
       }
+      if (_reserveFullRecord && _connHttps) _secure.reserveFullRecord();
 
       const unsigned long headerDeadline = millis() + _timeoutMs;
       std::string line;
@@ -234,9 +252,19 @@ class SecureHttpClient {
       // Connection: keep-alive header (below) overrides that.
       bool keepAlive = line.compare(0, 9, "HTTP/1.0 ") != 0;
 
+      bool headersComplete = false;
+      size_t headerBytes = 0;
       std::string transferEncoding;
       while (readLine(*_conn, line, headerDeadline, shouldAbort)) {
-        if (line.empty()) break;  // end of headers
+        if (line.empty()) {
+          headersComplete = true;
+          break;
+        }  // end of headers
+        headerBytes += line.size();
+        if (headerBytes > 8192 || _responseHeaders.size() >= 64) {
+          closeConnection();
+          return -1;
+        }
         const size_t colon = line.find(':');
         if (colon == std::string::npos) continue;
         std::string name = line.substr(0, colon);
@@ -255,11 +283,13 @@ class SecureHttpClient {
         } else if (name == "connection") {
           std::string v = value;
           std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-          if (v.find("close") != std::string::npos) keepAlive = false;
-          else if (v.find("keep-alive") != std::string::npos) keepAlive = true;
+          if (v.find("close") != std::string::npos)
+            keepAlive = false;
+          else if (v.find("keep-alive") != std::string::npos)
+            keepAlive = true;
         }
       }
-      if (_aborted) {
+      if (_aborted || !headersComplete) {
         closeConnection();
         return -1;
       }
@@ -314,6 +344,20 @@ class SecureHttpClient {
     const auto found = std::find_if(_responseHeaders.begin(), _responseHeaders.end(),
                                     [&normalized](const Header& header) { return header.name == normalized; });
     return found == _responseHeaders.end() ? "" : found->value;
+  }
+
+  // Borrow one unambiguous response header without copying the header collection
+  // or its values. Pass a lowercased name. Null means absent or duplicated;
+  // the pointer stays valid only until begin(), another request, or destruction.
+  const std::string* getUniqueHeader(const char* lowercaseName) const {
+    if (!lowercaseName) return nullptr;
+    const std::string* value = nullptr;
+    for (const auto& header : _responseHeaders) {
+      if (header.name != lowercaseName) continue;
+      if (value) return nullptr;
+      value = &header.value;
+    }
+    return value;
   }
 
   // All response headers, in receive order, as (lowercased-name, value) pairs.
@@ -387,9 +431,7 @@ class SecureHttpClient {
     return !host.empty() && (scheme == "http" || scheme == "https");
   }
 
-  std::string hostHeader() const {
-    return hostHeaderFor(_scheme, _host, _port);
-  }
+  std::string hostHeader() const { return hostHeaderFor(_scheme, _host, _port); }
 
   static std::string hostHeaderFor(const std::string& scheme, const std::string& host, uint16_t port) {
     const uint16_t defaultPort = scheme == "https" ? 443 : 80;
@@ -406,7 +448,13 @@ class SecureHttpClient {
   }
 
   // Reuse the kept-alive connection when it matches, else (re)connect.
-  bool ensureConnected() {
+  //
+  // shouldAbort is handed to the TLS client so a cancel is honoured during
+  // DNS/TCP/handshake too. Without it the read loops are cancellable but the
+  // connect ahead of them is not, and a caller that shows a cancel affordance
+  // is promising something it cannot deliver for the longest part of a failing
+  // request.
+  bool ensureConnected(const AbortCallback& shouldAbort = nullptr) {
     if (connectionMatches()) return true;
     closeConnection();
     if (_scheme == "https") {
@@ -415,13 +463,19 @@ class SecureHttpClient {
       } else if (_rootCA) {
         _secure.setCACert(_rootCA);
       }
-      _secure.setTimeout(_timeoutMs / 1000);
-      if (!_secure.connect(_host.c_str(), _port)) return false;
+      _secure.setPeerCheck(_peerCheck, _peerCheckCtx);
+      _secure.setTimeout(_timeoutMs);
+      _secure.setAbortCallback(shouldAbort);
+      if (!_secure.connect(_host.c_str(), _port)) {
+        if (_secure.aborted()) _aborted = true;
+        return false;
+      }
       _conn = &_secure;
       _connHttps = true;
     } else {
-      _plain.setTimeout(_timeoutMs / 1000);
-      if (!_plain.connect(_host.c_str(), _port)) return false;
+      _plain.setTimeout(_timeoutMs);
+      _plain.setConnectionTimeout(_timeoutMs);
+      if (!hostResolves(_host.c_str()) || !_plain.connect(_host.c_str(), _port)) return false;
       _conn = &_plain;
       _connHttps = false;
     }
@@ -443,8 +497,13 @@ class SecureHttpClient {
   // Request line + headers (+ body). Write results are checked: a stale
   // keep-alive socket often surfaces first as a failed write.
   bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
-    std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
-    req += "User-Agent: " + _userAgent + "\r\n";
+    // Reserved up front so a few-KB cookie isn't doubled by append growth.
+    size_t size = 256 + _path.size() + _host.size() + _userAgent.size() + 2 * (_authUser.size() + _authPass.size());
+    for (const std::string& h : _headers) size += h.size();
+    std::string req;
+    req.reserve(size);
+    req.append(method).append(" ").append(_path).append(" HTTP/1.1\r\nHost: ").append(hostHeader()).append("\r\n");
+    req.append("User-Agent: ").append(_userAgent).append("\r\n");
     req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     if (!_authUser.empty()) {
       const std::string creds = _authUser + ":" + _authPass;
@@ -573,13 +632,13 @@ class SecureHttpClient {
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.
   WiFiClient _plain;
+  bool _reserveFullRecord = false;
   SecureClient _secure;
   Client* _conn = nullptr;
   std::string _connHost;
   uint16_t _connPort = 0;
   bool _connHttps = false;
   bool _reuse = true;
-  bool _preferTls12 = false;
 
   std::string _scheme;
   std::string _host;
@@ -590,6 +649,8 @@ class SecureHttpClient {
   int _status = 0;
   size_t _contentLength = 0;
   const char* _rootCA = nullptr;
+  SecureClient::PeerCheck _peerCheck = nullptr;
+  void* _peerCheckCtx = nullptr;
   std::string _userAgent = "FreeInk-ESP32";
   std::string _authUser;
   std::string _authPass;

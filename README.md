@@ -14,7 +14,7 @@ Open-source custom firmware for <b>Xteink X3, X4 and X4 Pro</b>
 </p>
 
 <p align="center">
-FB2 / FB2.ZIP / EPUB · dictionaries · custom fonts · OPDS · statistics · web tools · touch support on X4 Pro
+FB2 / FB2.ZIP / FB3 / FB3.ZIP / DOCX / MOBI / AZW3 / HTML / RTF / Markdown / EPUB · dictionaries · custom fonts · OPDS · statistics · web tools · touch support on X4 Pro
 </p>
 
 > [!WARNING]
@@ -35,6 +35,13 @@ FB2 / FB2.ZIP / EPUB · dictionaries · custom fonts · OPDS · statistics · we
 ### Reading and book formats
 
 - Native **FB2** and **FB2.ZIP** support.
+- Native **Markdown** (`.md`, `.markdown`) reader with chapters, TOC, lists, quotes, code and tables — see [docs/MARKDOWN.md](docs/MARKDOWN.md).
+- **GIF** images in EPUB (first frame, interlaced supported) — decoder in `lib/GifDecoder`.
+- Native **MOBI / AZW / AZW3 (KF8)** reader (`.mobi`, `.azw`, `.azw3`, `.prc`; DRM-free) — see [docs/MOBI.md](docs/MOBI.md).
+- Native **HTML** (`.html`, `.htm`, `.xhtml`) reader — see [docs/HTML.md](docs/HTML.md).
+- Native **RTF** reader with chapters, tables, code pages and pictures — see [docs/RTF.md](docs/RTF.md).
+- Native **DOCX** (Word) reader with chapters from headings, lists, tables, footnotes and images — see [docs/DOCX.md](docs/DOCX.md).
+- Native **FB3** and **FB3.ZIP** support (`.fb3`, a zipped `.fb3`, or an FB3 package renamed to `.zip`) — see [docs/FB3.md](docs/FB3.md).
 - **EPUB** reading with browser-side EPUBKIT preparation/optimization.
 - **TXT, XTC and XTCH** support.
 - ZIP content detection for supported books instead of relying only on the file extension.
@@ -198,3 +205,6 @@ Contributors and testers who helped shape recent inkMOD releases include **Alpa4
 ## License
 
 See [`LICENSE`](LICENSE).
+
+
+См. также [docs/READER_FEATURES.md](docs/READER_FEATURES.md): BootHealth, все закладки, предпросмотр сносок, печатные страницы, профили чтения.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ContentProtection.h>
 #include <Print.h>
 
 #include <cstdint>
@@ -37,6 +38,11 @@ class Epub {
   std::string cachePath;
   // Spine and TOC cache
   std::unique_ptr<BookMetadataCache> bookMetadataCache;
+  // Optional on-read access to protected (encrypted) entries; null for ordinary books.
+  std::unique_ptr<freeink::content::ContentDecryptor> decryptor;
+  // Why a protected book could not be opened ("access expired", "no content key for this book", ...).
+  std::string protectionError;
+  bool openProtection();
   // CSS parser for styling
   std::unique_ptr<CssParser> cssParser;
   // CSS files
@@ -51,6 +57,20 @@ class Epub {
   std::string itemPath(const std::string& itemHref) const;
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
+  // The first JPEG/PNG reference in a cover document (the guide's cover page, or an SVG wrapper
+  // named as the cover image), resolved against the document's folder; empty when it holds none.
+  // Streams the document, never reads it whole into RAM.
+  std::string findCoverImageInDocument(const std::string& docHref) const;
+  // The cover picture's href, following an SVG/XHTML wrapper left in an older book cache.
+  std::string resolvedCoverHref() const;
+  // The picture a cover reference leads to: the reference itself when it names a JPEG or PNG, else
+  // the picture of the document it names. A fragment is dropped.
+  std::string coverPictureOf(const std::string& href) const;
+  // The cover page an EPUB 3 navigation document's landmarks name (epub:type="cover"), resolved against the
+  // document's folder; empty when it names none.
+  std::string coverPageFromNavLandmarks(const std::string& navHref) const;
+  // The best JPEG/PNG in the archive whose file name says cover (cover.jpg, cover-image.png ...).
+  std::string coverPictureByName() const;
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
   CssParseStatus parseCssFiles(bool forceRebuild = false) const;
@@ -58,6 +78,7 @@ class Epub {
 
  public:
   using ProgressFn = std::function<void(uint8_t progress)>;
+  const std::string& getProtectionError() const { return protectionError; }
   explicit Epub(std::string filepath, const std::string& cacheDir);
   ~Epub() = default;
   static std::string cachePathForFilePath(const std::string& filepath, const std::string& cacheDir);
@@ -69,6 +90,8 @@ class Epub {
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;
+  const std::string& getTocNavItem() const { return tocNavItem; }
+  const std::string& getTocNcxItem() const { return tocNcxItem; }
   const std::string& getPath() const;
   const std::string& getTitle() const;
   const std::string& getAuthor() const;

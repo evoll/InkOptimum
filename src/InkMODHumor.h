@@ -32,11 +32,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Папка чистая. Подозрительно чистая.",
       "Я посмотрела даже под ковром. Ничего.",
   };
-  static constexpr const char* EMPTY_FOLDER_UK[] = {
-      "Тут так порожньо, що навіть EPUB не завалявся.",
-      "Папка чиста. Підозріло чиста.",
-      "Я навіть під килимком перевірила. Нічого.",
-  };
 
   static constexpr const char* NO_BOOKMARKS_EN[] = {
       "Memory is managing on its own so far.",
@@ -47,11 +42,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Память пока справляется сама.",
       "Ничего не отмечено. Книга пока без флажков.",
       "Закладок нет. Видимо, всё и так запоминается.",
-  };
-  static constexpr const char* NO_BOOKMARKS_UK[] = {
-      "Пам'ять поки справляється сама.",
-      "Нічого не позначено. Книга поки без прапорців.",
-      "Закладок немає. Мабуть, усе й так запам'ятовується.",
   };
 
   static constexpr const char* NO_FOOTNOTES_EN[] = {
@@ -64,11 +54,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Сносок нет. Читаем без подсказок автора.",
       "Никаких мелких букв. Можно расслабиться.",
   };
-  static constexpr const char* NO_FOOTNOTES_UK[] = {
-      "Автор сьогодні вирішив нічого не пояснювати.",
-      "Виносок немає. Читаємо без підказок автора.",
-      "Жодного дрібного шрифту. Можна розслабитися.",
-  };
 
   static constexpr const char* EMPTY_TXT_EN[] = {
       "The file is here. The words seem to be missing.",
@@ -79,11 +64,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Файл есть. Слова, похоже, забыли положить.",
       "Я открыла. Там абсолютная литературная тишина.",
       "Ноль букв. Очень минималистичное произведение.",
-  };
-  static constexpr const char* EMPTY_TXT_UK[] = {
-      "Файл є. Слова, схоже, забули покласти.",
-      "Я відкрила. Там абсолютна літературна тиша.",
-      "Нуль літер. Дуже мінімалістичний твір.",
   };
 
   static constexpr const char* EMPTY_CATALOG_EN[] = {
@@ -96,11 +76,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Каталог посмотрел на меня и промолчал.",
       "Тут пусто. Даже скачать нечего.",
   };
-  static constexpr const char* EMPTY_CATALOG_UK[] = {
-      "Полиці є, книжок поки не завезли.",
-      "Каталог подивився на мене й промовчав.",
-      "Тут порожньо. Навіть завантажити нічого.",
-  };
 
   static constexpr const char* CACHE_CLEARED_EN[] = {
       "The evidence has been erased.",
@@ -111,11 +86,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Следы преступления уничтожены.",
       "Кэш ушёл. Он многое знал.",
       "Чисто. Как будто мы здесь и не читали.",
-  };
-  static constexpr const char* CACHE_CLEARED_UK[] = {
-      "Сліди злочину знищено.",
-      "Кеш пішов. Він знав надто багато.",
-      "Чисто. Наче ми тут і не читали.",
   };
 
   static constexpr const char* CACHE_FAILED_EN[] = {
@@ -128,11 +98,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Не всё захотело удаляться добровольно.",
       "Уборка сорвалась. Подробности знает лог.",
   };
-  static constexpr const char* CACHE_FAILED_UK[] = {
-      "Я спробувала прибрати. Кеш чинив опір.",
-      "Не все погодилося видалятися добровільно.",
-      "Прибирання зірвалося. Подробиці знає лог.",
-  };
 
   static constexpr const char* NO_WIFI_EN[] = {
       "The internet decided to read without us today.",
@@ -143,11 +108,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Интернет сегодня решил почитать без нас.",
       "Wi-Fi спрятался. Я его тоже не вижу.",
       "До сети не докричались.",
-  };
-  static constexpr const char* NO_WIFI_UK[] = {
-      "Інтернет сьогодні вирішив почитати без нас.",
-      "Wi-Fi сховався. Я його теж не бачу.",
-      "До мережі не докричалися.",
   };
 
   static constexpr const char* CLOCK_FAILED_EN[] = {
@@ -160,11 +120,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
       "Часы решили жить в своём часовом поясе.",
       "Сеть и время сегодня не договорились.",
   };
-  static constexpr const char* CLOCK_FAILED_UK[] = {
-      "Час є. Синхронізувати його не вдалося.",
-      "Годинник вирішив жити у власному часовому поясі.",
-      "Мережа й час сьогодні не домовилися.",
-  };
 
   const char* const* values = nullptr;
   size_t count = 0;
@@ -173,7 +128,6 @@ inline const char* phrase(const Moment moment, const uint32_t seed = 0) {
   do { \
     switch (I18N.getLanguage()) { \
       case Language::RU: values = base##_RU; count = std::size(base##_RU); break; \
-      case Language::UK: values = base##_UK; count = std::size(base##_UK); break; \
       case Language::EN: default: values = base##_EN; count = std::size(base##_EN); break; \
     } \
   } while (false)

@@ -19,10 +19,14 @@
 #include "ButtonRemapActivity.h"
 #include "BookMenuSettingsActivity.h"
 #include "ClearCacheActivity.h"
+#include "ScreenCalibrationActivity.h"
+#include <TlsTrust.h>
 #include "ClockOffsetActivity.h"
 #include "ClockSyncActivity.h"
+#include "activities/weather/WeatherActivity.h"
 #include "InkMODSettings.h"
 #include "FontSelectionActivity.h"
+#include "BleSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
@@ -36,6 +40,7 @@
 #include "StatusBarSettingsActivity.h"
 #include "SupportInkMODActivity.h"
 #include "SystemDiagnosticsActivity.h"
+#include "activities/home/AlertActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/reader/StatsBackup.h"
@@ -47,6 +52,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/FirmwareFlasher.h"
+#include "util/ButtonSettingsBackup.h"
+#include "InkMODState.h"
 #include "network/OtaBootSwitch.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
@@ -925,12 +932,44 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::KOReaderSync:
         startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::BluetoothPageTurner:
+        startActivityForResult(std::make_unique<BleSettingsActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::OPDSBrowser:
         startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::Network:
         startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false), resultHandler);
         break;
+      case SettingAction::BackupButtons:
+      case SettingAction::RestoreButtons: {
+        const bool restoring = setting.action == SettingAction::RestoreButtons;
+        auto showResult = [this](const char* message) {
+          snprintf(APP_STATE.pendingAlertTitle, sizeof(APP_STATE.pendingAlertTitle), "%s", tr(STR_CAT_CONTROLS));
+          snprintf(APP_STATE.pendingAlertBody, sizeof(APP_STATE.pendingAlertBody), "%s", message);
+          APP_STATE.pendingAlertGoHomeOnBack.store(false, std::memory_order_relaxed);
+          startActivityForResult(std::make_unique<AlertActivity>(renderer, mappedInput),
+                                 [this](const ActivityResult&) { requestUpdate(); });
+        };
+        if (!restoring) {
+          showResult(button_backup::save() ? tr(STR_BUTTON_SETTINGS_SAVED) : tr(STR_BUTTON_SETTINGS_FAILED));
+        } else if (!button_backup::exists()) {
+          showResult(tr(STR_BUTTON_SETTINGS_FILE_MISSING));
+        } else {
+          startActivityForResult(
+              std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_BUTTON_SETTINGS_RESTORE),
+                                                     tr(STR_BUTTON_SETTINGS_RESTORE_PROMPT)),
+              [this, showResult](const ActivityResult& result) {
+                if (result.isCancelled) {
+                  requestUpdate();
+                  return;
+                }
+                showResult(button_backup::restore() > 0 ? tr(STR_BUTTON_SETTINGS_RESTORED)
+                                                        : tr(STR_BUTTON_SETTINGS_FAILED));
+              });
+        }
+        break;
+      }
       case SettingAction::BackupStats:
         startActivityForResult(std::make_unique<BackupStatsActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -1015,6 +1054,17 @@ void SettingsActivity::toggleCurrentSetting() {
               requestUpdate();
             });
         break;
+      case SettingAction::ForgetTlsPins:
+        startActivityForResult(
+            std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_TLS_FORGET), tr(STR_TLS_FORGET_CONFIRM)),
+            [this](const ActivityResult& result) {
+              if (!result.isCancelled) TlsTrust::forgetAllPins();
+              requestUpdate();
+            });
+        break;
+      case SettingAction::ScreenCalibration:
+        startActivityForResult(std::make_unique<ScreenCalibrationActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::ClearCache:
         startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -1045,7 +1095,7 @@ void SettingsActivity::toggleCurrentSetting() {
             std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_BOOT_OTHER_SLOT), body),
             [this, alternate](const ActivityResult& result) {
               if (result.isCancelled) return;
-              if (!ota_boot::switchTo(alternate)) {
+              if (!ota_boot::switchToInstalled(alternate)) {
                 LOG_ERR("BOOT", "manual OTA slot switch failed");
                 GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
                 renderer.displayBuffer();
@@ -1062,6 +1112,9 @@ void SettingsActivity::toggleCurrentSetting() {
       }
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Weather:
+        startActivityForResult(std::make_unique<WeatherActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::ClockSync:
         startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);

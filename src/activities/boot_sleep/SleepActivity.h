@@ -30,6 +30,7 @@ class SleepActivity final : public Activity {
   void renderLastScreenSleepScreen() const;
   void renderBlankSleepScreen() const;
   void renderOverlaySleepScreen() const;
+  bool drawCoverBackground() const;
   uint8_t effectiveSleepScreenMode() const;
   const std::string& effectivePinnedSleepImagePath() const;
   bool canSnapshotOverlayBackground = false;

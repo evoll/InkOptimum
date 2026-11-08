@@ -19,6 +19,18 @@
 #include "network/WifiPowerSaveGuard.h"
 
 namespace {
+
+// Set by the OPDS browser for the lifetime of a session; all requests run on the activity task.
+struct RequestProfile {
+  std::string userAgent;
+  std::string headerName;
+  std::string headerValue;
+};
+RequestProfile gProfile;
+
+std::string effectiveUserAgent() {
+  return gProfile.userAgent.empty() ? std::string("inkMOD-ESP32-") + INKMOD_VERSION : gProfile.userAgent;
+}
 // E-paper refreshes are slow (~500 ms on X4). Updating every 250 ms stalls
 // the HTTP read loop, increases the chance of server-side disconnects, and
 // makes changing counters ghost over each other. Keep progress useful but
@@ -196,7 +208,7 @@ HttpDownloader::DownloadError runGetWolfSslLowMemory(const std::string& url, Sin
   // to handshake but then wolfSSL_read() failed with MEMORY_E (-125) when the
   // first application record arrived. TLS 1.2 keeps a smaller live working set.
   http.setPreferTls12(true);
-  http.setUserAgent(std::string("inkMOD-ESP32-") + INKMOD_VERSION);
+  http.setUserAgent(effectiveUserAgent());
   if (!http.begin(url)) {
     LOG_ERR("HTTP", "%s wolfSSL fallback rejected URL", label);
     return HttpDownloader::HTTP_ERROR;
@@ -207,6 +219,7 @@ HttpDownloader::DownloadError runGetWolfSslLowMemory(const std::string& url, Sin
     http.addHeader("Range", rangeHeader);
   }
   http.addHeader("Accept-Encoding", "identity");
+  if (!gProfile.headerName.empty()) http.addHeader(gProfile.headerName.c_str(), gProfile.headerValue.c_str());
 
   sink.downloaded = sink.resumeOffset;
   LOG_INF("HTTP", "%s wolfSSL low-memory fallback start: free=%u maxAlloc=%u", label,
@@ -472,7 +485,10 @@ HttpDownloader::DownloadError runGetStreamPerform(const std::string& url, const 
 
 void setRequestHeaders(esp_http_client_handle_t client, const std::string& username, const std::string& password,
                        size_t resumeOffset, bool sendAuthorization) {
-  esp_http_client_set_header(client, "User-Agent", "inkMOD-ESP32-" INKMOD_VERSION);
+  esp_http_client_set_header(client, "User-Agent", effectiveUserAgent().c_str());
+  if (!gProfile.headerName.empty()) {
+    esp_http_client_set_header(client, gProfile.headerName.c_str(), gProfile.headerValue.c_str());
+  }
   esp_http_client_set_header(client, "Connection", "close");
   if (resumeOffset > 0) {
     char rangeHeader[40];
@@ -686,6 +702,106 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   logNetworkState("Redirect limit exceeded");
   return HttpDownloader::HTTP_ERROR;
 }
+
+// Single-attempt POST (no redirects, no resume): the LCP service answers directly. The body streams into
+// sink; the HTTP status is reported through statusOut and is NOT turned into an error here, so callers can
+// react to 401/403/422. Returns OK once a response was fully read.
+HttpDownloader::DownloadError runPost(const std::string& url, const std::string& body, const std::string& contentType,
+                                      Sink& sink, const size_t bufferSize, int* statusOut,
+                                      const esp_http_client_method_t method = HTTP_METHOD_POST) {
+  if (statusOut) *statusOut = 0;
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.method = method;
+  config.buffer_size = HTTP_RX_BUF;
+  config.buffer_size_tx = HTTP_TX_BUF;
+  config.timeout_ms = HTTP_TIMEOUT_MS;
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.keep_alive_enable = false;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    LOG_ERR("HTTP", "POST client init failed");
+    return HttpDownloader::HTTP_ERROR;
+  }
+  esp_http_client_set_header(client, "User-Agent", effectiveUserAgent().c_str());
+  esp_http_client_set_header(client, "Connection", "close");
+  if (!contentType.empty()) esp_http_client_set_header(client, "Content-Type", contentType.c_str());
+
+  esp_err_t err = esp_http_client_open(client, static_cast<int>(body.size()));
+  if (err != ESP_OK) {
+    LOG_ERR("HTTP", "POST open failed: %s", esp_err_to_name(err));
+    logTlsError(client, "POST open");
+    esp_http_client_cleanup(client);
+    return HttpDownloader::HTTP_ERROR;
+  }
+  size_t sent = 0;
+  while (sent < body.size()) {
+    if (isCancelRequested(sink.cancelFlag, sink.shouldCancel)) {
+      esp_http_client_cleanup(client);
+      return HttpDownloader::ABORTED;
+    }
+    const int n = esp_http_client_write(client, body.data() + sent, static_cast<int>(body.size() - sent));
+    if (n < 0) {
+      LOG_ERR("HTTP", "POST write failed after %zu/%zu bytes", sent, body.size());
+      esp_http_client_cleanup(client);
+      return HttpDownloader::HTTP_ERROR;
+    }
+    sent += static_cast<size_t>(n);
+  }
+
+  const int64_t responseLength = esp_http_client_fetch_headers(client);
+  const int status = esp_http_client_get_status_code(client);
+  if (statusOut) *statusOut = status;
+  if (responseLength < 0) {
+    LOG_ERR("HTTP", "POST fetch headers failed: %lld", static_cast<long long>(responseLength));
+    esp_http_client_cleanup(client);
+    return HttpDownloader::HTTP_ERROR;
+  }
+  sink.total = responseLength > 0 ? static_cast<size_t>(responseLength) : 0;
+  sink.downloaded = 0;
+
+  auto buffer = makeUniqueNoThrow<char[]>(bufferSize);
+  if (!buffer) {
+    LOG_ERR("HTTP", "POST: cannot allocate %zu byte buffer", bufferSize);
+    esp_http_client_cleanup(client);
+    return HttpDownloader::HTTP_ERROR;
+  }
+  ProgressNotifier progressNotifier(sink.total, std::move(sink.progress));
+  uint32_t lastReadMs = millis();
+  while (true) {
+    if (isCancelRequested(sink.cancelFlag, sink.shouldCancel)) {
+      esp_http_client_cleanup(client);
+      return HttpDownloader::ABORTED;
+    }
+    const int bytesRead = esp_http_client_read(client, buffer.get(), bufferSize);
+    if (bytesRead < 0) {
+#ifdef ESP_ERR_HTTP_EAGAIN
+      if (bytesRead == -ESP_ERR_HTTP_EAGAIN && millis() - lastReadMs < DOWNLOAD_IDLE_TIMEOUT_MS) {
+        delay(1);
+        continue;
+      }
+#endif
+      LOG_ERR("HTTP", "POST read error after %zu bytes", sink.downloaded);
+      esp_http_client_cleanup(client);
+      return HttpDownloader::HTTP_ERROR;
+    }
+    if (bytesRead == 0) break;
+    if (!sink.write(reinterpret_cast<const uint8_t*>(buffer.get()), static_cast<size_t>(bytesRead))) {
+      esp_http_client_cleanup(client);
+      return HttpDownloader::FILE_ERROR;
+    }
+    sink.downloaded += static_cast<size_t>(bytesRead);
+    lastReadMs = millis();
+    progressNotifier.notify(sink.downloaded, false);
+    if (sink.total > 0 && sink.downloaded >= sink.total) break;
+    delay(0);
+  }
+  const bool complete = esp_http_client_is_complete_data_received(client);
+  esp_http_client_cleanup(client);
+  progressNotifier.notify(sink.downloaded, true);
+  return complete ? HttpDownloader::OK : HttpDownloader::HTTP_ERROR;
+}
 }  // namespace
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
@@ -750,6 +866,13 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
     result = runGetWolfSslLowMemory(url, sink, OPDS_STREAM_TIMEOUT_MS, "OPDS");
   }
   return result == OK;
+}
+
+void HttpDownloader::setRequestProfile(const std::string& userAgent, const std::string& headerName,
+                                       const std::string& headerValue) {
+  gProfile.userAgent = userAgent;
+  gProfile.headerName = headerName;
+  gProfile.headerValue = headerValue;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
@@ -890,4 +1013,88 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);
   return OK;
+}
+
+bool HttpDownloader::postForm(const std::string& url, const std::string& body, std::string& response, int* statusOut,
+                              const std::string& contentType) {
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
+  constexpr size_t MAX_RESPONSE_BYTES = 16 * 1024;  // JSON replies only
+  response.clear();
+  Sink sink;
+  sink.write = [&response](const uint8_t* data, size_t len) {
+    if (response.size() + len > MAX_RESPONSE_BYTES) return false;
+    response.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  };
+  int status = 0;
+  const DownloadError result = runPost(url, body, contentType, sink, 2048, &status);
+  if (statusOut) *statusOut = status;
+  return result == OK && status >= 200 && status < 300;
+}
+
+HttpDownloader::DownloadError HttpDownloader::postToFile(const std::string& url, const std::string& body,
+                                                         const std::string& contentType, const std::string& destPath,
+                                                         ProgressCallback progress, const bool* cancelFlag,
+                                                         int* statusOut) {
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
+  // Stage through "<dest>.part" so a failed transfer never leaves a truncated book under its final name.
+  const std::string partPath = destPath + ".part";
+  if (Storage.exists(partPath.c_str())) Storage.remove(partPath.c_str());
+
+  FsFile file;
+  bool fileOpen = false;
+  Sink sink;
+  sink.progress = std::move(progress);
+  sink.cancelFlag = const_cast<bool*>(cancelFlag);
+  sink.write = [&](const uint8_t* data, size_t len) {
+    if (!fileOpen) {
+      fileOpen = Storage.openFileForWrite("HTTP", partPath.c_str(), file);
+      if (!fileOpen) return false;
+    }
+    return file.write(data, len) == len;
+  };
+  int status = 0;
+  DownloadError result = runPost(url, body, contentType, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, &status);
+  if (statusOut) *statusOut = status;
+  if (fileOpen) {
+    file.flush();
+    file.close();
+  }
+  if (result == OK && (status != 200 || sink.downloaded == 0)) {
+    LOG_ERR("HTTP", "POST %s answered %d (%zu bytes)", url.c_str(), status, sink.downloaded);
+    result = HTTP_ERROR;
+  }
+  if (result != OK) {
+    Storage.remove(partPath.c_str());
+    return result;
+  }
+  if (Storage.exists(destPath.c_str())) Storage.remove(destPath.c_str());
+  if (!Storage.rename(partPath.c_str(), destPath.c_str())) {
+    Storage.remove(partPath.c_str());
+    return FILE_ERROR;
+  }
+  return OK;
+}
+
+bool HttpDownloader::sendRequest(const std::string& method, const std::string& url, const std::string& body,
+                                 std::string& response, int* statusOut) {
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
+  constexpr size_t MAX_RESPONSE_BYTES = 16 * 1024;
+  response.clear();
+  Sink sink;
+  sink.write = [&response](const uint8_t* data, size_t len) {
+    if (response.size() + len > MAX_RESPONSE_BYTES) return false;
+    response.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  };
+  esp_http_client_method_t m = HTTP_METHOD_GET;
+  if (method == "PUT") m = HTTP_METHOD_PUT;
+  else if (method == "POST") m = HTTP_METHOD_POST;
+  int status = 0;
+  const DownloadError result = runPost(url, body, body.empty() ? "" : "application/json", sink, 2048, &status, m);
+  if (statusOut) *statusOut = status;
+  return result == OK && status >= 200 && status < 300;
 }

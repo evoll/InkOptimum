@@ -45,7 +45,7 @@ class CssParser {
   // Bumping the CSS cache also invalidates existing section/page caches through
   // the normal CSS-rebuild path so stale pre-fix pages are not reused.
   static constexpr uint32_t CSS_CACHE_MAGIC = 0x435843FF;
-  static constexpr uint8_t CSS_CACHE_VERSION = 15;
+  static constexpr uint8_t CSS_CACHE_VERSION = 18;  // v18: unicode-bidi in the hiddenText byte's bits 4-6;  // v17: writing-mode, in the hiddenText byte's bits 2-3
 
   static constexpr size_t MAX_DESCENDANT_RULES = 100;
 

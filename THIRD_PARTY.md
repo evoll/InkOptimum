@@ -9,10 +9,12 @@ from the source distribution included in the build.
 | FreeInk SDK (`freeink-sdk/`) | X4 display, board, input, SD, battery, UI support | SDK README states MIT and describes a re-architecture derived from earlier display work; verify each copied source header before redistribution | Keep behind `src/hal`; prefer adapting public API over copying implementation |
 | Arduino-ESP32 / ESP-IDF | Platform and Arduino runtime | Platform dependency; licence governed by the selected framework distribution | Use public APIs only |
 | SdFat / SDCardManager | SD storage backend | Transitive/platform dependency | Access only via existing `HalStorage` or reader HAL adapter |
-| ArduinoJson | settings/network JSON | Declared PlatformIO dependency | Keep out of reader core unless a reader cache format explicitly needs it |
-| PNGdec / JPEGDEC | image conversion | Declared PlatformIO dependencies | Do not copy decoder code; invoke through a renderer/image adapter |
+| ArduinoJson | settings/network JSON | Declared PlatformIO dependency (7.4.3: fixes a buffer overrun when parsing long float strings) | Keep out of reader core unless a reader cache format explicitly needs it |
+| PNGdec / JPEGDEC | image conversion | Declared PlatformIO dependencies (PNGdec 1.1.7 adds palette/tRNS buffer-overflow guards) | Do not copy decoder code; invoke through a renderer/image adapter |
 | expat, uzlib, InflateReader, ZipFile | XML/ZIP infrastructure | Mixed local/vendor history; per-file provenance review required | Reuse through narrow stream interfaces; record licence before any relocation |
 | DejaVu Sans | Built-in 12 pt reader font (regular, bold, italic, bold-italic), compiled into generated font headers under `lib/EpdFont/builtinFonts/` | DejaVu changes are public domain; underlying Bitstream Vera glyphs retain the Bitstream Vera font licence, with any Arev-derived glyphs retaining Tavmjong Bah's notice. Full bundled text: `freeink-sdk/libs/book/FreeInkBook/test/fixtures/fonts/DEJAVU-LICENSE` | Keep the licence text in the source distribution and preserve required copyright/trademark notices when redistributing the embedded/generated font data |
+| Paperio-Reader (GIF support) | `lib/GifDecoder`, `lib/Epub/Epub/converters/GifToFramebufferConverter.*` | MIT, Copyright (c) Dave Allie, https://github.com/Kapfilm/Paperio-Reader | Streaming LZW/row pipeline adapted and split into a platform-free decoder library with its own tests; keep this attribution |
+| KindleUnpack (format reference only) | `lib/Mobi` | GPL-3 project, used only as a reading reference for the public MOBI/KF8 layout | No KindleUnpack code or text is included; `lib/Mobi` is an independent implementation written from the format structure. Do not paste code from it. |
 | Fonts and generated font headers | UI and book glyphs | Assets may have their own licences | Keep source/font licence next to a manifest; do not assume MIT from firmware licence |
 
 ## Review checklist for every migration PR
@@ -24,4 +26,3 @@ from the source distribution included in the build.
    tests instead of copying code.
 5. Do not import code from KOReader, CoolReader, MuPDF or CrossPoint merely as
    a reference implementation without a separate compatibility review.
-

@@ -1,0 +1,7 @@
+{
+  "name": "Html",
+  "version": "1.0.0",
+  "build": {
+    "srcDir": "."
+  }
+}

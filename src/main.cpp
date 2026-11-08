@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <BlePageTurner.h>
 #include <BootLog.h>
 #include <BoardConfig.h>
 #include <Epub.h>
@@ -7,6 +8,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalScreenCalibration.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <HalFrontlight.h>
@@ -18,9 +20,11 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <SPI.h>
+#include <TrustedTime.h>
 #include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <atomic>
 #include <ctime>
 #include <new>
 
@@ -65,6 +69,7 @@ enum : int {
 inline esp_reset_reason_t esp_reset_reason() { return ESP_RST_UNKNOWN; }
 inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_UNDEFINED; }
 #else
+#include <esp_heap_caps.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #endif
@@ -74,6 +79,11 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 
 #include "AppVersion.h"
 #include "InkMODSettings.h"
+#include <TlsTrust.h>
+
+#include "util/PluginEventBus.h"
+#include "util/PluginLocations.h"
+#include "weather/WeatherService.h"
 #include "InkMODState.h"
 #include "GlobalActions.h"
 #include "KOReaderCredentialStore.h"
@@ -92,6 +102,9 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #ifndef SIMULATOR
 #include "network/FirmwareFlasher.h"
+#ifndef SIMULATOR
+#include "network/BootHealth.h"
+#endif
 #endif
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -102,6 +115,7 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "SdCardFontSystem.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "util/SerialLineBuffer.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, &renderer);
@@ -128,6 +142,12 @@ EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 EpdFont ui14RegularFont(&inter_14_regular);
 EpdFont ui14BoldFont(&inter_14_bold);
 EpdFontFamily ui14FontFamily(&ui14RegularFont, &ui14BoldFont);
+
+// "Dark" interface text: real bold faces for regular and explicit-bold draws alike, so width measuring,
+// wrapping and drawing agree without synthetic thickening. (No Inter 8 bold exists: SMALL stays regular.)
+EpdFontFamily ui10BoldFamily(&ui10BoldFont, &ui10BoldFont);
+EpdFontFamily ui12BoldFamily(&ui12BoldFont, &ui12BoldFont);
+EpdFontFamily ui14BoldFamily(&ui14BoldFont, &ui14BoldFont);
 
 EpdFont ipaFallback12Font(&inter_12_ipa_fallback);
 EpdFontFamily ipaFallback12Family(&ipaFallback12Font);
@@ -168,6 +188,7 @@ EpdFontFamily testFonts12Family(&testFonts12Regular, &testFonts12Bold, &testFont
 // else keeps the previously-verified Inter 12pt bump. If you confirm on a
 // device that another theme's rows have room too, add it to the switch below.
 void applyUiTextSize(GfxRenderer& r) {
+  const bool bold = SETTINGS.uiFontStyle == InkMODSettings::UI_FONT_BOLD;
   if (SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_LARGE) {
     // NOTE: RoundedRaff used to get a bigger LexendDeca 14pt bump here instead of the
     // Inter 12pt one every other theme uses (its taller list rows have room for it - see
@@ -180,10 +201,12 @@ void applyUiTextSize(GfxRenderer& r) {
     // boxes for those letters. Re-enable the RoundedRaff branch once lexenddeca_14_*.h
     // are regenerated (needs the LexendDeca + ChareInk7 source fonts, not present in
     // this checkout) and verified to have full Cyrillic coverage.
-    r.replaceFont(UI_10_FONT_ID, ui12FontFamily);
+    r.replaceFont(UI_10_FONT_ID, bold ? ui12BoldFamily : ui12FontFamily);
   } else {
-    r.replaceFont(UI_10_FONT_ID, ui10FontFamily);
+    r.replaceFont(UI_10_FONT_ID, bold ? ui10BoldFamily : ui10FontFamily);
   }
+  r.replaceFont(UI_12_FONT_ID, bold ? ui12BoldFamily : ui12FontFamily);
+  r.replaceFont(UI_14_FONT_ID, bold ? ui14BoldFamily : ui14FontFamily);
 }
 
 int uiControlFontId() {
@@ -355,15 +378,31 @@ struct EmergencyFirmwareFile {
   const char* appliedPath;
   const char* incompatiblePath;
   const char* failedPath;
+  // Board-specific trigger: the user explicitly names the target board in the file name, so an image
+  // without an inkOPTIMUM board marker (stock / third-party build) is accepted without confirmation.
+  // A marker naming a *different* board is still refused.
+  bool allowUntagged;
 };
 
 // Both names are supported as headless, power-on recovery triggers. Keep the
 // inkMOD-specific name first so an explicitly prepared recovery image wins if
 // both files happen to be present on the same SD card.
 static constexpr EmergencyFirmwareFile EMERGENCY_FIRMWARE_FILES[] = {
+// Board-specific names are honoured only by the matching build, so a file prepared for the other
+// ESP32-S3 board is simply ignored instead of being flashed.
+#if defined(FREEINK_DEVICE_X4PRO)
+    {"/inkoptimum-x4pro-recovery.bin", "/inkoptimum-x4pro-recovery.applied.bin",
+     "/inkoptimum-x4pro-recovery.incompatible.bin", "/inkoptimum-x4pro-recovery.failed.bin", true},
+    {"/x4pro-update.bin", "/x4pro-update.applied.bin", "/x4pro-update.incompatible.bin", "/x4pro-update.failed.bin",
+     true},
+#elif defined(FREEINK_DEVICE_X4CLASSIC)
+    {"/inkoptimum-x4c-recovery.bin", "/inkoptimum-x4c-recovery.applied.bin",
+     "/inkoptimum-x4c-recovery.incompatible.bin", "/inkoptimum-x4c-recovery.failed.bin", true},
+    {"/x4c-update.bin", "/x4c-update.applied.bin", "/x4c-update.incompatible.bin", "/x4c-update.failed.bin", true},
+#endif
     {"/inkmod-recovery.bin", "/inkmod-recovery.applied.bin", "/inkmod-recovery.incompatible.bin",
-     "/inkmod-recovery.failed.bin"},
-    {"/update.bin", "/update.applied.bin", "/update.incompatible.bin", "/update.failed.bin"},
+     "/inkmod-recovery.failed.bin", false},
+    {"/update.bin", "/update.applied.bin", "/update.incompatible.bin", "/update.failed.bin", false},
 };
 
 static bool renameEmergencyFirmware(const char* source, const char* destination) {
@@ -378,16 +417,19 @@ static void tryEmergencyFirmwareUpdate() {
   for (const auto& fw : EMERGENCY_FIRMWARE_FILES) {
     if (!Storage.exists(fw.path)) continue;
 
-    LOG_INF("FW", "Emergency SD firmware detected: %s", fw.path);
-    const auto result = firmware_flash::flashFromSdPath(fw.path, nullptr, nullptr);
+    LOG_INF("FW", "Emergency SD firmware detected: %s%s", fw.path,
+            fw.allowUntagged ? " (board-named trigger: unmarked image allowed, no confirmation)" : "");
+    const auto result = firmware_flash::flashFromSdPath(fw.path, nullptr, nullptr, /*alreadyValidated=*/false, fw.allowUntagged);
     if (result != firmware_flash::Result::OK) {
       LOG_ERR("FW", "Emergency SD firmware failed: %s (%s)", fw.path, firmware_flash::resultName(result));
 
-      // A C3/S3 mismatch is not a broken image: mark it explicitly so the user
+      // A C3/S3 or X4 Pro/X4 Classic mismatch is not a broken image: mark it explicitly so the user
       // can see the reason directly on the SD card and so boot does not retry it
-      // forever. Most importantly, FirmwareFlasher returns this result before
+      // forever. Most importantly, FirmwareFlasher returns these results before
       // any erase/write operation touches the OTA partition.
-      if (result == firmware_flash::Result::INCOMPATIBLE_CHIP) {
+      if (result == firmware_flash::Result::INCOMPATIBLE_CHIP ||
+          result == firmware_flash::Result::INCOMPATIBLE_BOARD ||
+          result == firmware_flash::Result::UNTAGGED_IMAGE) {
         if (renameEmergencyFirmware(fw.path, fw.incompatiblePath)) {
           LOG_ERR("FW", "Incompatible recovery firmware renamed to %s", fw.incompatiblePath);
         }
@@ -677,6 +719,79 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+// Bluetooth page turner (lib/BlePageTurner): what the module may ask of this firmware. The module
+// owns the radio; loop() tells it what is on screen, and the screen changes and sleep ask it to stop.
+namespace pageturner {
+std::atomic<bool> holdsCpu{false};
+
+bleturner::Heap heap() {
+  return {heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)};
+}
+
+// Runs on the radio's start task. Only TRIES the render lock: the render task can hold it through a
+// chapter build that is waiting for this very radio.
+bool releaseCaches() {
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) return false;
+  const int fontId = SETTINGS.getReaderFontId();
+  if (renderer.isSdCardFont(fontId)) renderer.trimSdCardFontForLowMemory(fontId);
+  return true;
+}
+
+bool deliver(const bleturner::Action action) {
+  switch (action) {
+    case bleturner::Action::NextPage:
+      return activityManager.remoteTurn(true, false);
+    case bleturner::Action::PrevPage:
+      return activityManager.remoteTurn(false, false);
+    case bleturner::Action::NextChapter:
+      return activityManager.remoteTurn(true, true);
+    case bleturner::Action::PrevChapter:
+      return activityManager.remoteTurn(false, true);
+    case bleturner::Action::Confirm:
+      return activityManager.remoteClick(RemoteButton::Confirm);
+    case bleturner::Action::Back:
+      return activityManager.remoteClick(RemoteButton::Back);
+    case bleturner::Action::ReaderMenu:
+      return activityManager.remoteShortcut(true);
+    case bleturner::Action::SaveQuote:
+      return activityManager.remoteShortcut(false);
+    case bleturner::Action::None:
+      return false;
+  }
+  return false;
+}
+
+bool yieldForRadio() { return true; }        // the reader keeps no parser alive between pages
+bool fileTransferActive() { return false; }  // file transfer is a screen of its own: the radio is off there
+void restartIntoBook() { silentRestartToReader(); }
+
+// The radio needs a steady clock while it is up or changing state.
+void holdFullSpeed(const bool hold) {
+  holdsCpu.store(hold);
+  if (hold) powerManager.setPowerSaving(false);
+}
+
+void log(const bool error, const char* format, va_list args) {
+#ifdef ENABLE_SERIAL_LOG
+  char line[160];
+  vsnprintf(line, sizeof(line), format, args);
+  if (error) {
+    LOG_ERR("BLE", "%s", line);
+  } else {
+    LOG_DBG("BLE", "%s", line);
+  }
+#else
+  (void)error;
+  (void)format;
+  (void)args;
+#endif
+}
+
+const bleturner::Host host{heap,          releaseCaches, deliver, yieldForRadio, fileTransferActive, restartIntoBook,
+                           holdFullSpeed, log,           nullptr};
+}  // namespace pageturner
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -707,6 +822,25 @@ void enterDeepSleep(bool fromTimeout) {
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
   deepSleepInProgress = true;
+  // Stop Bluetooth before plugin delivery can start WiFi; a timeout defers delivery.
+  const bool bluetoothStopped = bleturner::beforeSleep(2000);
+  if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
+  // Sleep may end in a power-off: persist the clock floor so a later cold boot resumes from it.
+  trustedtime::note();
+  {
+    // sleep.enter: queue it and, when Wi-Fi is already up, deliver before the sleep screen renders (a handler
+    // may fetch /sleep.bmp). A handler with "connect": true may bring Wi-Fi up for this (see drainAtSleep).
+    plugincat::Vars vars;
+    if (activityManager.isReaderActivity()) {
+      vars.emplace_back("book", activityManager.getCurrentBookPath());
+      const ScreenshotInfo info = activityManager.getScreenshotInfo();
+      vars.emplace_back("percent", std::to_string(info.progressPercent));
+      vars.emplace_back("end_percent", std::to_string(info.endProgressPercent));
+    }
+    PluginEventBus::emit("sleep.enter", vars);
+    // With Bluetooth still up there is no heap to start Wi-Fi in: the queued events retry on the next drain.
+    if (bluetoothStopped) PluginEventBus::drainAtSleep(powerManager.getBatteryPercentage(), tr(STR_PLUGIN_CONNECTING));
+  }
   activityManager.goToSleep(fromTimeout);
 
   if (resumeWithoutSplash) {
@@ -770,6 +904,7 @@ void setupDisplayAndFonts(bool seamless = false) {
 #endif
   BootLog::step("MAIN", "setupDisplayAndFonts: display.begin() returned");
   renderer.begin();
+  renderer.setViewableInsets(HalScreenCalibration::load());
   activityManager.begin();
   LOG_DBG("MAIN", "Display initialized");
   BootLog::step("MAIN", "renderer/activityManager begin() returned");
@@ -792,6 +927,10 @@ void setupDisplayAndFonts(bool seamless = false) {
   // Missing glyphs in a user reading font are drawn from the IPA-capable
   // built-in Inter fallback. Normal glyphs stay in the selected book font.
   renderer.setMissingGlyphFallbackFonts(IPA_FALLBACK_12_FONT_ID, IPA_FALLBACK_14_FONT_ID);
+  // Chinese/Japanese/Korean interface text (and the language names in the language list) borrows its
+  // ideographs from the SD reading font; with no CJK font loaded those characters show as missing glyphs.
+  renderer.setUiCjkEnabled(true);
+  TlsTrust::setModeProvider([]() { return static_cast<tlspolicy::Mode>(SETTINGS.tlsMode); });
 
   applyUiTextSize(renderer);
 
@@ -934,6 +1073,10 @@ void outOfMemoryHandler() {
 }
 
 void setup() {
+#ifndef SIMULATOR
+  // First thing: count crash-resets of this image and roll back after repeated ones.
+  boot_health::begin();
+#endif
   // X4 Pro: keep the board master power rail asserted before USB/Serial init.
   // This is the same first-step policy used by CrossPoint 1.6.0.
   BoardConfig::holdPowerRails();
@@ -973,6 +1116,8 @@ void setup() {
   powerManager.begin();
   halTiltSensor.begin();
   halClock.begin();
+  // Restore the monotonic clock floor (loan-expiry enforcement) before anything reads time().
+  trustedtime::init();
 
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
   LOG_INF("BOOT", "Post-GPIO diagnostic: device=%s usb=%d silentReboot=%d silentTarget=%lu",
@@ -999,6 +1144,19 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  bleturner::begin(pageturner::host, SETTINGS.ble);
+
+  // Wi-Fi transmit power (Settings > System): applied each time the station interface starts, which is the
+  // earliest point the radio accepts it. 0 keeps the driver default.
+  WiFi.onEvent(
+      [](arduino_event_id_t, arduino_event_info_t) {
+        static const wifi_power_t kLevels[] = {WIFI_POWER_19_5dBm, WIFI_POWER_15dBm, WIFI_POWER_11dBm,
+                                               WIFI_POWER_8_5dBm, WIFI_POWER_5dBm};
+        if (SETTINGS.wifiTxPower > 0 && SETTINGS.wifiTxPower < sizeof(kLevels) / sizeof(kLevels[0])) {
+          WiFi.setTxPower(kLevels[SETTINGS.wifiTxPower]);
+        }
+      },
+      ARDUINO_EVENT_WIFI_STA_START);
 
   // clockDisabled is an X4-only preference.  Never let a stale/corrupt value
   // suppress the DS3231 clock or its settings on X3 after an upgrade.
@@ -1045,8 +1203,21 @@ void setup() {
 
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
+  // A card that already holds plugins keeps them working after the Plugins gate was introduced (it defaults
+  // to off); the check runs once, so switching the setting off afterwards sticks.
+  if (!SETTINGS.pluginsMigrated) {
+    if (!SETTINGS.pluginsEnabled && PluginLocations::anyPluginInstalledOnDisk()) SETTINGS.pluginsEnabled = 1;
+    SETTINGS.pluginsMigrated = 1;
+    SETTINGS.saveToFile();
+  }
+  PluginEventBus::init();
+  PluginEventBus::setToastSink([](const char* text) {
+    GUI.drawPopup(renderer, text);
+    renderer.displayBuffer();
+  });
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  WEATHER.loadSettings();
   // SD-only check (see comment on the function): must happen before the display/SPI
   // bus is initialized below. The actual WiFi/NTP step runs later, behind the splash.
   const BootTimeSyncCandidate bootTimeSyncCandidate = checkSilentBootTimeSyncCandidate();
@@ -1059,9 +1230,7 @@ void setup() {
   LOG_INF("BOOT", "Wake route: %s", wakeupRouteName(wakeupReason));
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton: {
-      const bool shortPowerWakeAllowed =
-          (BoardConfig::isX4Pro() && SETTINGS.shortPwrBtn != InkMODSettings::SHORT_PWRBTN::IGNORE) ||
-          SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP;
+      const bool shortPowerWakeAllowed = SETTINGS.shortPowerWakeAllowed(BoardConfig::isX4Pro());
       LOG_INF("BOOT", "Power-button wake: verifying duration required=%u shortAllowed=%d",
               SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
       gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
@@ -1071,6 +1240,15 @@ void setup() {
       // A cold boot caused only by external USB power should not leave the
       // reader fully awake. Render the configured sleep screen and return to
       // deep sleep; the power button remains the explicit wake source.
+#ifndef SIMULATOR
+      // The first start of a freshly flashed (or never confirmed) image often
+      // looks like a plain power-on with USB attached. Sleeping then would
+      // make a new install appear dead, so boot normally this once.
+      if (boot_health::unconfirmedBoot()) {
+        LOG_INF("BOOT", "AfterUSBPower route: unconfirmed image, continuing boot");
+        break;
+      }
+#endif
       LOG_INF("BOOT", "AfterUSBPower route: returning to deep sleep");
       enterDeepSleep(false);
       return;
@@ -1095,7 +1273,12 @@ void setup() {
   // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at
   // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
   // flashing has been locked down (e.g. recent X3 firmware).
+#ifndef SIMULATOR
+  // Repeated crashes with no verified previous reader image: go to SD recovery.
+  bool recoveryFirmwareMode = boot_health::recoveryRequired();
+#else
   bool recoveryFirmwareMode = false;
+#endif
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
     // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
     // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
@@ -1275,7 +1458,22 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 #endif
 
-  gpio.update();
+  mappedInputManager.update();  // gpio.update() plus the one-frame remote click
+
+  // Bluetooth page turner: tell the module what is on screen; a remote press that acted counts as activity.
+  bleturner::Scene scene{};
+  const bool homeShown = activityManager.isForegroundHomeShown();
+  const bool remoteContext = activityManager.isRemoteReaderContext();
+  scene.where = remoteContext ? bleturner::Where::Reader
+                : homeShown   ? bleturner::Where::Home
+                              : bleturner::Where::Elsewhere;
+  scene.visit = activityManager.visit();
+  scene.pageShown = homeShown || remoteContext;
+  scene.storageBusy = false;
+  scene.wifiOn = WiFi.getMode() != WIFI_MODE_NULL;
+  scene.sleeping = deepSleepInProgress;
+  scene.localKey = gpio.wasAnyReleased();
+  const bool remoteActed = bleturner::tick(scene);
 
   // Keep battery telemetry fresh from the main task. X4 Pro's CW2017 shares
   // I2C with touch/RTC, so reader rendering must consume a cached value rather
@@ -1349,8 +1547,16 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
-    String line = logSerial.readStringUntil('\n');
+  // Only what has arrived is read; a line still on its way is finished on a later pass, so a stray
+  // byte (a monitor attaching to the port) no longer stops the loop for the 1 s Stream timeout
+  // (SerialLineBuffer says why). One line per pass.
+  static SerialLineBuffer serialLine;
+  bool serialLineComplete = false;
+  while (!serialLineComplete && logSerial.available() > 0) {
+    serialLineComplete = serialLine.feed(static_cast<char>(logSerial.read()));
+  }
+  if (serialLineComplete) {
+    const String line(serialLine.take().c_str());
     if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);
       cmd.trim();
@@ -1367,7 +1573,7 @@ void loop() {
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+      activityManager.preventAutoSleep() || remoteActed || pageturner::holdsCpu.load()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }

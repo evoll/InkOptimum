@@ -30,6 +30,8 @@ class UITheme {
   static std::string getCoverThumbPath(const std::string& coverBmpPath, int width, int height);
   static UIIcon getFileIcon(const std::string& filename);
   static int getStatusBarHeight();
+  // The font the reader status bar draws in (small, UI 10 or UI 12 by the "status bar text size" setting).
+  static int getStatusBarFontId();
   static int getProgressBarHeight();
 
  private:

@@ -20,7 +20,8 @@ constexpr int kMinimalSleepCoverWidth = MinimalMetrics::homeCoverImageWidth;
 
 bool shouldPrepareFullCover() {
   return SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER ||
-         SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM;
+         SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM ||
+         SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER_OVERLAY;
 }
 
 bool shouldPrepareMinimalCover() {
@@ -32,7 +33,9 @@ bool fileExists(const std::string& path) { return !path.empty() && Storage.exist
 
 bool isDirectFb2Path(const std::string& path) {
   return FsHelpers::checkFileExtension(path, ".fb2") || FsHelpers::checkFileExtension(path, ".fb2.zip") ||
-         FsHelpers::checkFileExtension(path, "_fb2.zip");
+         FsHelpers::checkFileExtension(path, "_fb2.zip") || FsHelpers::checkFileExtension(path, ".fb3") ||
+         FsHelpers::checkFileExtension(path, ".fb3.zip") || FsHelpers::checkFileExtension(path, "_fb3.zip") ||
+         (FsHelpers::checkFileExtension(path, ".docx") || FsHelpers::hasConvertedBookExtension(path));
 }
 
 // Build/use the FB2 lazy package and then deliberately ask Epub to generate

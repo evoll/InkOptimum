@@ -237,7 +237,8 @@ void FileBrowserActivity::loadFiles() {
         // Firmware picker: only show .bin files.
         shouldAdd = FsHelpers::checkFileExtension(filename, ".bin");
       } else {
-        bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2");
+        bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2") || FsHelpers::checkFileExtension(filename, ".fb3") ||
+                     (FsHelpers::checkFileExtension(filename, ".docx") || FsHelpers::hasConvertedBookExtension(filename));
         // EPUB files are ZIP containers too. A bare .zip is shown so it can
         // be identified by its central-directory entries when opened.
         bool isZip = FsHelpers::checkFileExtension(filename, ".zip");
@@ -245,7 +246,7 @@ void FileBrowserActivity::loadFiles() {
         if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
             FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
             FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) ||
-            isFb2 || isZip) {
+            FsHelpers::hasJpgExtension(filename) || isFb2 || isZip) {
           shouldAdd = true;
         }
       }
@@ -262,7 +263,7 @@ void FileBrowserActivity::loadFiles() {
               static_cast<unsigned>(files.size()), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
       file.close();
       root.close();
-      files.clear();
+      std::vector<std::string>().swap(files);  // clear() would keep the capacity that just ran the heap out
       return;
     }
 
@@ -326,7 +327,7 @@ void FileBrowserActivity::onExit() {
     saveLastFileBrowserPosition(basepath, selectedEntry);
   }
   Activity::onExit();
-  files.clear();
+  std::vector<std::string>().swap(files);  // give the list's capacity back, not just its entries
 }
 
 void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const std::string& entry) {
@@ -339,7 +340,8 @@ void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const st
     LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
     BookActions::clearFileMetadata(fullPath);
 
-    const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2");
+    const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || FsHelpers::checkFileExtension(fullPath, ".fb3") ||
+                       (FsHelpers::checkFileExtension(fullPath, ".docx") || FsHelpers::hasConvertedBookExtension(fullPath)) || FsHelpers::hasMarkdownExtension(fullPath);
     const bool isFb2Zip = FsHelpers::checkFileExtension(fullPath, ".zip") &&
                           detectBookArchiveType(fullPath) == BookArchiveType::Fb2;
 
@@ -868,7 +870,8 @@ void FileBrowserActivity::loop() {
         std::string fullPath = basepath + entry;
         const bool isZip = FsHelpers::checkFileExtension(fullPath, ".zip");
         const BookArchiveType archiveType = isZip ? detectBookArchiveType(fullPath) : BookArchiveType::None;
-        const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || archiveType == BookArchiveType::Fb2;
+        const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || FsHelpers::checkFileExtension(fullPath, ".fb3") ||
+                           (FsHelpers::checkFileExtension(fullPath, ".docx") || FsHelpers::hasConvertedBookExtension(fullPath)) || FsHelpers::hasMarkdownExtension(fullPath) || archiveType == BookArchiveType::Fb2;
 
         if (isFb2) {
           std::string cacheBasePath = "/.inkmod";

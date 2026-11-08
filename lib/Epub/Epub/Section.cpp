@@ -1,6 +1,11 @@
+#include "Epub/LayoutQuirks.h"
 #include "Section.h"
+#include "FlowContext.h"
+#include "WordSpacing.h"
+#include "BidiLine.h"
 #include "../../../src/SdCardFontSystem.h"
 
+#include <CjkPunct.h>
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <FontCacheManager.h>
@@ -28,7 +33,11 @@ constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
 // the anti-giant-gap guard. Existing section caches contain already-positioned
 // word x-coordinates, so they must be rebuilt or the Justify setting will keep
 // showing the pre-fix ragged-right layout.
-constexpr uint8_t SECTION_FILE_VERSION = 65;
+constexpr uint8_t SECTION_FILE_VERSION = 80;  // v80: upstream 1.1.10 FB2 dialogue gaps (_layout65) merged; v79: bidi line pieces (TextBlock display forms); v78: Indic words shaped into glyph keys; v77: vertical-rl sections (page block extent, TextBlock flag, request in the header); v76: CJK lines justify flush; v75: whole-em grid in Chinese and Japanese books; v74: CJK punctuation widths and CJK-Latin gap, marks laid out as words of their own; v73: ornament mode packed into the image-rendering header byte; v72: SD-font layout rounds each glyph advance to a pixel (matches drawing); v71: CJK tokenization + ruby in TextBlock; v70: inkMOD 1.1.10 layout changes (ParsedText, ChapterHtmlSlimParser) merged
+                                              // v69: a block's bold/italic/underline reach the blocks nested inside it
+                                              // v68: an <img> whose entry name has no extension is laid out as an image
+                                              // v67: text declared at font-size < 10% of the body (watermark spans) is dropped
+                                              // v66: CSS styles are no longer dropped under low heap (crosspoint #4032)
 constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
@@ -281,6 +290,15 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   return position;
 }
 
+namespace {
+// Bit 0 guide reading; bits 1-2 the vertical-text request; bits 3-6 the word spacing (0 = default, so caches
+// written before the setting existed still match).
+uint8_t layoutFlags(const bool guideReadingEnabled) {
+  return static_cast<uint8_t>((guideReadingEnabled ? 1 : 0) | static_cast<unsigned>(FlowContext::effectiveRequest()) << 1 |
+                              (std::min<uint8_t>(WordSpacing::current(), WordSpacing::MAX_VALUE) & 0x0F) << 3);
+}
+}  // namespace
+
 bool Section::writeSectionFileHeader(const int fontId, const float lineCompression, const uint8_t extraParagraphSpacing,
                                      const bool forceParagraphIndents, const uint8_t paragraphAlignment,
                                      const uint16_t viewportWidth, const uint16_t viewportHeight,
@@ -305,9 +323,10 @@ bool Section::writeSectionFileHeader(const int fontId, const float lineCompressi
          serialization::tryWritePod(file, forceParagraphIndents) &&
          serialization::tryWritePod(file, paragraphAlignment) && serialization::tryWritePod(file, viewportWidth) &&
          serialization::tryWritePod(file, viewportHeight) && serialization::tryWritePod(file, hyphenationEnabled) &&
-         serialization::tryWritePod(file, embeddedStyle) && serialization::tryWritePod(file, imageRendering) &&
+         serialization::tryWritePod(file, embeddedStyle) &&
+         serialization::tryWritePod(file, epub_layout::packImageRendering(imageRendering)) &&
          serialization::tryWritePod(file, bionicReadingEnabled) &&
-         serialization::tryWritePod(file, guideReadingEnabled) &&
+                  serialization::tryWritePod(file, layoutFlags(guideReadingEnabled)) &&
          serialization::tryWritePod(file,
                                     pageCount) &&  // Placeholder for page count (will be initially 0, patched later)
          serialization::tryWritePod(file, leadingFrontMatterPages) &&
@@ -406,7 +425,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     bool fileEmbeddedStyle;
     uint8_t fileImageRendering;
     bool fileBionicReadingEnabled;
-    bool fileGuideReadingEnabled;
+    uint8_t fileGuideFlags;
     if (!serialization::tryReadPod(file, fileFontId) || !serialization::tryReadPod(file, fileLineCompression) ||
         !serialization::tryReadPod(file, fileExtraParagraphSpacing) ||
         !serialization::tryReadPod(file, fileForceParagraphIndents) ||
@@ -415,7 +434,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
         !serialization::tryReadPod(file, fileHyphenationEnabled) ||
         !serialization::tryReadPod(file, fileEmbeddedStyle) || !serialization::tryReadPod(file, fileImageRendering) ||
         !serialization::tryReadPod(file, fileBionicReadingEnabled) ||
-        !serialization::tryReadPod(file, fileGuideReadingEnabled)) {
+        !serialization::tryReadPod(file, fileGuideFlags)) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: truncated section header");
       clearCache();
@@ -426,8 +445,9 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
         extraParagraphSpacing != fileExtraParagraphSpacing || forceParagraphIndents != fileForceParagraphIndents ||
         paragraphAlignment != fileParagraphAlignment || viewportWidth != fileViewportWidth ||
         viewportHeight != fileViewportHeight || hyphenationEnabled != fileHyphenationEnabled ||
-        embeddedStyle != fileEmbeddedStyle || imageRendering != fileImageRendering ||
-        bionicReadingEnabled != fileBionicReadingEnabled || guideReadingEnabled != fileGuideReadingEnabled) {
+        embeddedStyle != fileEmbeddedStyle || epub_layout::packImageRendering(imageRendering) != fileImageRendering ||
+        bionicReadingEnabled != fileBionicReadingEnabled ||
+        layoutFlags(guideReadingEnabled) != fileGuideFlags) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -481,6 +501,10 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
                                 const std::function<void()>& popupFn, bool* imagesWereSuppressed,
                                 bool* layoutAbortedForLowMemory,
                                 const reader::ReaderCancellationToken* cancellationToken, bool* cancelled) {
+  // The bidi line pass keeps one heap workspace for the whole build; it goes back when the build ends.
+  struct BidiMemoryRelease {
+    ~BidiMemoryRelease() { BidiLine::releaseBuildMemory(); }
+  } bidiMemoryRelease;
   const auto localPath = epub->getSpineItem(spineIndex).href;
   const auto tmpHtmlPath = epub->getCachePath() + "/.tmp_" + std::to_string(spineIndex) + ".html";
   // Real EPUBs cache each inflated XHTML spine source on SD.  Re-inflating
@@ -612,6 +636,18 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   LOG_DBG("SCT", "Prepared HTML source %s (%d bytes, free=%u, maxAlloc=%u)", sourceHtmlPath.c_str(), fileSize,
           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
+  skippedForImages = false;
+  if (noFramebufferScratch && imageRendering != 1) {
+    std::vector<std::string> imageSources;
+    if (collectHtmlImageSources(sourceHtmlPath, imageSources) && !imageSources.empty()) {
+      if (!cacheInflatedSpine) Storage.remove(tmpHtmlPath.c_str());
+      skippedForImages = true;
+      LOG_DBG("SCT", "Background build skipped: spine=%d has %u image(s)", spineIndex,
+              static_cast<unsigned>(imageSources.size()));
+      return false;
+    }
+  }
+
   // Prepare inline images before CSS/layout consumes and fragments the heap.
   // This is the same SD pixel-cache strategy that made FB2 illustrated books
   // reliable, now also applied to real EPUBs. It is skipped entirely when the
@@ -715,6 +751,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       embeddedStyle, contentBase, imageBasePath, imageRendering, std::move(tocAnchors), popupFn, cssParser,
       cancellationToken);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
+  CjkPunctuation::setBookLanguage(epub->getLanguage().c_str());
   LOG_DBG("SCT", "Parser start: spine=%d free=%u maxAlloc=%u", spineIndex, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   success = visitor.parseAndBuildPages();
   // CSS is only needed while the XHTML visitor is actively resolving styles.

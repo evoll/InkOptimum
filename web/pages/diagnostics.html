@@ -1,0 +1,14 @@
+<div class="card">
+  <h2 data-i18n="diag.title">Device status</h2>
+  <div class="dg-grid" id="dgStatus"></div>
+</div>
+<div class="card">
+  <h2 data-i18n="diag.report">Diagnostic report</h2>
+  <p class="hint" data-i18n="diag.hint">Attach this report when you report a problem.</p>
+  <div class="dg-actions">
+    <button class="btn btn-primary" id="dgReload" data-i18n="diag.reload">Refresh</button>
+    <button class="btn" id="dgCopy" data-i18n="diag.copy">Copy</button>
+    <a class="btn" href="/api/diagnostics?download=1" data-i18n="diag.download">Download</a>
+  </div>
+  <pre id="dgReport" class="dg-report"></pre>
+</div>

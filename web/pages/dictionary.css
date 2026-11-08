@@ -1,0 +1,12 @@
+.hint { color: var(--label-color); font-size: 0.9em; margin: 4px 0 12px; }
+.btn { padding: 7px 14px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; background: var(--card-bg); color: var(--font-color); }
+.btn-primary { background: var(--accent-color); color: #fff; border-color: var(--accent-color); }
+.btn-danger { color: var(--danger-color); }
+.dc-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border-color); }
+.dc-item b { color: var(--title-color); }
+.dc-item small { display: block; color: var(--label-color); }
+.dc-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.dc-row select, .dc-row input { padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); color: var(--font-color); }
+.dc-row input { flex: 1 1 160px; min-width: 0; }
+.dc-result { margin-top: 12px; white-space: pre-wrap; word-break: break-word; }
+.dc-result h3 { margin: 0 0 6px; color: var(--title-color); }

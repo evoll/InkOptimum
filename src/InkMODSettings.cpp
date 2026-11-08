@@ -4,6 +4,7 @@
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
+#include <Epub/LayoutQuirks.h>
 #include <Serialization.h>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <string>
 
 #include "I18nKeys.h"
+#include "reader/overrides/BookOverrides.h"
 #include "fontIds.h"
 
 // Initialize the static instance
@@ -51,6 +53,7 @@ constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER[] = {
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_INVERTED),
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
+    static_cast<uint8_t>(InkMODSettings::COVER_OVERLAY),
 };
 constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER_COUNT =
     sizeof(SLEEP_SCREEN_STORAGE_ORDER) / sizeof(SLEEP_SCREEN_STORAGE_ORDER[0]);
@@ -324,7 +327,22 @@ uint16_t InkMODSettings::getReadingIdleTimeThresholdSeconds() const {
 }
 
 bool InkMODSettings::saveToFile() const {
+  epub_layout::ornamentMode = epub_layout::sanitizeOrnamentMode(ornamentMode);
   Storage.mkdir("/.inkmod");
+
+  // A book may be open with per-book layout overrides applied over the live settings.
+  // Flash must only ever hold the global values, so swap them in for the write.
+  auto& overrides = book_overrides::session();
+  if (overrides.active()) {
+    auto* self = const_cast<InkMODSettings*>(this);
+    book_overrides::Values live{self->fontSize, self->lineHeightPercent};
+    self->fontSize = overrides.globals().fontSize;
+    self->lineHeightPercent = overrides.globals().lineHeightPercent;
+    const bool ok = JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
+    self->fontSize = live.fontSize;
+    self->lineHeightPercent = live.lineHeightPercent;
+    return ok;
+  }
   return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
 }
 

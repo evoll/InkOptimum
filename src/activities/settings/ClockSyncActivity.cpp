@@ -8,8 +8,11 @@
 
 #include <cstdio>
 #include <ctime>
+#include <string>
 
 #include "InkMODSettings.h"
+#include "TimezoneDetect.h"
+#include "network/HttpDownloader.h"
 #include "MappedInputManager.h"
 #include "InkMODHumor.h"
 #include "SdCardFontSystem.h"
@@ -81,6 +84,22 @@ void ClockSyncActivity::runSync() {
   // the software clock from this instead of showing no time at all (X4; see HalClock::
   // seedFallbackTime()). Harmless to set on X3 too - it's simply never read there.
   SETTINGS.clockLastSyncedEpoch = static_cast<uint32_t>(time(nullptr));
+
+  // Optional: take the UTC offset from the connection's location. Best effort; a failed lookup
+  // leaves the offset the user has set. The service is plain HTTP (its HTTPS needs a paid plan) and
+  // only ever sees the device's public IP; the answer is just a number the user can still change.
+  if (SETTINGS.clockAutoOffset) {
+    std::string reply;
+    uint8_t biased = 0;
+    if (HttpDownloader::fetchUrl("http://ip-api.com/json/?fields=status,offset", reply) &&
+        timezone_detect::parseOffsetQuarters(reply, biased)) {
+      LOG_INF("CLK", "Auto UTC offset: stored %u -> %u", static_cast<unsigned>(SETTINGS.clockUtcOffsetQ),
+              static_cast<unsigned>(biased));
+      SETTINGS.clockUtcOffsetQ = biased;
+    } else {
+      LOG_INF("CLK", "Auto UTC offset lookup failed; keeping the manual offset");
+    }
+  }
   SETTINGS.saveToFile();
 
   // Read the freshly synced time back for the user-facing confirmation.

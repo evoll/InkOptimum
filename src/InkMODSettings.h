@@ -1,4 +1,5 @@
 #pragma once
+#include <BlePageTurner.h>
 #include <HalStorage.h>
 
 #include <cstddef>
@@ -35,6 +36,7 @@ class InkMODSettings {
     CALENDAR_SLEEP_INVERTED = 13,
     CALENDAR_SLEEP_LANDSCAPE = 14,
     CALENDAR_SLEEP_LANDSCAPE_INVERTED = 15,
+    COVER_OVERLAY = 16,  // the book cover with the transparent overlay picture on top
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, BLACK_BACKGROUND = 2, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -277,7 +279,8 @@ class InkMODSettings {
     LYRA_CAROUSEL = 4,
     MINIMAL = 5,
     DASHBOARD = 6,
-    UI_THEME_COUNT = 7
+    GRID = 7,
+    UI_THEME_COUNT = 8
   };
 
   // System-wide interface text size (home screen, menus, settings - NOT the
@@ -326,6 +329,7 @@ class InkMODSettings {
     LONG_MENU_CREATE_CLIPPING = 21,
     LONG_MENU_QUICK_SYNC = 22,
     LONG_MENU_QUICK_SYNC_LEGACY_ALT = 23,
+    LONG_MENU_ROTATE_FLIP = 24,  // rotate the reader screen by 180 degrees
     LONG_PRESS_MENU_ACTION_COUNT
   };
 
@@ -360,6 +364,9 @@ class InkMODSettings {
   uint8_t statusBarTitle = CHAPTER_TITLE;
   uint8_t statusBarTimeLeft = TIME_LEFT_HIDE;
   uint8_t statusBarBattery = 1;
+  uint8_t statusBarTextSize = 0;   // 0 small, 1 medium (UI 10), 2 large (UI 12)
+  uint8_t statusBarCentered = 0;   // 1 = text items merged into one centered line
+  uint8_t statusBarSeparator = 0;  // StatusBarSeparator::Value
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Clock visibility mode (X3 only, requires DS3231 RTC)
   uint8_t hideClock = HIDE_CLOCK_ALWAYS;
@@ -374,6 +381,26 @@ class InkMODSettings {
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // When set, a manual clock sync also looks the UTC offset up by IP address (see lib/TimezoneDetect).
+  uint8_t clockAutoOffset = 0;
+  // Show the Weather entry on the home screen (the screen itself is also reachable from Settings).
+  uint8_t weatherOnHome = 0;
+  // Library screen (tabs Books/Recent/New/Authors): home entry (opt-in) and last used view (0 names, 1 details, 2 covers).
+  uint8_t libraryOnHome = 0;
+  uint8_t libraryView = 1;
+  // SD-card plugins (see util/PluginLocations.h): global gate for discovery and the Home > Plugins entry.
+  // pluginsMigrated: the one-time check that keeps plugins on for a card that already holds some.
+  uint8_t pluginsEnabled = 0;
+  uint8_t pluginsMigrated = 0;
+  // How HTTPS servers are trusted (tlspolicy::Mode): 0 pin the certificate on first use, 1 strict (CA file
+  // /.inkmod/ca.pem), 2 off.
+  uint8_t tlsMode = 0;
+  // Wi-Fi transmit power: 0 = the radio default (maximum), 1 = 15 dBm, 2 = 11 dBm, 3 = 8.5 dBm, 4 = 5 dBm. A lower
+  // value saves battery next to the access point and drops the current spike on the X3/X4 supply.
+  uint8_t wifiTxPower = 0;
+  // Reader word spacing (Epub/WordSpacing.h): 0 = as the font sets it, 1..4 = +10 px per step, 5..8 = -1..-4
+  // (each step removes 20 % of the space).
+  uint8_t wordSpacing = 0;
   // Where the reader's own clock (see shouldShowClockInReader()) is drawn:
   // 0 = top of the screen (its own row, alongside chapter/book progress
   // if that's shown there too), 1 = bottom, folded into the same left
@@ -404,6 +431,10 @@ class InkMODSettings {
   uint8_t shortPwrBtn = IGNORE;
   // Long power button action behaviour
   uint8_t longPwrBtn = SLEEP;
+  // How the power button wakes the device from deep sleep, independent of what a press does while awake.
+  // AUTO keeps the old rule: a short tap wakes only when the short-press action is Sleep.
+  enum POWER_WAKE_MODE : uint8_t { POWER_WAKE_AUTO = 0, POWER_WAKE_SHORT = 1, POWER_WAKE_LONG = 2, POWER_WAKE_MODE_COUNT };
+  uint8_t powerWakeMode = POWER_WAKE_AUTO;
   // X4 Pro capacitive Home key shortcuts. A normal single tap always keeps
   // its original Home navigation behaviour. These two actions are additional
   // shortcuts for double-tap and hold. Ignored on boards without a Home key.
@@ -482,6 +513,12 @@ class InkMODSettings {
   uint8_t uiTheme = LYRA;
   // System-wide interface text size (accessibility) - see UI_TEXT_SIZE.
   uint8_t uiTextSize = UI_TEXT_SIZE_OFF;
+  // Interface font weight, independent of the size above: regular, or bold faces for every interface text.
+  // Vertical-rl text for Chinese and Japanese books (FlowContext.h's VerticalText, by number).
+  enum VERTICAL_TEXT : uint8_t { VERTICAL_AUTO = 0, VERTICAL_ON = 1, VERTICAL_OFF = 2, VERTICAL_TEXT_COUNT };
+  uint8_t verticalText = VERTICAL_AUTO;
+  enum UI_FONT_STYLE : uint8_t { UI_FONT_REGULAR = 0, UI_FONT_BOLD = 1, UI_FONT_STYLE_COUNT };
+  uint8_t uiFontStyle = UI_FONT_REGULAR;
   // Recent Books screen layout
   uint8_t recentBooksView = RECENT_BOOKS_LIST;
   // Controls only the Search shortcut/icon on Home; search functionality
@@ -517,6 +554,7 @@ class InkMODSettings {
   uint8_t readingIdleTimeThresholdUnits = 30;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
+  uint8_t ornamentMode = 1;  // epub_layout::OrnamentMode: 0 standard, 1 compact, 2 compact + book alignment
   // Long-press Confirm (menu button) quick action in reader (0 = off)
   uint8_t longPressMenuAction = LONG_MENU_OFF;
   // Long-press Back quick action in reader (defaults to the historical file browser shortcut)
@@ -532,6 +570,8 @@ class InkMODSettings {
   char bookMenuLayout[128] = "";
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Bluetooth page turner, saved under the keys lib/BlePageTurner reads and writes (BlePageTurnerJson.h).
+  bleturner::Config ble;
 #ifdef INKMOD_ENABLE_READING_STATS_TOGGLE
   // Debug/test builds can disable stat writes so navigation tests do not affect personal reading stats.
   uint8_t trackReadingStats = 1;
@@ -568,8 +608,17 @@ class InkMODSettings {
   static constexpr size_t MAX_DEVICE_NAME_LENGTH = sizeof(deviceName) - 1;
 
   uint16_t getPowerButtonWakeDuration() const {
+    if (powerWakeMode == POWER_WAKE_SHORT) return POWER_BUTTON_WAKE_SHORT_MS;
+    if (powerWakeMode == POWER_WAKE_LONG) return POWER_BUTTON_WAKE_LONG_MS;
     return (shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP) ? POWER_BUTTON_WAKE_SHORT_MS
                                                                     : POWER_BUTTON_WAKE_LONG_MS;
+  }
+  // May a released tap (no hold) wake the device? AUTO: X4 Pro unless the action is Ignore, or Sleep.
+  bool shortPowerWakeAllowed(const bool isX4Pro) const {
+    if (powerWakeMode == POWER_WAKE_SHORT) return true;
+    if (powerWakeMode == POWER_WAKE_LONG) return false;
+    return (isX4Pro && shortPwrBtn != InkMODSettings::SHORT_PWRBTN::IGNORE) ||
+           shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP;
   }
 
   bool shouldShowClockInReader() const { return !clockDisabled && hideClock == HIDE_CLOCK_NEVER; }

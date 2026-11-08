@@ -10,6 +10,7 @@ add_executable(HyphenationEvaluationTest
 target_include_directories(HyphenationEvaluationTest PRIVATE
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/lib/CjkBreak
 )
 
 target_compile_definitions(HyphenationEvaluationTest PRIVATE

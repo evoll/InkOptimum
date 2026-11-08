@@ -39,7 +39,7 @@
 //     parser.scan(reader, scan);
 
 #pragma once
-#include "ZipReader.h"
+#include <ZipReader.h>
 
 // Extracts the single .fb2 entry from a .fb2.zip, streaming decompressed
 // bytes to `out` in bounded chunks (never holds the whole file — compressed

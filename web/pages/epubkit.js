@@ -370,6 +370,7 @@
       el('epubkitMetadata').checked = values.metadata;
       el('epubkitText').checked = values.text;
       el('epubkitLightNovel').checked = values.light;
+      el('epubkitSplit').value = '0';
       setQuality(values.quality, false);
     }
     document.querySelectorAll('#epubkitPresets button').forEach(button => button.classList.toggle('active', button.dataset.preset === preset));
@@ -391,7 +392,7 @@
       contrast: el('epubkitContrast').checked, removeFonts: el('epubkitFonts').checked,
       removeCss: el('epubkitCss').checked, generateCover: el('epubkitCover').checked,
       cleanMetadata: el('epubkitMetadata').checked, textCleanup: el('epubkitText').checked,
-      lightNovel: el('epubkitLightNovel').checked, quality: Number(ui.quality.value) || 70,
+      lightNovel: el('epubkitLightNovel').checked, splitLimit: Number(el('epubkitSplit').value) * 1024 || 0, quality: Number(ui.quality.value) || 70,
       title: edit('title'), author: edit('author')
     };
   }
@@ -1038,6 +1039,219 @@
     return `Generated TOC with ${chapters.length} entries`;
   }
 
+  // <split-begin>
+  // ---- Chapter splitting -------------------------------------------------------------------
+  // A single multi-megabyte XHTML file is the worst case for a reader with ~100 KB of free RAM.
+  // This cuts oversized spine documents at top-level block boundaries into numbered parts, adds
+  // them to the manifest/spine right after the original and rewrites every link (content, nav,
+  // NCX, OPF guide) whose target id moved to a later part.
+
+  function splitContainer(doc) {
+    const body = firstByLocalName(doc, 'body');
+    if (!body) return null;
+    const meaningful = Array.from(body.childNodes).filter(n => n.nodeType === 1 || (n.nodeType === 3 && n.textContent.trim()));
+    const only = meaningful.length === 1 && meaningful[0].nodeType === 1 ? meaningful[0] : null;
+    return only && ['div', 'section', 'article', 'main'].includes(localName(only)) ? only : body;
+  }
+
+  function nodePath(root, node) {
+    const path = [];
+    for (let cur = node; cur && cur !== root; cur = cur.parentNode) {
+      path.unshift(Array.prototype.indexOf.call(cur.parentNode.childNodes, cur));
+    }
+    return path;
+  }
+
+  function followPath(root, path) {
+    let cur = root;
+    for (const index of path) cur = cur.childNodes[index];
+    return cur;
+  }
+
+  // Groups consecutive child sizes into roughly equal parts of at most ~limit bytes each.
+  // Returns [[start, end), ...]; a single child larger than the limit stays whole.
+  function planSplit(sizes, limit) {
+    const total = sizes.reduce((a, b) => a + b, 0);
+    if (total <= limit || sizes.length < 2) return [[0, sizes.length]];
+    const partCount = Math.ceil(total / limit);
+    const target = total / partCount;
+    const ranges = [];
+    let start = 0, acc = 0;
+    for (let i = 0; i < sizes.length; i++) {
+      acc += sizes[i];
+      const remainingParts = partCount - ranges.length - 1;
+      if (acc >= target && remainingParts > 0 && i + 1 < sizes.length) {
+        ranges.push([start, i + 1]);
+        start = i + 1; acc = 0;
+      }
+    }
+    ranges.push([start, sizes.length]);
+    return ranges;
+  }
+
+  function collectIds(nodes) {
+    const ids = new Set();
+    const visit = node => {
+      if (node.nodeType !== 1) return;
+      const id = node.getAttribute('id');
+      if (id) ids.add(id);
+      if (localName(node) === 'a' && node.getAttribute('name')) ids.add(node.getAttribute('name'));
+      for (const child of Array.from(node.children || [])) visit(child);
+    };
+    nodes.forEach(visit);
+    return ids;
+  }
+
+  // Splits one XHTML text. Returns null when it should stay whole, else
+  // {parts: [{text, ids:Set}]} with parts[0] replacing the original document.
+  function splitXhtml(text, limit) {
+    let doc;
+    try { doc = parseXml(text, 'XHTML'); } catch (_) { return null; }
+    const container = splitContainer(doc);
+    if (!container) return null;
+    const children = Array.from(container.childNodes);
+    const serializer = new XMLSerializer();
+    const sizes = children.map(node => encoder.encode(serializer.serializeToString(node)).length);
+    const ranges = planSplit(sizes, limit);
+    if (ranges.length < 2) return null;
+
+    const containerPath = nodePath(doc, container);
+    const parts = ranges.map(([start, end], partIndex) => {
+      const copy = doc.cloneNode(true);
+      const target = followPath(copy, containerPath);
+      Array.from(target.childNodes).forEach((node, index) => { if (index < start || index >= end) target.removeChild(node); });
+      // The wrapper element is repeated in every part; keep its id only in the first one.
+      if (partIndex > 0 && target !== firstByLocalName(copy, 'body') && target.getAttribute('id')) target.removeAttribute('id');
+      return {text: serializeDocument(copy), ids: collectIds(children.slice(start, end))};
+    });
+    return {parts};
+  }
+
+  // Rewrites links in `doc` (living at `filePath`) whose id moved to another part.
+  // `idMaps`: original chapter path -> Map(id -> file that now holds it); `familyOf`: split file -> original path.
+  function remapLinks(doc, filePath, idMaps, familyOf, selector) {
+    let changed = 0;
+    for (const node of Array.from(doc.getElementsByTagName('*'))) {
+      const attr = selector(node);
+      if (!attr) continue;
+      const value = node.getAttribute(attr) || '';
+      if (!value || /^(?:data|https?|mailto|tel|javascript):/i.test(value)) continue;
+      const hash = value.indexOf('#');
+      if (hash < 0) continue;
+      const fragment = decodeHref(value.slice(hash + 1));
+      const pathPart = value.slice(0, hash);
+      let family;
+      if (!pathPart) family = familyOf.get(filePath);
+      else {
+        let resolved = '';
+        try { resolved = resolveZipPath(filePath, pathPart); } catch (_) { continue; }
+        family = idMaps.has(resolved) ? resolved : familyOf.get(resolved);
+      }
+      const holder = family && idMaps.get(family).get(fragment);
+      if (!holder) continue;
+      const wanted = holder === filePath ? '' : relativeZipPath(filePath, holder);
+      if (wanted === pathPart) continue;
+      node.setAttribute(attr, `${wanted}#${value.slice(hash + 1)}`);
+      changed++;
+    }
+    return changed;
+  }
+
+  async function splitLargeChapters(zip, updates, removed, opfDoc, opfPath, xhtmlTexts, occupied, limit, report) {
+    const manifest = firstByLocalName(opfDoc, 'manifest');
+    const spine = firstByLocalName(opfDoc, 'spine');
+    if (!manifest || !spine || !limit) return 0;
+
+    const items = manifestInfo(opfDoc, opfPath);
+    const byId = new Map(items.map(item => [item.id, item]));
+    const idMaps = new Map();      // original path -> Map(id -> file)
+    const familyOf = new Map();    // any split file -> original path
+    const newFiles = [];           // {path, text}
+    let added = 0;
+
+    for (const itemref of Array.from(spine.children).filter(n => localName(n) === 'itemref')) {
+      const item = byId.get(itemref.getAttribute('idref') || '');
+      if (!item || !item.path || !/xhtml|html/.test(item.mediaType) || removed.has(item.path)) continue;
+      if (!zip.has(item.path) && !updates.has(item.path)) continue;
+      if (state.cancelled) throw new Error(tr('epubkit.cancelled', 'Cancelled.'));
+
+      const text = xhtmlTexts.get(item.path) || await readEffectiveText(zip, updates, item.path);
+      if (encoder.encode(text).length <= limit) continue;
+      const result = splitXhtml(text, limit);
+      if (!result) { report.log.push(`Chapter kept whole (cannot split): ${item.path}`); continue; }
+
+      const ext = extension(item.path);
+      const base = ext ? item.path.slice(0, -(ext.length + 1)) : item.path;
+      const files = [item.path];
+      let anchor = itemref;
+      for (let k = 1; k < result.parts.length; k++) {
+        const path = makeUniquePath(`${base}_part${k + 1}${ext ? '.' + ext : ''}`, occupied, '');
+        files.push(path);
+        const element = appendOpfElement(opfDoc, manifest, 'item');
+        let id = `${item.id || 'chapter'}-part${k + 1}`;
+        while (byId.has(id)) id += '_';
+        element.setAttribute('id', id);
+        element.setAttribute('href', relativeZipPath(opfPath, path));
+        element.setAttribute('media-type', item.element.getAttribute('media-type') || 'application/xhtml+xml');
+        const properties = (item.element.getAttribute('properties') || '').split(/\s+/).filter(p => p && p !== 'nav');
+        if (properties.length) element.setAttribute('properties', properties.join(' '));
+        byId.set(id, {element, id, path});
+        const ref = appendOpfElement(opfDoc, spine, 'itemref');
+        ref.setAttribute('idref', id);
+        if (itemref.getAttribute('linear')) ref.setAttribute('linear', itemref.getAttribute('linear'));
+        anchor.parentNode.insertBefore(ref, anchor.nextSibling);
+        anchor = ref;
+      }
+
+      const idMap = new Map();
+      result.parts.forEach((part, k) => {
+        for (const id of part.ids) if (!idMap.has(id)) idMap.set(id, files[k]);
+        familyOf.set(files[k], item.path);
+        newFiles.push({path: files[k], text: part.text});
+      });
+      idMaps.set(item.path, idMap);
+      added += result.parts.length - 1;
+      report.log.push(`Split ${item.path} into ${result.parts.length} parts`);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    if (!added) return 0;
+
+    for (const file of newFiles) updates.set(file.path, {value: file.text});
+
+    // Re-point links everywhere they can occur.
+    const touched = async (path, mediaType) => {
+      if (removed.has(path)) return;
+      if (!zip.has(path) && !updates.has(path)) return;
+      let doc, text;
+      try {
+        text = await readEffectiveText(zip, updates, path);
+        doc = parseXml(text, 'XML');
+      } catch (_) { return; }
+      const isNcx = mediaType === 'application/x-dtbncx+xml';
+      const count = remapLinks(doc, path, idMaps, familyOf, node => {
+        const name = localName(node);
+        if (isNcx) return name === 'content' ? 'src' : '';
+        return (name === 'a' || name === 'area') ? 'href' : '';
+      });
+      if (count) {
+        const out = serializeDocument(doc);
+        updates.set(path, {value: out});
+        if (xhtmlTexts.has(path)) xhtmlTexts.set(path, out);
+      }
+    };
+    const allPaths = new Map();
+    for (const item of manifestInfo(opfDoc, opfPath)) {
+      if (item.path && (/xhtml|html/.test(item.mediaType) || item.mediaType === 'application/x-dtbncx+xml')) allPaths.set(item.path, item.mediaType);
+    }
+    for (const file of newFiles) allPaths.set(file.path, 'application/xhtml+xml');
+    for (const [path, mediaType] of allPaths) await touched(path, mediaType);
+
+    // OPF <guide><reference href="chapter.xhtml#id">
+    remapLinks(opfDoc, opfPath, idMaps, familyOf, node => localName(node) === 'reference' ? 'href' : '');
+    return added;
+  }
+  // <split-end>
+
   async function packageEpub(zip, updates, removed, report, progress) {
     const builder = new EpubZipBuilder();
     const written = new Set();
@@ -1088,7 +1302,7 @@
       imagesConverted: 0, fontsRemoved: 0, cssRulesRemoved: 0, svgCoversFixed: 0,
       metadataItemsStripped: 0, whitespaceCleaned: 0, attrsStripped: 0,
       textFixesTotal: 0, osArtifactsRemoved: 0, coverGenerated: false, tocStatus: '',
-      outputName: '', elapsed: 0, log: []
+      outputName: '', elapsed: 0, chaptersSplit: 0, log: []
     };
     const updates = new Map();
     const removed = new Set();
@@ -1254,6 +1468,9 @@
     }
 
     stage(14, 'epubkit.stage_normalize', 'Normalizing content…');
+    if (options.splitLimit) {
+      report.chaptersSplit = await splitLargeChapters(zip, updates, removed, opfDoc, opfPath, xhtmlTexts, occupied, options.splitLimit, report);
+    }
     stage(15, 'epubkit.stage_text', 'Cleaning text content…');
     stage(16, 'epubkit.stage_clean_metadata', 'Cleaning metadata…');
     if (options.cleanMetadata) report.metadataItemsStripped = cleanStoreMetadata(opfDoc);
@@ -1378,6 +1595,7 @@
     if (report.fontsRemoved) parts.push(tr('epubkit.summary_fonts', '{count} fonts/rules removed', {count: report.fontsRemoved}));
     if (report.cssRulesRemoved) parts.push(tr('epubkit.summary_css', '{count} CSS rules removed', {count: report.cssRulesRemoved}));
     if (report.textFixesTotal) parts.push(tr('epubkit.summary_text', '{count} text fixes', {count: report.textFixesTotal}));
+    if (report.chaptersSplit) parts.push(tr('epubkit.summary_split', '{count} chapter parts added', {count: report.chaptersSplit}));
     if (report.coverGenerated) parts.push(tr('epubkit.summary_cover', 'cover generated'));
     if (report.tocStatus) parts.push(report.tocStatus);
     return parts.join(' · ') || tr('epubkit.summary_no_changes', 'No structural changes were needed.');

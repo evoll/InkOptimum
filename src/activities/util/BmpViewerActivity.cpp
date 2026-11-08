@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "InkMODState.h"
+#include "Epub/converters/JpegToFramebufferConverter.h"
 #include "Epub/converters/PngToFramebufferConverter.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -16,6 +17,12 @@
 namespace {
 
 bool isViewableImageFile(const std::string& filename) {
+  return FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) ||
+         FsHelpers::hasJpgExtension(filename);
+}
+
+// The lock-screen code only understands BMP and PNG, so JPEG files are view-only.
+bool canBeSleepCover(const std::string& filename) {
   return FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename);
 }
 
@@ -45,10 +52,10 @@ void drawImageTouchControl(GfxRenderer& renderer, Rect rect, const char* label, 
   renderer.drawText(UI_10_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, text.c_str());
 }
 
-void drawImageTouchControls(GfxRenderer& renderer, bool hasPrevious, bool hasNext) {
+void drawImageTouchControls(GfxRenderer& renderer, bool hasPrevious, bool hasNext, bool canSetCover) {
   const auto controls = imageTouchControls(renderer);
   drawImageTouchControl(renderer, controls.previous, "<", hasPrevious);
-  drawImageTouchControl(renderer, controls.cover, tr(STR_SET_SLEEP_COVER));
+  drawImageTouchControl(renderer, controls.cover, tr(STR_SET_SLEEP_COVER), canSetCover);
   drawImageTouchControl(renderer, controls.next, ">", hasNext);
 }
 
@@ -106,10 +113,14 @@ void BmpViewerActivity::loadSiblingImages() {
   }
 }
 
-bool BmpViewerActivity::renderPngImage() {
+bool BmpViewerActivity::renderDecodedImage() {
+  const bool isJpeg = FsHelpers::hasJpgExtension(filePath);
+  const char* invalidMessage = isJpeg ? "Invalid JPEG File" : "Invalid PNG File";
   ImageDimensions dims;
-  if (!PngToFramebufferConverter::getDimensionsStatic(filePath, dims)) {
-    drawImageError(renderer, mappedInput, "Invalid PNG File");
+  const bool haveDims = isJpeg ? JpegToFramebufferConverter::getDimensionsStatic(filePath, dims)
+                               : PngToFramebufferConverter::getDimensionsStatic(filePath, dims);
+  if (!haveDims || dims.width <= 0 || dims.height <= 0) {
+    drawImageError(renderer, mappedInput, invalidMessage);
     return false;
   }
 
@@ -137,10 +148,13 @@ bool BmpViewerActivity::renderPngImage() {
   config.performanceMode = false;
   config.useExactDimensions = true;
 
-  PngToFramebufferConverter converter;
+  PngToFramebufferConverter pngConverter;
+  JpegToFramebufferConverter jpegConverter;
+  ImageToFramebufferDecoder& converter = isJpeg ? static_cast<ImageToFramebufferDecoder&>(jpegConverter)
+                                                : static_cast<ImageToFramebufferDecoder&>(pngConverter);
   renderer.clearScreen();
   if (!converter.decodeToFramebuffer(filePath, renderer, config)) {
-    drawImageError(renderer, mappedInput, "Invalid PNG File");
+    drawImageError(renderer, mappedInput, invalidMessage);
     return false;
   }
 
@@ -148,11 +162,12 @@ bool BmpViewerActivity::renderPngImage() {
   bool hasNext = (siblingImages.size() > 1 && currentImageIndex != -1 &&
                   currentImageIndex < static_cast<int>(siblingImages.size()) - 1);
 
+  const bool canSetCover = canBeSleepCover(filePath);
   if (mappedInput.hasTouch()) {
-    drawImageTouchControls(renderer, hasPrevious, hasNext);
+    drawImageTouchControls(renderer, hasPrevious, hasNext, canSetCover);
   } else {
-    const auto labels =
-        mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetCover ? tr(STR_SET_SLEEP_COVER) : "",
+                                              (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -173,8 +188,8 @@ void BmpViewerActivity::onEnter() {
   Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
 
-  if (FsHelpers::hasPngExtension(filePath)) {
-    renderPngImage();
+  if (FsHelpers::hasPngExtension(filePath) || FsHelpers::hasJpgExtension(filePath)) {
+    renderDecodedImage();
     return;
   }
 
@@ -220,7 +235,7 @@ void BmpViewerActivity::onEnter() {
       // Draw UI controls on the base layer. Touch boards get explicit controls;
       // button boards retain the original button hints.
       if (mappedInput.hasTouch()) {
-        drawImageTouchControls(renderer, hasPrevious, hasNext);
+        drawImageTouchControls(renderer, hasPrevious, hasNext, true);
       } else {
         const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER),
                                                   (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
@@ -292,7 +307,7 @@ void BmpViewerActivity::loop() {
   }
 
   if (setCover || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (isViewableImageFile(filePath)) doSetSleepCover();
+    if (canBeSleepCover(filePath)) doSetSleepCover();
     return;
   }
 

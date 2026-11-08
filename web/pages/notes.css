@@ -1,0 +1,20 @@
+.hint { color: var(--label-color); font-size: 0.9em; margin: 4px 0 12px; }
+.btn { padding: 7px 14px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; background: var(--card-bg); color: var(--font-color); }
+.btn:hover { background: var(--accent-soft); }
+.btn-primary { background: var(--accent-color); color: #fff; border-color: var(--accent-color); }
+.btn-danger { color: var(--danger-color); }
+.nt-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.nt-toolbar input { flex: 1 1 180px; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--card-bg); color: var(--font-color); }
+.nt-book { border-top: 1px solid var(--border-color); padding: 12px 0; }
+.nt-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; }
+.nt-head h3 { margin: 0; font-size: 1em; color: var(--title-color); }
+.nt-head small { color: var(--label-color); }
+.nt-body { margin-top: 10px; }
+.nt-item { padding: 10px 12px; margin: 8px 0; border-left: 3px solid var(--accent-color); background: var(--accent-soft); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.nt-item.clip { border-left-color: #6b8fc7; }
+.nt-meta { color: var(--label-color); font-size: 0.82em; margin-bottom: 4px; }
+.nt-name { font-weight: 600; color: var(--title-color); }
+.nt-text { white-space: pre-wrap; word-break: break-word; }
+.nt-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.nt-actions .btn { padding: 4px 10px; font-size: 0.85em; }
+.nt-sub { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-color); margin-top: 12px; }

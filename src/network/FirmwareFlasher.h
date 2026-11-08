@@ -23,6 +23,8 @@ enum class Result {
   TOO_LARGE,
   BAD_MAGIC,
   INCOMPATIBLE_CHIP,  // ESP image chip_id at offset 0x0C differs from the running firmware
+  INCOMPATIBLE_BOARD,  // image carries a board marker for another device (e.g. X4 Classic on X4 Pro)
+  UNTAGGED_IMAGE,      // no board marker on a chip shared by several boards (ESP32-S3)
   BAD_SEGMENTS,  // segment table malformed or runs past EOF
   BAD_CHECKSUM,  // ESP image XOR checksum mismatch
   BAD_SHA,       // SHA256 trailer mismatch (hash_appended images)
@@ -48,11 +50,17 @@ using ProgressCb = void (*)(size_t written, size_t total, void* ctx);
 // the user the confirmation prompt) skip the redundant second pass. Defaults
 // to false so callers without prior validation (any future entry point) keep
 // the defense-in-depth check.
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false);
+//
+// `allowUntagged` is the user's explicit acknowledgement that an image without a board marker
+// (stock / third-party firmware) may be flashed on a chip shared by several boards (X4 Pro /
+// X4 Classic). It never overrides a marker that names a *different* board.
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false,
+                       bool allowUntagged = false);
 
 // Full-image integrity check that mirrors the bootloader's verification:
 // header magic, chip-family compatibility (ESP image uint16_t chip_id at offset 0x0C),
-// segment table walk, XOR checksum, and SHA256 trailer (when
+// board-variant marker (X4 Pro vs X4 Classic share the ESP32-S3, so chip_id alone cannot tell them
+// apart), segment table walk, XOR checksum, and SHA256 trailer (when
 // hash_appended == 1). Run this before flashing a candidate firmware so a
 // truncated/corrupted .bin never reaches otadata.
 //
@@ -60,7 +68,7 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
 // skip the size-fits-partition check (e.g. when validating ahead of partition
 // lookup). Streams the file in CHUNK-sized reads; the file is rewound on
 // success so the caller can immediately reread it for flashing.
-Result validateImageFile(const char* sdPath, size_t partitionSize);
+Result validateImageFile(const char* sdPath, size_t partitionSize, bool allowUntagged = false);
 
 // Validates an already-written OTA partition without esp_image_verify (which
 // rejects the patched X3/X4 images despite the stock bootloader accepting them).

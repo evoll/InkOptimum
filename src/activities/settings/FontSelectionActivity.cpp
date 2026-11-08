@@ -250,9 +250,6 @@ void FontSelectionActivity::render(RenderLock&&) {
     case Language::RU:
       previewText = "Съешь ещё этих мягких французских булок.";
       break;
-    case Language::UK:
-      previewText = "Жебракують філософи при ґанку в Гадячі.";
-      break;
     case Language::EN:
     default:
       previewText = "The quick brown fox jumps over the lazy dog.";

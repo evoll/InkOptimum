@@ -24,7 +24,7 @@ class Section {
   // fixes (notably Paragraph spacing=None preserving structural title/subtitle
   // spacing) without changing TextBlock/Page serialization or requiring the
   // user to clear .inkmod manually.
-  static constexpr const char* LAYOUT_CACHE_GENERATION = "_layout65";
+  static constexpr const char* LAYOUT_CACHE_GENERATION = "_layout66";
 
   bool writeSectionFileHeader(int fontId, float lineCompression, uint8_t extraParagraphSpacing, bool forceParagraphIndents,
                               uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
@@ -63,6 +63,14 @@ class Section {
                          const reader::ReaderCancellationToken* cancellationToken = nullptr,
                          bool* cancelled = nullptr);
   std::unique_ptr<Page> loadPageFromSectionFile();
+
+  // Background preparation of a chapter that is not on screen. Decoding an
+  // inline image uses the shared frame buffer as scratch space, which would
+  // corrupt the page the reader is showing. With this set, createSectionFile()
+  // stops right after the XHTML source is cached when the chapter references
+  // images and reports it through skippedForImages; nothing else is written.
+  bool noFramebufferScratch = false;
+  bool skippedForImages = false;
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;

@@ -9,6 +9,7 @@
 #include <limits>
 
 #include "FsHelpers.h"
+#include "SpineHrefMatch.h"
 
 namespace {
 constexpr uint32_t BOOK_CACHE_MAGIC = 0x425843FF;  // bytes: 0xFF, "CXB"
@@ -80,6 +81,9 @@ bool BookMetadataCache::beginTocPass() {
     spineFile.close();
     return false;
   }
+  tocMappedCount_ = 0;
+  tocFolderHint_.clear();
+  tocFilenameScanBudget_ = TOC_FILENAME_SCAN_BUDGET;
 
   if (spineCount >= LARGE_SPINE_THRESHOLD) {
     spineHrefIndex.clear();
@@ -104,6 +108,25 @@ bool BookMetadataCache::beginTocPass() {
     useSpineHrefIndex = false;
   }
 
+  return true;
+}
+
+bool BookMetadataCache::resetTocPassOutput() {
+  if (!buildMode) {
+    LOG_DBG("BMC", "resetTocPassOutput called but not in build mode");
+    return false;
+  }
+  tocWriteBuffer.clear();  // discard buffered records from the abandoned parse
+  if (tocFile) tocFile.close();
+  if (!Storage.openFileForWrite("BMC", cachePath + tmpTocBinFile, tocFile)) {
+    LOG_ERR("BMC", "Could not reopen TOC temp file for reset");
+    return false;
+  }
+  tocCount = 0;
+  tocMappedCount_ = 0;
+  tocFolderHint_.clear();
+  tocFilenameScanBudget_ = TOC_FILENAME_SCAN_BUDGET;
+  LOG_DBG("BMC", "Reset TOC temp output for fallback parse");
   return true;
 }
 
@@ -594,6 +617,63 @@ void BookMetadataCache::createSpineEntry(const std::string& href) {
   spineCount++;
 }
 
+int16_t BookMetadataCache::findSpineExact(const std::string& href) {
+  if (useSpineHrefIndex) {
+    const uint64_t targetHash = fnvHash64(href);
+    const uint16_t targetLen = static_cast<uint16_t>(href.size());
+    const auto it =
+        std::lower_bound(spineHrefIndex.begin(), spineHrefIndex.end(), SpineHrefIndexEntry{targetHash, targetLen, 0},
+                         [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
+                           return a.hrefHash < b.hrefHash || (a.hrefHash == b.hrefHash && a.hrefLen < b.hrefLen);
+                         });
+    if (it != spineHrefIndex.end() && it->hrefHash == targetHash && it->hrefLen == targetLen) return it->spineIndex;
+    return -1;
+  }
+  spineFile.seek(0);
+  for (int i = 0; i < spineCount; i++) {
+    if (readSpineEntry(spineFile).href == href) return static_cast<int16_t>(i);
+  }
+  return -1;
+}
+
+// Some books ship a nav whose links are relative to a folder the nav does not sit in
+// (OEBPS/nav.xhtml linking "c1.xhtml" while the spine carries OEBPS/text/c1.xhtml). When the exact
+// lookup misses, the spine item with the same filename is taken, but only if no other spine item
+// shares it: an ambiguous filename leaves the entry unmapped rather than pointing it at the wrong
+// chapter. A document that is off by one folder is off by it throughout, so the folder the last
+// match was found in is tried first (as an exact lookup); a TOC whose every entry misses then reads
+// the spine file once more, not once per entry. Full reads are budgeted per TOC pass.
+// Ported from witchhunt-reader (16a3d361), adapted to this fork's TOC pass.
+int16_t BookMetadataCache::findSpineByFilename(const std::string& href) {
+  const std::string_view name = spine_href::filenameOf(href);
+  if (name.empty()) return -1;
+
+  if (!tocFolderHint_.empty()) {
+    const int16_t hinted = findSpineExact(tocFolderHint_ + href);
+    if (hinted >= 0) return hinted;
+  }
+  if (tocFilenameScanBudget_ < static_cast<uint32_t>(spineCount)) return -1;
+  tocFilenameScanBudget_ -= static_cast<uint32_t>(spineCount);
+
+  int16_t found = -1;
+  std::string foundHref;
+  spineFile.seek(0);
+  for (int i = 0; i < spineCount; i++) {
+    const auto entry = readSpineEntry(spineFile);
+    if (spine_href::match(href, entry.href) == SpineHrefMatch::None) continue;
+    if (found >= 0) return -1;  // ambiguous
+    found = static_cast<int16_t>(i);
+    foundHref = entry.href;
+  }
+  if (found >= 0) {
+    // "OEBPS/text/c1.xhtml" for "c1.xhtml": remember "OEBPS/text/" for the next miss.
+    tocFolderHint_ = foundHref.size() >= href.size() && foundHref.compare(foundHref.size() - href.size(), href.size(), href) == 0
+                         ? foundHref.substr(0, foundHref.size() - href.size())
+                         : std::string();
+  }
+  return found;
+}
+
 void BookMetadataCache::createTocEntry(const std::string& title, const std::string& href, const std::string& anchor,
                                        const uint8_t level) {
   if (!buildMode || !tocFile || !spineFile) {
@@ -601,38 +681,10 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
     return;
   }
 
-  int16_t spineIndex = -1;
-
-  if (useSpineHrefIndex) {
-    uint64_t targetHash = fnvHash64(href);
-    uint16_t targetLen = static_cast<uint16_t>(href.size());
-
-    auto it =
-        std::lower_bound(spineHrefIndex.begin(), spineHrefIndex.end(), SpineHrefIndexEntry{targetHash, targetLen, 0},
-                         [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
-                           return a.hrefHash < b.hrefHash || (a.hrefHash == b.hrefHash && a.hrefLen < b.hrefLen);
-                         });
-
-    while (it != spineHrefIndex.end() && it->hrefHash == targetHash && it->hrefLen == targetLen) {
-      spineIndex = it->spineIndex;
-      break;
-    }
-
-    if (spineIndex == -1) {
-      LOG_DBG("BMC", "createTocEntry: Could not find spine item for TOC href %s", href.c_str());
-    }
-  } else {
-    spineFile.seek(0);
-    for (int i = 0; i < spineCount; i++) {
-      auto spineEntry = readSpineEntry(spineFile);
-      if (spineEntry.href == href) {
-        spineIndex = static_cast<int16_t>(i);
-        break;
-      }
-    }
-    if (spineIndex == -1) {
-      LOG_DBG("BMC", "createTocEntry: Could not find spine item for TOC href %s", href.c_str());
-    }
+  int16_t spineIndex = findSpineExact(href);
+  if (spineIndex == -1) spineIndex = findSpineByFilename(href);
+  if (spineIndex == -1) {
+    LOG_DBG("BMC", "createTocEntry: Could not find spine item for TOC href %s", href.c_str());
   }
 
   if (!writeTempString(tocFile, tocWriteBuffer, title) || !writeTempString(tocFile, tocWriteBuffer, href) ||
@@ -643,6 +695,7 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
     return;
   }
   tocCount++;
+  if (spineIndex >= 0) tocMappedCount_++;
 }
 
 /* ============= READING / LOADING FUNCTIONS ================ */

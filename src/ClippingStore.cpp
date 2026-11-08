@@ -40,6 +40,37 @@ bool ClippingStore::loadForBook(const std::string& filePath, const std::string& 
   return load();
 }
 
+bool ClippingStore::getAllClippedBooks(std::vector<ClippedBookEntry>& out) {
+  if (!Storage.exists(CLIPPING_DIR)) return true;
+
+  const auto files = Storage.listFiles(CLIPPING_DIR);
+  for (const auto& name : files) {
+    const std::string nameStr = name.c_str();
+    if (nameStr.size() < 5 || nameStr.compare(nameStr.size() - 4, 4, ".bin") != 0) continue;
+
+    FsFile file;
+    if (!Storage.openFileForRead("CLIP", std::string(CLIPPING_DIR) + "/" + nameStr, file)) continue;
+
+    uint8_t version = 0;
+    uint16_t count = 0;
+    ClippedBookEntry entry;
+    const bool ok = serialization::tryReadPod(file, version) && serialization::tryReadPod(file, count) &&
+                    serialization::tryReadString(file, entry.title) &&
+                    serialization::tryReadString(file, entry.author) &&
+                    serialization::tryReadString(file, entry.path);
+    file.close();
+    if (!ok || version != CLIPPING_FILE_VERSION || count == 0 || count > MAX_CLIPPINGS || entry.path.empty()) {
+      continue;
+    }
+
+    const size_t underscore = nameStr.find('_');
+    entry.bookType = underscore == std::string::npos ? "epub" : nameStr.substr(0, underscore);
+    entry.count = count;
+    out.push_back(std::move(entry));
+  }
+  return true;
+}
+
 bool ClippingStore::load() {
   if (storePath_.empty()) return true;
 

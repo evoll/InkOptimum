@@ -8,7 +8,7 @@
 #include <cstring>
 
 namespace {
-constexpr uint32_t CACHE_VERSION = 2;
+constexpr uint32_t CACHE_VERSION = 3;
 constexpr uint32_t RECORD_MAGIC = 0x3152444Fu;  // ODR1
 constexpr size_t MAX_CACHE_STRING = 4096;
 
@@ -75,7 +75,8 @@ bool OpdsCacheStore::append(OpdsEntry&& entry) {
       !writePod(feed_, &acqCount, sizeof(acqCount)) || !writePod(feed_, &reserved, sizeof(reserved)) ||
       !writeString(feed_, entry.title) || !writeString(feed_, entry.author) ||
       !writeString(feed_, entry.description) || !writeString(feed_, entry.href) ||
-      !writeString(feed_, entry.id) || !writeString(feed_, entry.navigationHref)) {
+      !writeString(feed_, entry.id) || !writeString(feed_, entry.navigationHref) ||
+      !writeString(feed_, entry.isbn) || !writeString(feed_, entry.asin) || !writeString(feed_, entry.series)) {
     return false;
   }
   for (uint8_t i = 0; i < acqCount; ++i) {
@@ -216,7 +217,8 @@ bool OpdsCacheStore::readEntry(const size_t index, OpdsEntry& out) {
   out = OpdsEntry{};
   out.type = static_cast<OpdsEntryType>(type);
   if (!readString(feed_, out.title) || !readString(feed_, out.author) || !readString(feed_, out.description) ||
-      !readString(feed_, out.href) || !readString(feed_, out.id) || !readString(feed_, out.navigationHref)) return false;
+      !readString(feed_, out.href) || !readString(feed_, out.id) || !readString(feed_, out.navigationHref) ||
+      !readString(feed_, out.isbn) || !readString(feed_, out.asin) || !readString(feed_, out.series)) return false;
   out.acquisitionCount = std::min<uint8_t>(acqCount, MAX_OPDS_ACQUISITIONS);
   for (uint8_t i = 0; i < acqCount; ++i) {
     uint8_t format = 0;

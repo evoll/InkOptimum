@@ -27,6 +27,8 @@ class DiagnosticManager {
   void logf(const char* category, const char* format, ...);
   bool snapshot(const char* activity = nullptr, const char* book = nullptr);
   bool createReport();
+  // Same text as the report file, built in memory (used by the web interface download).
+  String buildReport();
   void clearFiles();
 
   static constexpr const char* LOG_PATH = "/diagnostics/inkmod.log";

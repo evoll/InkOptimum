@@ -6,6 +6,8 @@
 
 #include <array>
 
+#include "TurnedFrame.h"
+
 namespace {
 
 constexpr uint16_t MAX_PAGE_ELEMENTS = 1024;
@@ -16,18 +18,65 @@ static_assert(TableFragmentCell::MAX_SERIALIZED_LINES == MAX_TABLE_LINES_PER_CEL
 static_assert(TableFragmentRow::MAX_SERIALIZED_CELLS == MAX_TABLE_CELLS_PER_ROW);
 static_assert(PageTableFragment::MAX_SERIALIZED_ROWS == MAX_TABLE_ROWS_PER_FRAGMENT);
 
+// The turned frame's orientation numbers are the renderer's.
+static_assert(turnedframe::Portrait == GfxRenderer::Portrait);
+static_assert(turnedframe::LandscapeClockwise == GfxRenderer::LandscapeClockwise);
+static_assert(turnedframe::PortraitInverted == GfxRenderer::PortraitInverted);
+static_assert(turnedframe::LandscapeCounterClockwise == GfxRenderer::LandscapeCounterClockwise);
+
+// A vertical page's draw scope: the reader's offsets become the turned frame's, the renderer draws in that frame, and
+// the orientation found on entry is back on every exit. A horizontal page takes none of it.
+class FrameScope {
+ public:
+  FrameScope(const GfxRenderer& renderer, const Page& page, int& xOffset, int& yOffset)
+      : renderer_(renderer), entry_(renderer.getOrientation()), turned_(page.isVertical()) {
+    if (!turned_) return;
+    const GfxRenderer::Orientation reader = renderer.getHeldOrientation();
+    const turnedframe::Offsets offsets =
+        turnedframe::contentOffsets(renderer.getScreenWidth(reader), xOffset, yOffset, page.verticalBlockExtent);
+    xOffset = offsets.x;
+    yOffset = offsets.y;
+    renderer.setDrawOrientation(static_cast<GfxRenderer::Orientation>(turnedframe::contentOf(reader)));
+  }
+  ~FrameScope() {
+    if (turned_) renderer_.setDrawOrientation(entry_);
+  }
+  FrameScope(const FrameScope&) = delete;
+  FrameScope& operator=(const FrameScope&) = delete;
+
+ private:
+  const GfxRenderer& renderer_;
+  GfxRenderer::Orientation entry_;
+  bool turned_;
+};
+
 template <typename Predicate>
-void renderFilteredPageElements(const std::vector<std::shared_ptr<PageElement>>& elements, GfxRenderer& renderer,
-                                const int fontId, const int xOffset, const int yOffset, const bool foregroundBlack,
-                                Predicate&& predicate) {
-  for (const auto& element : elements) {
-    if (predicate(*element)) {
+void renderFilteredPageElements(const Page& page, GfxRenderer& renderer, const int fontId, const int xOffsetIn,
+                                const int yOffsetIn, const bool foregroundBlack, Predicate&& predicate) {
+  int xOffset = xOffsetIn;
+  int yOffset = yOffsetIn;
+  const FrameScope scope(renderer, page, xOffset, yOffset);
+  const int readerWidth = renderer.getScreenWidth(renderer.getHeldOrientation());
+  for (const auto& element : page.elements) {
+    if (!predicate(*element)) continue;
+    if (page.isVertical() && element->getTag() == TAG_PageImage) {
+      static_cast<PageImage&>(*element).renderTurned(renderer, readerWidth, xOffset, yOffset);
+    } else {
       element->render(renderer, fontId, xOffset, yOffset, foregroundBlack);
     }
   }
 }
 
 }  // namespace
+
+void PageImage::renderTurned(GfxRenderer& renderer, const int readerWidth, const int xOffset, const int yOffset) {
+  const turnedframe::Rect rect = turnedframe::toReader(
+      readerWidth, {xPos + xOffset, yPos + yOffset, imageBlock->getWidth(), imageBlock->getHeight()});
+  const GfxRenderer::Orientation turned = renderer.getOrientation();
+  renderer.setDrawOrientation(renderer.getHeldOrientation());
+  imageBlock->renderSwapped(renderer, rect.x, rect.y);
+  renderer.setDrawOrientation(turned);
+}
 
 void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                       const bool foregroundBlack) {
@@ -337,18 +386,18 @@ std::unique_ptr<PageTableFragment> PageTableFragment::deserialize(FsFile& file) 
 
 void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                   const bool foregroundBlack) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, foregroundBlack,
+  renderFilteredPageElements(*this, renderer, fontId, xOffset, yOffset, foregroundBlack,
                              [](const PageElement&) { return true; });
 }
 
 void Page::renderText(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                       const bool foregroundBlack) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, foregroundBlack,
+  renderFilteredPageElements(*this, renderer, fontId, xOffset, yOffset, foregroundBlack,
                              [](const PageElement& element) { return element.getTag() != TAG_PageImage; });
 }
 
 void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, true,
+  renderFilteredPageElements(*this, renderer, fontId, xOffset, yOffset, true,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
 }
 
@@ -358,7 +407,7 @@ bool Page::serialize(FsFile& file) const {
     LOG_ERR("PGE", "Serialization failed: element count %u exceeds maximum", static_cast<uint32_t>(elements.size()));
     return false;
   }
-  if (!serialization::tryWritePod(file, count)) {
+  if (!serialization::tryWritePod(file, count) || !serialization::tryWritePod(file, verticalBlockExtent)) {
     LOG_ERR("PGE", "Serialization failed: could not write element count");
     return false;
   }
@@ -419,6 +468,10 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
   }
   if (count > MAX_PAGE_ELEMENTS) {
     LOG_ERR("PGE", "Deserialization failed: element count %u exceeds maximum", count);
+    return nullptr;
+  }
+  if (!serialization::tryReadPod(file, page->verticalBlockExtent)) {
+    LOG_ERR("PGE", "Deserialization failed: missing block extent");
     return nullptr;
   }
   page->elements.reserve(count);

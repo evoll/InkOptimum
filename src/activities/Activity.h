@@ -45,6 +45,14 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // Bluetooth page turner: a reader that has painted a page takes remote page and button input.
+  virtual bool acceptsRemoteInput() const { return false; }
+  // A page or chapter turn from the remote. False when it was not taken.
+  virtual bool remoteTurn(bool /*forward*/, bool /*chapter*/) { return false; }
+  // The remote's button mapped to the reader menu (true) or to a new clipping (false).
+  virtual bool remoteShortcut(bool /*readerMenu*/) { return false; }
+  // A toolbar, panel or menu over the page owns the device keys: a remote turn is refused.
+  virtual bool remoteInputBlocked() const { return false; }
   virtual bool allowPowerAsConfirmInReaderMode() const { return false; }
   virtual bool handleHomeGesture() { return false; }
   // Optional configured shortcut action (Home double-tap/hold on X4 Pro).

@@ -12,7 +12,10 @@
 #include <utility>
 #include <vector>
 
+#include <LcpInfo.h>
+
 #include "MappedInputManager.h"
+#include "util/LcpClient.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -30,18 +33,27 @@ std::string humanSize(uint64_t bytes) {
 std::string formatOf(const std::string& p) {
   if (FsHelpers::hasEpubExtension(p)) return "EPUB";
   if (FsHelpers::checkFileExtension(p, ".fb2")) return "FB2";
-  if (FsHelpers::checkFileExtension(p, ".zip")) return "ZIP / FB2.ZIP";
+  if (FsHelpers::checkFileExtension(p, ".fb3")) return "FB3";
+  if (FsHelpers::checkFileExtension(p, ".docx")) return "DOCX";
+  if (FsHelpers::checkFileExtension(p, ".html") || FsHelpers::checkFileExtension(p, ".htm") ||
+      FsHelpers::checkFileExtension(p, ".xhtml")) return "HTML";
+  if (FsHelpers::checkFileExtension(p, ".rtf")) return "RTF";
+  if (FsHelpers::checkFileExtension(p, ".mobi") || FsHelpers::checkFileExtension(p, ".azw") ||
+      FsHelpers::checkFileExtension(p, ".azw3") || FsHelpers::checkFileExtension(p, ".prc")) return "MOBI / AZW3";
+  if (FsHelpers::checkFileExtension(p, ".zip")) return "ZIP / FB2.ZIP / FB3.ZIP";
   if (FsHelpers::hasXtcExtension(p)) return "XTC / XTCH";
   if (FsHelpers::hasTxtExtension(p)) return "TXT";
   if (FsHelpers::hasMarkdownExtension(p)) return "Markdown";
   if (FsHelpers::hasPngExtension(p)) return "PNG";
   if (FsHelpers::hasBmpExtension(p)) return "BMP";
+  if (FsHelpers::hasJpgExtension(p)) return "JPEG";
   return "-";
 }
 
 bool isBookLike(const std::string& p) {
   return FsHelpers::hasEpubExtension(p) || FsHelpers::checkFileExtension(p, ".fb2") ||
-         FsHelpers::checkFileExtension(p, ".zip") || FsHelpers::hasXtcExtension(p) ||
+         FsHelpers::checkFileExtension(p, ".fb3") || FsHelpers::checkFileExtension(p, ".docx") ||
+         FsHelpers::hasConvertedBookExtension(p) || FsHelpers::checkFileExtension(p, ".zip") || FsHelpers::hasXtcExtension(p) ||
          FsHelpers::hasTxtExtension(p) || FsHelpers::hasMarkdownExtension(p);
 }
 }
@@ -73,8 +85,24 @@ void BookInfoActivity::render(RenderLock&&) {
   if (FsHelpers::hasEpubExtension(path_)) {
     rows.push_back({tr(STR_BOOK_INFO_CACHE), Epub::hasCache(path_, "/.inkmod") ? tr(STR_YES) : tr(STR_NO)});
   }
+  if (Storage.exists((path_ + ".key").c_str())) {
+    // A protected book with a device key: show its due date (the same line as Apps > LCP loans).
+    const lcpclient::LoanInfo loan = lcpclient::loanInfo(path_);
+    std::string value;
+    switch (static_cast<lcpinfo::LoanState>(loan.state)) {
+      case lcpinfo::LoanState::NoExpiry: value = tr(STR_LCP_NO_EXPIRY); break;
+      case lcpinfo::LoanState::Active: value = std::string(tr(STR_LCP_UNTIL)) + " " + lcpinfo::formatDate(loan.expiresAt); break;
+      case lcpinfo::LoanState::Expired: value = std::string(tr(STR_LCP_EXPIRED)) + " " + lcpinfo::formatDate(loan.expiresAt); break;
+      case lcpinfo::LoanState::ClockUnknown: value = tr(STR_LCP_CLOCK_UNKNOWN); break;
+    }
+    if (!loan.hasKey) value = tr(STR_LCP_NEED_PASSPHRASE);
+    rows.push_back({tr(STR_BOOK_INFO_LOAN), value});
+  }
   if (isBookLike(path_)) {
-    const bool heavy = (FsHelpers::checkFileExtension(path_, ".fb2") && fileSize >= 20ULL * 1024ULL * 1024ULL) ||
+    const bool heavy = ((FsHelpers::checkFileExtension(path_, ".fb2") || FsHelpers::checkFileExtension(path_, ".fb3") ||
+                         FsHelpers::checkFileExtension(path_, ".docx") ||
+                         FsHelpers::hasConvertedBookExtension(path_)) &&
+                        fileSize >= 20ULL * 1024ULL * 1024ULL) ||
                        (FsHelpers::hasEpubExtension(path_) && fileSize >= 20ULL * 1024ULL * 1024ULL);
     rows.push_back({tr(STR_BOOK_INFO_PROFILE), heavy ? tr(STR_BOOK_INFO_HEAVY) : tr(STR_BOOK_INFO_NORMAL)});
   }

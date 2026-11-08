@@ -32,6 +32,12 @@ PAGES = {
     "wallpapers":("WallpapersPageHtml","Sleep Screens - inkMOD",    "wallpapers",""),
     "settings": ("SettingsPageHtml", "Settings - inkMOD Reader", "settings", ""),
     "fonts":    ("FontsPageHtml",    "Fonts - inkMOD",           "fonts",    '  <script src="/js/jszip.min.js"></script>'),
+    "weather":  ("WeatherPageHtml",  "Weather - inkMOD",         "weather",  ""),
+    "dictionary":("DictionaryPageHtml","Dictionary - inkMOD",     "dictionary",""),
+    "notes":    ("NotesPageHtml",    "Notes - inkMOD",           "notes",    ""),
+    "diagnostics":("DiagnosticsPageHtml","Diagnostics - inkMOD", "diagnostics",""),
+    "stats":("StatsPageHtml","Reading statistics - inkMOD", "stats",""),
+    "plugins":  ("PluginsPageHtml",  "Plugins - inkMOD",         "plugins",  '  <script src="/js/jszip.min.js"></script>'),
 }
 
 PRESERVE_TAGS = "pre|code|textarea|script|style"
@@ -100,6 +106,7 @@ for slug, (ident, title, active, head_extra) in PAGES.items():
         "title": title, "v": v, "head_extra": head_extra,
         "styles": page_css, "body": page_html, "script": script,
         "cls_home": "", "cls_files": "", "cls_epubkit": "", "cls_wallpapers": "", "cls_settings": "", "cls_fonts": "",
+        "cls_weather": "", "cls_dictionary": "", "cls_notes": "", "cls_diagnostics": "", "cls_stats": "", "cls_plugins": "",
     }
     values[f"cls_{active}"] = ' class="active"'
     html = minify_html(render(base, values))
@@ -119,7 +126,7 @@ jszip = read(JS_OUT, "jszip.min.js")
 orig, comp = emit_gzip(os.path.join(JS_OUT, "jszip_minJs.generated.h"), "jszip_minJs", jszip)
 print(f"{'jszip_minJs':18} {orig:>7}B -> {comp:>6}B gz")
 
-# Shared localization (en/ru/uk), loaded on every page via base.html.
+# Shared localization (en/ru), loaded on every page via base.html.
 i18n_js = read(JS_OUT, "i18n.js")
 orig, comp = emit_gzip(os.path.join(JS_OUT, "i18nJs.generated.h"), "i18nJs", i18n_js)
 print(f"{'i18nJs':18} {orig:>7}B -> {comp:>6}B gz")

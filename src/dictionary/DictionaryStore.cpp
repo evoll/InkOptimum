@@ -1,11 +1,14 @@
 #include "DictionaryStore.h"
 
+#include <DictArticles.h>
+#include <DictWordForms.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace Dictionary {
 namespace {
@@ -239,72 +242,91 @@ size_t Store::normalizeWord(const char* input, char* output, const size_t output
   return length;
 }
 
+Store::FolderKind Store::addDictionaryFolder(const char* rootPath, const char* folderPath, const char* folderName) {
+  (void)rootPath;
+  CatalogEntry candidate;
+  snprintf(candidate.name, sizeof(candidate.name), "%s", folderName);
+  if (snprintf(candidate.path, sizeof(candidate.path), "%s", folderPath) >= static_cast<int>(sizeof(candidate.path))) {
+    return FolderKind::Rejected;  // never use a truncated path: it would point at a different folder
+  }
+
+  char indexPath[MAX_DICTIONARY_PATH_BYTES + 32];
+  char dataPath[MAX_DICTIONARY_PATH_BYTES + 32];
+  snprintf(indexPath, sizeof(indexPath), "%s/%s", candidate.path, INDEX_FILE_NAME);
+  snprintf(dataPath, sizeof(dataPath), "%s/%s", candidate.path, DATA_FILE_NAME);
+  if (!Storage.exists(indexPath) && !Storage.exists(dataPath)) return FolderKind::NotADictionary;
+  if (!Storage.exists(indexPath) || !Storage.exists(dataPath)) return FolderKind::Rejected;
+
+  for (uint8_t i = 0; i < count_; ++i) {
+    // Same folder name in the other root (legacy "/Dictionaries") counts as the same dictionary.
+    if (strcmp(entries_[i].name, candidate.name) == 0) return FolderKind::Rejected;
+  }
+
+  FsFile indexFile;
+  if (!Storage.openFileForRead("DICT", indexPath, indexFile)) return FolderKind::Rejected;
+  uint16_t indexVersion = 0;
+  uint16_t indexRecordSize = 0;
+  const bool valid = validateIndexHeader(indexFile, candidate.entryCount, indexVersion, indexRecordSize);
+  indexFile.close();
+  if (!valid || candidate.entryCount == 0) {
+    LOG_ERR("DICT", "Ignoring invalid prepared dictionary: %s", candidate.path);
+    return FolderKind::Rejected;
+  }
+
+  FsFile dataFile;
+  if (!Storage.openFileForRead("DICT", dataPath, dataFile)) return FolderKind::Rejected;
+  uint32_t dataEntryCount = 0;
+  uint16_t dataVersion = 0;
+  const bool dataValid = validateDataHeader(dataFile, dataEntryCount, dataVersion);
+  dataFile.close();
+  if (!dataValid || dataVersion != indexVersion || dataEntryCount != candidate.entryCount) {
+    LOG_ERR("DICT", "Ignoring dictionary with mismatched data: %s", candidate.path);
+    return FolderKind::Rejected;
+  }
+  entries_[count_++] = candidate;
+  return FolderKind::Added;
+}
+
+// A folder without dictionary files is searched one level further down, so a collection such as
+// /.dictionaries/English/Oxford is found as well as /.dictionaries/Oxford.
+void Store::scanFolder(const char* rootPath, const char* folderPath, const uint8_t depth) {
+  FsFile dir = Storage.open(folderPath);
+  if (!dir || !dir.isDirectory()) {
+    dir.close();
+    if (depth == 0) LOG_DBG("DICT", "Dictionary root not found: %s", folderPath);
+    return;
+  }
+
+  char folderName[256];  // a full FAT long file name; the display name is cut to 63 bytes
+  while (count_ < MAX_DICTIONARIES) {
+    FsFile item = dir.openNextFile();
+    if (!item) break;
+    if (!item.isDirectory()) {
+      item.close();
+      continue;
+    }
+    item.getName(folderName, sizeof(folderName));
+    item.close();
+    if (folderName[0] == '\0' || folderName[0] == '.' || folderName[0] == '_') continue;
+
+    char childPath[MAX_DICTIONARY_PATH_BYTES];
+    if (snprintf(childPath, sizeof(childPath), "%s/%s", folderPath, folderName) >=
+        static_cast<int>(sizeof(childPath))) {
+      continue;
+    }
+    const FolderKind kind = addDictionaryFolder(rootPath, childPath, folderName);
+    if (kind == FolderKind::NotADictionary && depth + 1 < MAX_SCAN_DEPTH) {
+      scanFolder(rootPath, childPath, depth + 1);
+    }
+  }
+  dir.close();
+}
+
 bool Store::scan() {
   count_ = 0;
   const char* roots[] = {ROOT_PATH, LEGACY_ROOT_PATH};
-  char folderName[MAX_DICTIONARY_NAME_BYTES];
   for (const char* rootPath : roots) {
-    FsFile root = Storage.open(rootPath);
-    if (!root || !root.isDirectory()) {
-      root.close();
-      LOG_DBG("DICT", "Dictionary root not found: %s", rootPath);
-      continue;
-    }
-
-    while (count_ < MAX_DICTIONARIES) {
-      FsFile item = root.openNextFile();
-      if (!item) break;
-      if (!item.isDirectory()) {
-        item.close();
-        continue;
-      }
-      item.getName(folderName, sizeof(folderName));
-      item.close();
-      if (folderName[0] == '\0' || folderName[0] == '.' || folderName[0] == '_') continue;
-
-      bool duplicate = false;
-      for (uint8_t i = 0; i < count_; ++i) {
-        if (strcmp(entries_[i].name, folderName) == 0) {
-          duplicate = true;
-          break;
-        }
-      }
-      if (duplicate) continue;
-
-      CatalogEntry candidate;
-      snprintf(candidate.name, sizeof(candidate.name), "%s", folderName);
-      snprintf(candidate.path, sizeof(candidate.path), "%s/%s", rootPath, folderName);
-
-      char indexPath[MAX_DICTIONARY_PATH_BYTES + 32];
-      char dataPath[MAX_DICTIONARY_PATH_BYTES + 32];
-      snprintf(indexPath, sizeof(indexPath), "%s/%s", candidate.path, INDEX_FILE_NAME);
-      snprintf(dataPath, sizeof(dataPath), "%s/%s", candidate.path, DATA_FILE_NAME);
-      if (!Storage.exists(indexPath) || !Storage.exists(dataPath)) continue;
-
-      FsFile indexFile;
-      if (!Storage.openFileForRead("DICT", indexPath, indexFile)) continue;
-      uint16_t indexVersion = 0;
-      uint16_t indexRecordSize = 0;
-      const bool valid = validateIndexHeader(indexFile, candidate.entryCount, indexVersion, indexRecordSize);
-      indexFile.close();
-      if (!valid || candidate.entryCount == 0) {
-        LOG_ERR("DICT", "Ignoring invalid prepared dictionary: %s", candidate.path);
-        continue;
-      }
-
-      FsFile dataFile;
-      if (!Storage.openFileForRead("DICT", dataPath, dataFile)) continue;
-      uint32_t dataEntryCount = 0;
-      uint16_t dataVersion = 0;
-      const bool dataValid = validateDataHeader(dataFile, dataEntryCount, dataVersion);
-      dataFile.close();
-      if (!dataValid || dataVersion != indexVersion || dataEntryCount != candidate.entryCount) {
-        LOG_ERR("DICT", "Ignoring dictionary with mismatched data: %s", candidate.path);
-        continue;
-      }
-      entries_[count_++] = candidate;
-    }
-    root.close();
+    scanFolder(rootPath, rootPath, 0);
     if (count_ >= MAX_DICTIONARIES) break;
   }
   LOG_INF("DICT", "Prepared dictionaries found: %u", count_);
@@ -313,6 +335,17 @@ bool Store::scan() {
 
 bool Store::lookup(const uint8_t dictionaryIndex, const char* word, char* matchedWord, const size_t matchedWordSize,
                    char* article, const size_t articleSize) const {
+  if (lookupExact(dictionaryIndex, word, matchedWord, matchedWordSize, article, articleSize)) return true;
+  if (!word) return false;
+  // The word as selected has no entry: try its lowercase and the word after a French elision.
+  for (const std::string& form : dict_word_forms::fallbackForms(word)) {
+    if (lookupExact(dictionaryIndex, form.c_str(), matchedWord, matchedWordSize, article, articleSize)) return true;
+  }
+  return false;
+}
+
+bool Store::lookupExact(const uint8_t dictionaryIndex, const char* word, char* matchedWord,
+                        const size_t matchedWordSize, char* article, const size_t articleSize) const {
   if (matchedWord && matchedWordSize > 0) matchedWord[0] = '\0';
   if (article && articleSize > 0) article[0] = '\0';
   if (dictionaryIndex >= count_ || !word || !matchedWord || matchedWordSize < 2 || !article || articleSize < 2) {
@@ -357,12 +390,11 @@ bool Store::lookup(const uint8_t dictionaryIndex, const char* word, char* matche
   IndexRecord candidates[MAX_HASH_CANDIDATES] = {};
   uint8_t candidateCount = 0;
   if (indexVersion == FORMAT_VERSION_V2) {
-    for (uint32_t i = low; i < entryCount; ++i) {
+    // Records with the same key can be several articles (a synonym of more than one headword, or two entries
+    // spelled alike); all of them are shown. The scan stays inside the run of one primary hash.
+    for (uint32_t i = low; i < entryCount && candidateCount < MAX_HASH_CANDIDATES; ++i) {
       if (!readIndexRecord(indexFile, i, indexRecordSize, record) || record.hash != wantedHash) break;
-      if (record.secondaryHash == wantedSecondaryHash) {
-        candidates[candidateCount++] = record;
-        break;
-      }
+      if (record.secondaryHash == wantedSecondaryHash) candidates[candidateCount++] = record;
     }
   } else {
     for (uint32_t i = low; i < entryCount && candidateCount < MAX_HASH_CANDIDATES; ++i) {
@@ -388,9 +420,12 @@ bool Store::lookup(const uint8_t dictionaryIndex, const char* word, char* matche
     return false;
   }
 
-  char candidateWord[96];
+  // Where each matching article is and what it is called. A v1 index needs the headword to match the
+  // word, and the first one that does is the answer; a v2 index shows every distinct article.
+  dict_articles::Part parts[dict_articles::kMaxParts];
+  size_t partCount = 0;
   char candidateNormalized[128];
-  for (uint8_t i = 0; i < candidateCount; ++i) {
+  for (uint8_t i = 0; i < candidateCount && partCount < dict_articles::kMaxParts; ++i) {
     const auto& candidate = candidates[i];
     const uint64_t entryEnd = static_cast<uint64_t>(candidate.dataOffset) + candidate.dataLength;
     if (candidate.dataOffset < DATA_HEADER_SIZE || entryEnd > dataFile.fileSize64() || candidate.dataLength < 6 ||
@@ -402,30 +437,42 @@ bool Store::lookup(const uint8_t dictionaryIndex, const char* word, char* matche
     uint32_t articleLength = 0;
     if (!readU16Le(dataFile, headwordLength) || !readU32Le(dataFile, articleLength) ||
         static_cast<uint64_t>(6) + headwordLength + articleLength > candidate.dataLength ||
-        headwordLength == 0 || headwordLength >= sizeof(candidateWord)) {
+        headwordLength == 0 || headwordLength >= dict_articles::kMaxHeadword) {
       continue;
     }
-    if (!readExact(dataFile, candidateWord, headwordLength)) continue;
-    candidateWord[headwordLength] = '\0';
+    dict_articles::Part part;
+    if (!readExact(dataFile, part.headword, headwordLength)) continue;
+    part.headword[headwordLength] = '\0';
+    part.bodyOffset = candidate.dataOffset + 6 + headwordLength;
+    part.bodyLength = articleLength;
+    if (articleLength == 0) continue;
     if (indexVersion == FORMAT_VERSION_V1) {
-      normalizeWord(candidateWord, candidateNormalized, sizeof(candidateNormalized));
+      normalizeWord(part.headword, candidateNormalized, sizeof(candidateNormalized));
       if (strcmp(candidateNormalized, normalized) != 0) continue;
     }
-
-    snprintf(matchedWord, matchedWordSize, "%s", candidateWord);
-    const size_t bytesToRead = std::min<size_t>(articleLength, articleSize - 1);
-    if (!readExact(dataFile, article, bytesToRead)) {
-      dataFile.close();
-      article[0] = '\0';
-      return false;
-    }
-    article[bytesToRead] = '\0';
-    dataFile.close();
-    return bytesToRead > 0;
+    if (dict_articles::contains(parts, partCount, part.bodyOffset, part.headword)) continue;
+    parts[partCount++] = part;
+    if (indexVersion == FORMAT_VERSION_V1) break;
   }
 
+  if (partCount == 0) {
+    dataFile.close();
+    return false;
+  }
+
+  snprintf(matchedWord, matchedWordSize, "%s", parts[0].headword);
+  const size_t written = dict_articles::assemble(
+      parts, partCount, article, articleSize, [&](const size_t index, char* dst, const size_t maxBytes) -> size_t {
+        const size_t toRead = std::min<size_t>(parts[index].bodyLength, maxBytes);
+        if (toRead == 0 || !dataFile.seek(parts[index].bodyOffset) || !readExact(dataFile, dst, toRead)) return 0;
+        return toRead;
+      });
   dataFile.close();
-  return false;
+  if (written == 0) {
+    article[0] = '\0';
+    return false;
+  }
+  return true;
 }
 
 }  // namespace Dictionary

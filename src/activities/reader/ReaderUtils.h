@@ -79,12 +79,23 @@ inline uint8_t rotatedOrientation(const uint8_t orientation, const bool clockwis
                    : (orientation + InkMODSettings::ORIENTATION_COUNT - 1) % InkMODSettings::ORIENTATION_COUNT;
 }
 
+inline uint8_t flippedOrientation(const uint8_t orientation) {
+  return (orientation + 2) % InkMODSettings::ORIENTATION_COUNT;
+}
+
 struct PageTurnResult {
   bool prev;
   bool next;
   bool fromSideBtn;
   bool fromTilt;
 };
+
+// True while a vertical-rl page is on screen: its pages turn right to left, so the front Left/Right buttons and the
+// left/right swipes and taps trade places. The side (PageBack/PageForward) buttons and tilt keep their meaning.
+inline bool& reversedPaging() {
+  static bool reversed = false;
+  return reversed;
+}
 
 inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   // Side buttons fire on press only when long-press action is OFF (nothing to detect).
@@ -97,14 +108,15 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   const bool sideNext = sideUsePress ? input.wasPressed(MappedInputManager::Button::PageForward)
                                      : input.wasReleased(MappedInputManager::Button::PageForward);
 
-  const bool frontPrev = input.wasReleased(MappedInputManager::Button::Left);
+  const bool reversed = reversedPaging();
+  const bool frontPrev = input.wasReleased(reversed ? MappedInputManager::Button::Right : MappedInputManager::Button::Left);
   const bool powerReleased = input.wasReleased(MappedInputManager::Button::Power);
   const bool shortPowerTurn = SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::PAGE_TURN && powerReleased &&
                               input.getHeldTime() < SETTINGS.getPowerButtonLongPressDuration();
   const bool longPowerTurn = SETTINGS.longPwrBtn == InkMODSettings::SHORT_PWRBTN::PAGE_TURN && powerReleased &&
                              input.getHeldTime() >= SETTINGS.getPowerButtonLongPressDuration();
   const bool powerTurn = shortPowerTurn || longPowerTurn;
-  const bool frontNext = input.wasReleased(MappedInputManager::Button::Right) || powerTurn;
+  const bool frontNext = input.wasReleased(reversed ? MappedInputManager::Button::Left : MappedInputManager::Button::Right) || powerTurn;
 
   // X4 Pro touch controls are copied from CrossPoint 1.6.0: swipe mode turns
   // pages horizontally; tap modes use the outer thirds and leave the center
@@ -130,6 +142,10 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
         }
       }
     }
+  }
+
+  if (reversed && SETTINGS.touchReaderControls != InkMODSettings::TOUCH_READER_FULL_TAP) {
+    std::swap(touchPrev, touchNext);
   }
 
   // fromSideBtn is true when only side buttons contributed to this page turn.

@@ -261,7 +261,8 @@ inline SettingInfo buildSleepScreenSetting() {
                          StrId::STR_COVER_CUSTOM, StrId::STR_PAGE_OVERLAY, StrId::STR_READING_STATS,
                          StrId::STR_THEME_MINIMAL, StrId::STR_THEME_MINIMAL_STATS, StrId::STR_QUICK_RESUME,
                          StrId::STR_THEME_DASHBOARD, StrId::STR_THEME_CALENDAR, StrId::STR_THEME_CALENDAR_INVERTED,
-                         StrId::STR_THEME_CALENDAR_LANDSCAPE, StrId::STR_THEME_CALENDAR_LANDSCAPE_INVERTED},
+                         StrId::STR_THEME_CALENDAR_LANDSCAPE, StrId::STR_THEME_CALENDAR_LANDSCAPE_INVERTED,
+                         StrId::STR_COVER_OVERLAY},
                         "sleepScreen", StrId::STR_CAT_DISPLAY);
   s.withEnumRawValues({
       static_cast<uint8_t>(InkMODSettings::BLANK),
@@ -280,6 +281,7 @@ inline SettingInfo buildSleepScreenSetting() {
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_INVERTED),
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
+      static_cast<uint8_t>(InkMODSettings::COVER_OVERLAY),
   });
   return s;
 }
@@ -349,12 +351,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Enum(
             StrId::STR_UI_THEME, &InkMODSettings::uiTheme,
             {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_MINIMAL, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-             StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_DASHBOARD},
+             StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_DASHBOARD,
+             StrId::STR_THEME_GRID},
             "uiTheme", StrId::STR_CAT_DISPLAY)
             .withEnumRawValues({InkMODSettings::UI_THEME::CLASSIC, InkMODSettings::UI_THEME::MINIMAL,
                                 InkMODSettings::UI_THEME::LYRA, InkMODSettings::UI_THEME::LYRA_3_COVERS,
                                 InkMODSettings::UI_THEME::LYRA_CAROUSEL,
-                                InkMODSettings::UI_THEME::ROUNDEDRAFF, InkMODSettings::UI_THEME::DASHBOARD}));
+                                InkMODSettings::UI_THEME::ROUNDEDRAFF, InkMODSettings::UI_THEME::DASHBOARD,
+                                InkMODSettings::UI_THEME::GRID}));
     // Accessibility: bumps SMALL/UI_10's font IDs up to the next built-in Inter
     // size (UI_12 is already the largest built-in size, so it doesn't change).
     // Applied live - see UiTextSize.h / SettingsActivity::toggleCurrentSetting().
@@ -362,6 +366,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_NORMAL, StrId::STR_LARGE}, "uiTextSize", StrId::STR_CAT_DISPLAY)
             .withEnumRawValues(
                 {InkMODSettings::UI_TEXT_SIZE_OFF, InkMODSettings::UI_TEXT_SIZE_LARGE}));
+    add(SettingInfo::Enum(StrId::STR_UI_FONT_STYLE, &InkMODSettings::uiFontStyle,
+                          {StrId::STR_NORMAL, StrId::STR_UI_FONT_BOLD}, "uiFontStyle", StrId::STR_CAT_DISPLAY)
+            .withEnumRawValues({InkMODSettings::UI_FONT_REGULAR, InkMODSettings::UI_FONT_BOLD}));
     add(SettingInfo::Enum(StrId::STR_RECENT_BOOKS_VIEW, &InkMODSettings::recentBooksView,
                           {StrId::STR_LIST_VIEW, StrId::STR_GRID_VIEW}, "recentBooksView", StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Toggle(StrId::STR_SHOW_HOME_SEARCH, &InkMODSettings::showHomeSearch, "showHomeSearch",
@@ -423,6 +430,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Enum(StrId::STR_IMAGES, &InkMODSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER));
+    add(SettingInfo::Enum(StrId::STR_ORNAMENT_MODE, &InkMODSettings::ornamentMode,
+                          {StrId::STR_ORNAMENT_STANDARD, StrId::STR_ORNAMENT_COMPACT, StrId::STR_ORNAMENT_ALIGNED},
+                          "ornamentMode", StrId::STR_CAT_READER));
     add(SettingInfo::Enum(StrId::STR_EXTRA_SPACING, &InkMODSettings::extraParagraphSpacing,
                           {StrId::STR_NONE_OPT, StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE},
                           "extraParagraphSpacing", StrId::STR_CAT_READER)
@@ -431,6 +441,16 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_TOP, StrId::STR_BOTTOM}, "readerClockAtBottom", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_FORCE_PARAGRAPH_INDENTS, &InkMODSettings::forceParagraphIndents,
                             "forceParagraphIndents", StrId::STR_CAT_READER));
+    add(SettingInfo::Enum(StrId::STR_WORD_SPACING, &InkMODSettings::wordSpacing,
+                          {StrId::STR_WSP_M4, StrId::STR_WSP_M3, StrId::STR_WSP_M2, StrId::STR_WSP_M1,
+                           StrId::STR_WSP_0, StrId::STR_WSP_P1, StrId::STR_WSP_P2, StrId::STR_WSP_P3,
+                           StrId::STR_WSP_P4},
+                          "wordSpacing", StrId::STR_CAT_READER)
+            .withEnumRawValues({8, 7, 6, 5, 0, 1, 2, 3, 4}));
+    add(SettingInfo::Enum(StrId::STR_VERTICAL_TEXT, &InkMODSettings::verticalText,
+                          {StrId::STR_VERTICAL_AUTO, StrId::STR_VERTICAL_ON, StrId::STR_VERTICAL_OFF}, "verticalText",
+                          StrId::STR_CAT_READER)
+            .withEnumRawValues({InkMODSettings::VERTICAL_AUTO, InkMODSettings::VERTICAL_ON, InkMODSettings::VERTICAL_OFF}));
     add(SettingInfo::Toggle(StrId::STR_BIONIC_READING, &InkMODSettings::bionicReadingEnabled,
                             "bionicReadingEnabled", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_GUIDE_READING, &InkMODSettings::guideReadingEnabled, "guideReadingEnabled",
@@ -472,6 +492,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             .withEnumRawValues({InkMODSettings::OFF, InkMODSettings::CHAPTER_SKIP, InkMODSettings::PAGE_SKIP_10,
                                 InkMODSettings::FONT_SIZE_CHANGE, InkMODSettings::ORIENTATION_CHANGE,
                                 InkMODSettings::LONG_PRESS_CREATE_CLIPPING}));
+    add(SettingInfo::Enum(StrId::STR_POWER_WAKE, &InkMODSettings::powerWakeMode,
+                          {StrId::STR_POWER_WAKE_AUTO, StrId::STR_POWER_WAKE_SHORT, StrId::STR_POWER_WAKE_LONG},
+                          "powerWakeMode", StrId::STR_CAT_CONTROLS));
     add(SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &InkMODSettings::shortPwrBtn,
                           {StrId::STR_IGNORE,
                            StrId::STR_SLEEP,
@@ -580,7 +603,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
              StrId::STR_FILE_TRANSFER, StrId::STR_CALIBRE_WIRELESS, StrId::STR_JOIN_NETWORK, StrId::STR_CREATE_HOTSPOT,
              StrId::STR_SCREENSHOT_BUTTON, StrId::STR_READER_DARK_MODE, StrId::STR_FOOTNOTES, StrId::STR_BROWSE_FILES,
              StrId::STR_SYNC_PROGRESS, StrId::STR_QUICK_SYNC,
-             StrId::STR_DICTIONARY, StrId::STR_CREATE_CLIPPING},
+             StrId::STR_DICTIONARY, StrId::STR_CREATE_CLIPPING, StrId::STR_ROTATE_FLIP},
             "longPressMenuAction", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues(
                 {InkMODSettings::LONG_MENU_OFF, InkMODSettings::LONG_MENU_SLEEP,
@@ -594,7 +617,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                  InkMODSettings::LONG_MENU_TOGGLE_DARK_MODE, InkMODSettings::LONG_MENU_FOOTNOTES,
                  InkMODSettings::LONG_MENU_FILE_BROWSER, InkMODSettings::LONG_MENU_SYNC_PROGRESS,
                  InkMODSettings::LONG_MENU_QUICK_SYNC,
-                 InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP, InkMODSettings::LONG_MENU_CREATE_CLIPPING}));
+                 InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP, InkMODSettings::LONG_MENU_CREATE_CLIPPING,
+                 InkMODSettings::LONG_MENU_ROTATE_FLIP}));
     add(SettingInfo::Enum(
             StrId::STR_LONG_PRESS_BACK_ACTION, &InkMODSettings::longPressBackAction,
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_TOGGLE_BOOKMARK, StrId::STR_READING_STATS,
@@ -603,7 +627,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
              StrId::STR_FILE_TRANSFER, StrId::STR_CALIBRE_WIRELESS, StrId::STR_JOIN_NETWORK, StrId::STR_CREATE_HOTSPOT,
              StrId::STR_SCREENSHOT_BUTTON, StrId::STR_READER_DARK_MODE, StrId::STR_FOOTNOTES, StrId::STR_BROWSE_FILES,
              StrId::STR_SYNC_PROGRESS, StrId::STR_QUICK_SYNC,
-             StrId::STR_DICTIONARY, StrId::STR_CREATE_CLIPPING},
+             StrId::STR_DICTIONARY, StrId::STR_CREATE_CLIPPING, StrId::STR_ROTATE_FLIP},
             "longPressBackAction", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues(
                 {InkMODSettings::LONG_MENU_OFF, InkMODSettings::LONG_MENU_SLEEP,
@@ -617,7 +641,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                  InkMODSettings::LONG_MENU_TOGGLE_DARK_MODE, InkMODSettings::LONG_MENU_FOOTNOTES,
                  InkMODSettings::LONG_MENU_FILE_BROWSER, InkMODSettings::LONG_MENU_SYNC_PROGRESS,
                  InkMODSettings::LONG_MENU_QUICK_SYNC,
-                 InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP, InkMODSettings::LONG_MENU_CREATE_CLIPPING}));
+                 InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP, InkMODSettings::LONG_MENU_CREATE_CLIPPING,
+                 InkMODSettings::LONG_MENU_ROTATE_FLIP}));
     add(SettingInfo::Enum(StrId::STR_HOME_DOUBLE_PRESS_ACTION, &InkMODSettings::homeDoublePressAction,
                           {StrId::STR_IGNORE,
                            StrId::STR_SLEEP,
@@ -802,6 +827,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Enum(StrId::STR_PROGRESS_BAR_THICKNESS, &InkMODSettings::statusBarProgressBarThickness,
                           {StrId::STR_PROGRESS_BAR_THIN, StrId::STR_PROGRESS_BAR_MEDIUM, StrId::STR_PROGRESS_BAR_THICK},
                           "statusBarProgressBarThickness", StrId::STR_CUSTOMISE_STATUS_BAR));
+    add(SettingInfo::Enum(StrId::STR_STATUS_BAR_TEXT_SIZE, &InkMODSettings::statusBarTextSize,
+                          {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE}, "statusBarTextSize",
+                          StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Enum(StrId::STR_TITLE, &InkMODSettings::statusBarTitle,
                           {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER}, "statusBarTitle",
                           StrId::STR_CUSTOMISE_STATUS_BAR)
@@ -812,6 +840,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Toggle(StrId::STR_BATTERY, &InkMODSettings::statusBarBattery, "statusBarBattery",
                             StrId::STR_CUSTOMISE_STATUS_BAR));
+    add(SettingInfo::Toggle(StrId::STR_STATUS_BAR_CENTERED, &InkMODSettings::statusBarCentered,
+                            "statusBarCentered", StrId::STR_CUSTOMISE_STATUS_BAR));
+    add(SettingInfo::Enum(StrId::STR_STATUS_BAR_SEPARATOR, &InkMODSettings::statusBarSeparator,
+                          {StrId::STR_SEP_BULLET, StrId::STR_SEP_DASH, StrId::STR_SEP_PIPE, StrId::STR_SEP_MIDDLE_DOT},
+                          "statusBarSeparator", StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Enum(StrId::STR_XTC_STATUS_BAR, &InkMODSettings::xtcStatusBarMode,
                           {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP}, "xtcStatusBarMode",
                           StrId::STR_CUSTOMISE_STATUS_BAR));
@@ -819,6 +852,26 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // Range 0..104 = quarter-hour steps from UTC-12:00 to UTC+14:00, biased by 48.
     add(SettingInfo::Value(StrId::STR_CLOCK_UTC_OFFSET, &InkMODSettings::clockUtcOffsetQ, {0, 104, 1},
                            "clockUtcOffsetQ", StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_CLOCK_AUTO_OFFSET, &InkMODSettings::clockAutoOffset, "clockAutoOffset",
+                            StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_WEATHER_ON_HOME, &InkMODSettings::weatherOnHome, "weatherOnHome",
+                            StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_LIBRARY_ON_HOME, &InkMODSettings::libraryOnHome, "libraryOnHome",
+                            StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_PLUGINS, &InkMODSettings::pluginsEnabled, "pluginsEnabled",
+                            StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Enum(StrId::STR_TLS_MODE, &InkMODSettings::tlsMode,
+                          {StrId::STR_TLS_TOFU, StrId::STR_TLS_STRICT, StrId::STR_TLS_OFF}, "tlsMode",
+                          StrId::STR_CAT_SYSTEM));
+    // Persistence helper (hidden from the menu): the one-time plugin-folder check already ran.
+    add(SettingInfo::Value(StrId::STR_PLUGINS, &InkMODSettings::pluginsMigrated, {0, 1, 1}, "pluginsMigrated"));
+    add(SettingInfo::Enum(StrId::STR_LIB_VIEW, &InkMODSettings::libraryView,
+                          {StrId::STR_LIB_VIEW_NAMES, StrId::STR_LIB_VIEW_DETAILS, StrId::STR_LIB_VIEW_COVERS},
+                          "libraryView", StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Enum(StrId::STR_WIFI_TX_POWER, &InkMODSettings::wifiTxPower,
+                          {StrId::STR_WIFI_POWER_MAX, StrId::STR_WIFI_POWER_15, StrId::STR_WIFI_POWER_11,
+                           StrId::STR_WIFI_POWER_8, StrId::STR_WIFI_POWER_5},
+                          "wifiTxPower", StrId::STR_CAT_SYSTEM));
     add(SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &InkMODSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CAT_SYSTEM));
@@ -958,6 +1011,7 @@ inline std::vector<SettingInfo> buildGroupedReaderSettingsList(const std::vector
   addReaderSetting(StrId::STR_PARA_ALIGNMENT);
   addReaderSetting(StrId::STR_EXTRA_SPACING);
   addReaderSetting(StrId::STR_FORCE_PARAGRAPH_INDENTS);
+  addReaderSetting(StrId::STR_WORD_SPACING);
 
   readerSettings.push_back(SettingInfo::SectionHeader(StrId::STR_READER_BOOK_STYLING));
   addReaderSetting(StrId::STR_EMBEDDED_STYLE);
@@ -967,6 +1021,7 @@ inline std::vector<SettingInfo> buildGroupedReaderSettingsList(const std::vector
 
   readerSettings.push_back(SettingInfo::SectionHeader(StrId::STR_READER_READING_AIDS));
   addReaderSetting(StrId::STR_BIONIC_READING);
+  addReaderSetting(StrId::STR_VERTICAL_TEXT);
   addReaderSetting(StrId::STR_GUIDE_READING);
 
   readerSettings.push_back(SettingInfo::SectionHeader(StrId::STR_READER_UI));
@@ -1046,7 +1101,7 @@ inline std::vector<SettingInfo> buildControlsSettingsParentList(const std::vecto
   const bool hasTiltPageTurnDirectionSetting = hasSettingByName(allSettings, StrId::STR_TILT_PAGE_TURN_DIRECTION);
 
   std::vector<SettingInfo> settings;
-  settings.reserve(4 + (BoardConfig::isX4Pro() ? 1u : 0u) + (hasTiltPageTurnSetting ? 1u : 0u) +
+  settings.reserve(6 + (BoardConfig::isX4Pro() ? 1u : 0u) + (hasTiltPageTurnSetting ? 1u : 0u) +
                    (hasTiltPageTurnDirectionSetting ? 1u : 0u));
   // Touch reader controls only make sense on the touchscreen X4 Pro.
   // X3/X4 are buttons-only devices, so do not expose a dead setting there.
@@ -1064,12 +1119,15 @@ inline std::vector<SettingInfo> buildControlsSettingsParentList(const std::vecto
   settings.push_back(SettingInfo::Submenu(StrId::STR_SIDE_BUTTONS, SettingAction::ControlsSideButtons));
   if (hasTiltPageTurnSetting) addSettingByName(settings, allSettings, StrId::STR_TILT_PAGE_TURN);
   if (hasTiltPageTurnDirectionSetting) addSettingByName(settings, allSettings, StrId::STR_TILT_PAGE_TURN_DIRECTION);
+  settings.push_back(SettingInfo::Action(StrId::STR_BUTTON_SETTINGS_SAVE, SettingAction::BackupButtons));
+  settings.push_back(SettingInfo::Action(StrId::STR_BUTTON_SETTINGS_RESTORE, SettingAction::RestoreButtons));
   return settings;
 }
 
 inline std::vector<SettingInfo> buildControlsPowerSettingsList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> settings;
-  settings.reserve(3);
+  settings.reserve(4);
+  addSettingByName(settings, allSettings, StrId::STR_POWER_WAKE);
   addSettingByName(settings, allSettings, StrId::STR_SHORT_PWR_BTN);
   addSettingByName(settings, allSettings, StrId::STR_LONG_PRESS_ACTION);
   if (SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::FOOTNOTES ||
@@ -1195,13 +1253,17 @@ inline std::vector<SettingInfo> buildDisplaySleepSettingsList(const std::vector<
 
 inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> systemSettings;
-  systemSettings.reserve(8);
+  systemSettings.reserve(12);
   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_SYSTEM_DEVICE, SettingAction::SystemDevice));
   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_SYSTEM_FILES_CACHE, SettingAction::SystemFilesCache));
   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_READING_STATS, SettingAction::SystemReadingStats));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_BOOK_MENU_SETTINGS, SettingAction::BookMenuSettings));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_BT_PAGE_TURNER, SettingAction::BluetoothPageTurner));
+  addSettingByName(systemSettings, allSettings, StrId::STR_PLUGINS);
+  addSettingByName(systemSettings, allSettings, StrId::STR_TLS_MODE);
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_TLS_FORGET, SettingAction::ForgetTlsPins));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SUPPORT_INKMOD, SettingAction::SupportInkMOD));
@@ -1277,12 +1339,15 @@ inline std::vector<SettingInfo> buildSystemDeviceSettingsList(const std::vector<
   addSettingByName(settings, allSettings, StrId::STR_DEVICE_NAME);
   addSettingByName(settings, allSettings, StrId::STR_TIME_TO_SLEEP);
   settings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+  settings.push_back(SettingInfo::Action(StrId::STR_SCREEN_CALIBRATION, SettingAction::ScreenCalibration));
+  addSettingByName(settings, allSettings, StrId::STR_WIFI_TX_POWER);
   if (!SETTINGS.clockDisabled && halClock.isAvailable()) {
     addSettingByName(settings, allSettings, StrId::STR_CLOCK_FORMAT);
     addSettingByName(settings, allSettings, StrId::STR_CLOCK_UTC_OFFSET);
     settings.push_back(SettingInfo::Action(StrId::STR_CLOCK_SYNC_NOW, SettingAction::ClockSync));
   }
 
+  settings.push_back(SettingInfo::Action(StrId::STR_WEATHER, SettingAction::Weather));
   settings.push_back(SettingInfo::Action(StrId::STR_DIAGNOSTICS, SettingAction::SystemDiagnostics));
   return settings;
 }

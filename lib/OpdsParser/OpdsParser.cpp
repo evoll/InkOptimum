@@ -1,10 +1,22 @@
 #include "OpdsParser.h"
 
 #include <Logging.h>
+#include <OpdsMeta.h>
+
+#include "OpdsText.h"
+#include "Opds2Feed.h"
 #include <XmlParserUtils.h>
 
 #include <cstring>
 #include <utility>
+
+namespace {
+// True for "base" and any namespaced "prefix:base" (the parser runs without namespace processing).
+bool localNameIs(const char* name, const char* base) {
+  const char* colon = strrchr(name, ':');
+  return strcmp(colon ? colon + 1 : name, base) == 0;
+}
+}  // namespace
 
 OpdsParser::OpdsParser(OpdsEntry* entries, const size_t entryCapacity)
     : entries(entries), entryCapacity(entryCapacity) {
@@ -46,6 +58,36 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
     return length;
   }
 
+  if (!formatKnown && length > 0) {
+    const char* first = reinterpret_cast<const char*>(xmlData);
+    // Skip a BOM and blanks to the first real byte. A chunk of only blanks decides nothing yet.
+    size_t skip = 0;
+    while (skip < length) {
+      const unsigned char b = static_cast<unsigned char>(first[skip]);
+      if (b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == 0xEF || b == 0xBB || b == 0xBF) {
+        ++skip;
+        continue;
+      }
+      break;
+    }
+    if (skip < length) {
+      formatKnown = true;
+      if (first[skip] == '{') startJsonFeed();
+    }
+  }
+  if (jsonFeed) {
+    jsonFeed->feed(reinterpret_cast<const char*>(xmlData), length);
+    if (jsonFeed->sinkRefused() && !errorOccured) {
+      errorOccured = true;
+      errorReason = OpdsParserError::SINK_ERROR;
+      saturated = true;
+    } else if (jsonFeed->hasError() && !errorOccured) {
+      errorOccured = true;
+      errorReason = OpdsParserError::INVALID_INPUT;
+    }
+    return length;
+  }
+
   // Feed chunks arrive from HttpDownloader already.  Feeding those bytes
   // directly to Expat avoids XML_GetBuffer()/memcpy() allocating a second
   // parser input buffer.  On the ESP32-C3 that extra allocation is enough to
@@ -76,6 +118,10 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
 }
 
 void OpdsParser::flush() {
+  if (jsonFeed) {
+    // A JSON feed has no end-of-document step; the XML parser was never fed.
+    return;
+  }
   if (saturated) {
     // The XML document is intentionally only partially parsed. Destroy Expat
     // without asking it to validate an artificial EOF.
@@ -109,6 +155,47 @@ bool OpdsParser::parse(const uint8_t* xmlData, const size_t length) {
 
 bool OpdsParser::error() const { return errorOccured; }
 
+bool OpdsParser::deliver(OpdsEntry&& entry) {
+  if (entrySink) {
+    if (!entrySink(sinkContext, std::move(entry))) {
+      errorOccured = true;
+      errorReason = OpdsParserError::SINK_ERROR;
+      saturated = true;
+      return false;
+    }
+    ++entryCount;
+    return true;
+  }
+  if (entryCount < entryCapacity) {
+    entries[entryCount++] = std::move(entry);
+    if (entryCount >= entryCapacity) {
+      truncated = true;
+      saturated = true;
+    }
+    return true;
+  }
+  truncated = true;
+  saturated = true;
+  return false;
+}
+
+bool OpdsParser::jsonSink(void* context, OpdsEntry&& entry) {
+  auto* self = static_cast<OpdsParser*>(context);
+  if (self->saturated) return true;  // buffer full: the rest of the feed is dropped quietly
+  self->deliver(std::move(entry));
+  return !self->errorOccured;
+}
+
+bool OpdsParser::startJsonFeed() {
+  jsonFeed = std::make_unique<Opds2Feed>(&OpdsParser::jsonSink, this);
+  return true;
+}
+
+const std::string& OpdsParser::getSearchTemplate() const { return jsonFeed ? jsonFeed->searchTemplate() : searchTemplate; }
+const std::string& OpdsParser::getNextPageUrl() const { return jsonFeed ? jsonFeed->nextPageUrl() : nextPageUrl; }
+const std::string& OpdsParser::getPrevPageUrl() const { return jsonFeed ? jsonFeed->prevPageUrl() : prevPageUrl; }
+
+
 void OpdsParser::clear() {
   entryCount = 0;
   truncated = false;
@@ -117,6 +204,8 @@ void OpdsParser::clear() {
   prevPageUrl.clear();
   currentEntry = OpdsEntry{};
   currentText.clear();
+  jsonFeed.reset();
+  formatKnown = false;
   inEntry = inTitle = inAuthor = inAuthorName = inId = inSummary = inContent = false;
   discardCurrentEntry = false;
   saturated = false;
@@ -156,117 +245,9 @@ const char* OpdsParser::findAttribute(const XML_Char** atts, const char* name) {
 }
 
 namespace {
-bool containsIgnoreCase(const char* haystack, const char* needle) {
-  if (!haystack || !needle || !*needle) return false;
-  for (const char* h = haystack; *h; ++h) {
-    const char* a = h;
-    const char* b = needle;
-    while (*a && *b) {
-      char ca = *a;
-      char cb = *b;
-      if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
-      if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
-      if (ca != cb) break;
-      ++a;
-      ++b;
-    }
-    if (!*b) return true;
-  }
-  return false;
-}
-
-bool classifyAcquisitionType(const char* type, OpdsBookFormat& format) {
-  if (!type) return false;
-
-  // Be liberal with legacy OPDS catalogs: MIME parameters, case variants and
-  // historical spellings are all seen in the wild.
-  if (containsIgnoreCase(type, "epub+zip") || containsIgnoreCase(type, "application/epub")) {
-    format = OpdsBookFormat::EPUB;
-    return true;
-  }
-  if (containsIgnoreCase(type, "fb2+zip")) {
-    format = OpdsBookFormat::FB2_ZIP;
-    return true;
-  }
-  if (containsIgnoreCase(type, "application/fb2") || containsIgnoreCase(type, "text/fb2") ||
-      containsIgnoreCase(type, "fictionbook+xml")) {
-    format = OpdsBookFormat::FB2;
-    return true;
-  }
-  return false;
-}
-
-
-std::string sanitizeDescriptionText(const std::string& raw) {
-  std::string out;
-  out.reserve(raw.size() < 1536 ? raw.size() : 1536);
-  bool inTag = false;
-  bool pendingSpace = false;
-
-  auto appendSpace = [&]() {
-    if (!out.empty() && out.back() != ' ') pendingSpace = true;
-  };
-
-  for (size_t i = 0; i < raw.size();) {
-    const unsigned char c = static_cast<unsigned char>(raw[i]);
-    if (c == '<') {
-      inTag = true;
-      appendSpace();
-      ++i;
-      continue;
-    }
-    if (inTag) {
-      if (c == '>') inTag = false;
-      ++i;
-      continue;
-    }
-
-    if (c == '&') {
-      const size_t semi = raw.find(';', i + 1);
-      if (semi != std::string::npos && semi - i <= 10) {
-        const std::string entity = raw.substr(i, semi - i + 1);
-        char decoded = 0;
-        if (entity == "&nbsp;" || entity == "&#160;") decoded = ' ';
-        else if (entity == "&amp;") decoded = '&';
-        else if (entity == "&lt;") decoded = '<';
-        else if (entity == "&gt;") decoded = '>';
-        else if (entity == "&quot;") decoded = '"';
-        else if (entity == "&apos;") decoded = '\'';
-        if (decoded) {
-          if (decoded == ' ') appendSpace();
-          else {
-            if (pendingSpace && !out.empty()) out.push_back(' ');
-            pendingSpace = false;
-            out.push_back(decoded);
-          }
-          i = semi + 1;
-          continue;
-        }
-      }
-    }
-
-    if (c <= 0x20) {
-      appendSpace();
-      ++i;
-      continue;
-    }
-
-    size_t cpLen = 1;
-    if ((c & 0xE0) == 0xC0) cpLen = 2;
-    else if ((c & 0xF0) == 0xE0) cpLen = 3;
-    else if ((c & 0xF8) == 0xF0) cpLen = 4;
-    if (i + cpLen > raw.size()) break;
-
-    if (pendingSpace && !out.empty()) out.push_back(' ');
-    pendingSpace = false;
-    if (out.size() + cpLen > 1536) break;
-    out.append(raw, i, cpLen);
-    i += cpLen;
-  }
-
-  while (!out.empty() && out.back() == ' ') out.pop_back();
-  return out;
-}
+using opds_text::classifyAcquisitionType;
+using opds_text::containsIgnoreCase;
+using opds_text::sanitizeDescriptionText;
 
 bool sameAcquisition(const OpdsEntry& entry, const OpdsBookFormat format, const char* href) {
   for (uint8_t i = 0; i < entry.acquisitionCount; ++i) {
@@ -301,7 +282,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
         // Some older Russian OPDS catalogs publish valid book MIME types but
         // omit or use a non-standard rel value.  A recognized publication MIME
         // inside an <entry> is enough to treat the link as an acquisition.
-        const bool acquisition = classifyAcquisitionType(type, format);
+        const bool acquisition = opds_text::classifyAcquisition(type, rel, href, format);
         if (acquisition) {
           if (self->currentEntry.acquisitionCount < MAX_OPDS_ACQUISITIONS &&
               !sameAcquisition(self->currentEntry, format, href)) {
@@ -333,6 +314,9 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     }
     self->currentEntry = OpdsEntry{};
     self->currentText.clear();
+    self->inMeta = 0;
+    self->seriesName.clear();
+    self->seriesIndex.clear();
     return;
   }
 
@@ -345,6 +329,15 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     self->inAuthor = true;
   } else if (self->inAuthor && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
     self->inAuthorName = true;
+    self->currentText.clear();
+  } else if (localNameIs(name, "identifier")) {
+    self->inMeta = 1;
+    self->currentText.clear();
+  } else if (localNameIs(name, "series")) {
+    self->inMeta = 2;
+    self->currentText.clear();
+  } else if (localNameIs(name, "series_index") || localNameIs(name, "seriesindex")) {
+    self->inMeta = 3;
     self->currentText.clear();
   } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
     self->inId = true;
@@ -366,6 +359,9 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     if (!self->discardCurrentEntry && !self->currentEntry.title.empty()) {
+      if (!self->seriesName.empty()) {
+        self->currentEntry.series = opds_meta::formatSeries(self->seriesName, self->seriesIndex);
+      }
       if (self->currentEntry.acquisitionCount > 0) {
         self->currentEntry.type = OpdsEntryType::BOOK;
         self->currentEntry.href = self->currentEntry.acquisitions[0].href;
@@ -379,28 +375,14 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
       }
 
       if (!self->currentEntry.href.empty() || self->currentEntry.type == OpdsEntryType::INFO) {
-        if (self->entrySink) {
-          if (!self->entrySink(self->sinkContext, std::move(self->currentEntry))) {
-            self->errorOccured = true;
-            self->errorReason = OpdsParserError::SINK_ERROR;
-            self->saturated = true;
-          } else {
-            ++self->entryCount;
-          }
-        } else if (self->entryCount < self->entryCapacity) {
-          self->entries[self->entryCount++] = std::move(self->currentEntry);
-          if (self->entryCount >= self->entryCapacity) {
-            self->truncated = true;
-            self->saturated = true;
-          }
-        } else {
-          self->truncated = true;
-          self->saturated = true;
-        }
+        self->deliver(std::move(self->currentEntry));
       }
     }
     self->currentEntry = OpdsEntry{};
     self->currentText.clear();
+    self->inMeta = 0;
+    self->seriesName.clear();
+    self->seriesIndex.clear();
     self->discardCurrentEntry = false;
     self->inEntry = false;
     self->inTitle = self->inAuthor = self->inAuthorName = self->inId = false;
@@ -414,6 +396,20 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
     } else if (self->inAuthorName && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
       self->currentEntry.author = std::move(self->currentText);
       self->inAuthorName = false;
+    } else if (self->inMeta != 0 &&
+               (localNameIs(name, "identifier") || localNameIs(name, "series") || localNameIs(name, "series_index") ||
+                localNameIs(name, "seriesindex"))) {
+      if (self->inMeta == 1) {
+        const auto ident = opds_meta::parseIdentifier(self->currentText);
+        if (ident.kind == opds_meta::IdKind::Isbn && self->currentEntry.isbn.empty()) self->currentEntry.isbn = ident.value;
+        if (ident.kind == opds_meta::IdKind::Asin && self->currentEntry.asin.empty()) self->currentEntry.asin = ident.value;
+      } else if (self->inMeta == 2) {
+        self->seriesName = std::move(self->currentText);
+      } else {
+        self->seriesIndex = std::move(self->currentText);
+      }
+      self->currentText.clear();
+      self->inMeta = 0;
     } else if (self->inId && (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr)) {
       self->currentEntry.id = std::move(self->currentText);
       self->inId = false;
@@ -430,7 +426,8 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
 void XMLCALL OpdsParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<OpdsParser*>(userData);
   if (self->discardCurrentEntry ||
-      !(self->inTitle || self->inAuthorName || self->inId || self->inSummary || self->inContent) || len <= 0)
+      !(self->inTitle || self->inAuthorName || self->inId || self->inSummary || self->inContent || self->inMeta != 0) ||
+      len <= 0)
     return;
 
   // OPDS is UI/navigation data, not book content.  Do not allow a malformed or
@@ -439,7 +436,7 @@ void XMLCALL OpdsParser::characterData(void* userData, const XML_Char* s, const 
   // deterministic on devices without PSRAM.
   const size_t limit = self->inTitle ? 256u
                                      : (self->inAuthorName ? 160u
-                                                           : (self->inId ? 128u
+                                                           : ((self->inId || self->inMeta != 0) ? 128u
                                                                          : ((self->inSummary || self->inContent) ? 2048u : 0u)));
   if (limit == 0 || self->currentText.size() >= limit) return;
   const size_t room = limit - self->currentText.size();

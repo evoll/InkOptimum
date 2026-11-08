@@ -16,7 +16,8 @@ class BmpViewerActivity final : public Activity {
 
  private:
   void loadSiblingImages();
-  bool renderPngImage();
+  // PNG and JPEG share one path: scale to fit the screen and decode straight into the framebuffer.
+  bool renderDecodedImage();
   void doSetSleepCover();
 
   std::string filePath;

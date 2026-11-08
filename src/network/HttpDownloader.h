@@ -41,6 +41,14 @@ class HttpDownloader {
   };
 
   /**
+   * HTTP identity applied to every request until cleared: a custom User-Agent and one extra header
+   * (used by OPDS servers that expect KOReader or an API token). Empty arguments restore the defaults.
+   */
+  static void setRequestProfile(const std::string& userAgent, const std::string& headerName,
+                                const std::string& headerValue);
+  static void clearRequestProfile() { setRequestProfile("", "", ""); }
+
+  /**
    * Fetch text content from a URL with optional credentials.
    */
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
@@ -62,4 +70,26 @@ class HttpDownloader {
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
                                       DownloadOptions options = DownloadOptions());
+
+  /**
+   * POST a body and read the (small, JSON) reply into response. Single attempt, no redirects. statusOut
+   * always receives the HTTP status (0 on transport failure); the return value is true only for a 2xx reply.
+   */
+  static bool postForm(const std::string& url, const std::string& body, std::string& response, int* statusOut = nullptr,
+                       const std::string& contentType = "application/json");
+
+  /**
+   * POST a body (an LCP license to the fulfillment service) and stream the 200 reply to destPath, staged
+   * through "<destPath>.part". Single attempt, no redirects or resume.
+   */
+  static DownloadError postToFile(const std::string& url, const std::string& body, const std::string& contentType,
+                                  const std::string& destPath, ProgressCallback progress = nullptr,
+                                  const bool* cancelFlag = nullptr, int* statusOut = nullptr);
+
+  /**
+   * Single-attempt request with an arbitrary method ("GET", "POST" or "PUT") and optional JSON body; small
+   * reply into response. Used for LCP status documents (GET) and returns (PUT). statusOut as in postForm.
+   */
+  static bool sendRequest(const std::string& method, const std::string& url, const std::string& body,
+                          std::string& response, int* statusOut = nullptr);
 };

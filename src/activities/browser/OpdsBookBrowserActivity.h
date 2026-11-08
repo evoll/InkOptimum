@@ -1,4 +1,5 @@
 #pragma once
+#include <LcpLicense.h>
 #include <OpdsParser.h>
 
 #include <array>
@@ -7,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "network/HttpDownloader.h"
+#include "util/LcpClient.h"
 #include "OpdsServerStore.h"
 #include "OpdsCacheStore.h"
 #include "activities/Activity.h"
@@ -93,6 +96,20 @@ class OpdsBookBrowserActivity final : public Activity {
   void navigateBack();
   void selectBookFormat(size_t entryIndex);
   void downloadBook(const OpdsEntry& book, size_t acquisitionIndex);
+
+  // LCP acquisition: fetch the .lcpl with the catalog's credentials, have the FreeInk LCP service embed it in
+  // the encrypted EPUB, then ask for the passphrase and store the book's device-wrapped content key.
+  void downloadLcpBook(const std::string& licenseUrl, const std::string& filename,
+                       const HttpDownloader::ProgressCallback& progress, bool& cancelRequested);
+  void startLcpUnlock();
+  void promptLcpPassphrase(bool retry);
+  // Terminal results (unsupported, offline, storage) show the error themselves and return false;
+  // a wrong passphrase sets wrong=true so the caller can ask again.
+  bool tryLcpUnlock(const std::string& userKeyHex, bool& wrong);
+  void finishLcpDownload();
+  freeink::content::LcpLicense pendingLcpLicense;
+  std::string pendingLcpLicenseText;
+  std::string pendingLcpPath;
   void showInfoEntry(size_t entryIndex);
   void launchSearch();
   void performSearch(const std::string& query);

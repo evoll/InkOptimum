@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "activities/Activity.h"
 #include "dictionary/DictionaryStore.h"
@@ -91,6 +93,7 @@ class DictionaryActivity final : public Activity {
   bool getSelectionFragment(const WordLocation& location, SelectionFragment& fragment) const;
   bool resolveSelectionSpan(SelectionSpan& span) const;
   bool buildSelectedLookupWords();
+  bool collectFollowingWords(std::vector<std::string>& words) const;
   bool firstSelectableWord(int elementIndex, WordLocation& location) const;
   bool lastSelectableWord(int elementIndex, WordLocation& location) const;
   int adjacentLineElement(int elementIndex, int direction) const;

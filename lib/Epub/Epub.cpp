@@ -6,6 +6,7 @@
 #include <JpegToBmpConverter.h>
 #include <JpegTypeDetector.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <PngToBmpConverter.h>
 #include <ReaderWork.h>
 #include <ZipFile.h>
@@ -13,18 +14,32 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <new>
 #include <utility>
 
+#include "Epub/CoverImageRefScanner.h"
+#include "Epub/CoverNameScan.h"
+#include "Epub/NavCoverLandmark.h"
+#include "Epub/TocFallbackPolicy.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
 namespace {
+
+// A markup document rather than a picture: an SVG wrapper (or an XHTML page) named as the cover.
+bool isCoverWrapperDocument(const std::string& href) {
+  for (const char* ext : {".svg", ".xhtml", ".html", ".htm"}) {
+    if (FsHelpers::checkFileExtension(href, ext)) return true;
+  }
+  return false;
+}
+
 constexpr int kDefaultThumbHeight = 180;
 
 int32_t readLe32(const uint8_t* data) {
@@ -199,43 +214,54 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
   bookMetadata.language = opfParser.language;
   bookMetadata.coverItemHref = opfParser.coverItemHref;
 
-  if (bookMetadata.coverItemHref.empty() && !opfParser.guideCoverPageHref.empty()) {
-    LOG_DBG("EBP", "No cover from metadata, trying guide cover page: %s", opfParser.guideCoverPageHref.c_str());
-    size_t coverPageSize;
-    uint8_t* coverPageData = readItemContentsToBytes(opfParser.guideCoverPageHref, &coverPageSize, true);
-    if (coverPageData) {
-      const std::string coverPageHtml(reinterpret_cast<char*>(coverPageData), coverPageSize);
-      free(coverPageData);
-
-      std::string coverPageBase;
-      const auto lastSlash = opfParser.guideCoverPageHref.rfind('/');
-      if (lastSlash != std::string::npos) {
-        coverPageBase = opfParser.guideCoverPageHref.substr(0, lastSlash + 1);
-      }
-
-      std::string imageRef;
-      for (const char* pattern : {"xlink:href=\"", "src=\""}) {
-        auto pos = coverPageHtml.find(pattern);
-        while (pos != std::string::npos) {
-          pos += strlen(pattern);
-          const auto endPos = coverPageHtml.find('"', pos);
-          if (endPos != std::string::npos) {
-            const auto ref = std::string_view{coverPageHtml}.substr(pos, endPos - pos);
-            if (FsHelpers::hasPngExtension(ref) || FsHelpers::hasJpgExtension(ref) || FsHelpers::hasGifExtension(ref)) {
-              imageRef = ref;
-              break;
-            }
-          }
-          pos = coverPageHtml.find(pattern, pos);
-        }
-        if (!imageRef.empty()) break;
-      }
-
-      if (!imageRef.empty()) {
-        bookMetadata.coverItemHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(coverPageBase + imageRef));
-        LOG_DBG("EBP", "Found cover image from guide: %s", bookMetadata.coverItemHref.c_str());
-      }
+  // The manifest can name an SVG wrapper as the cover image instead of the picture itself:
+  //   <item properties="cover-image" media-type="image/svg+xml" href="cover.svg"/>
+  //   cover.svg: <svg viewBox="0 0 1135 1600"><image xlink:href="cover.jpg"/></svg>
+  // Cover generation decodes JPEG and PNG only, so the picture inside is the cover. A wrapper that
+  // holds none is dropped, and the guide scan below looks for a cover instead.
+  // Ported from crosspoint-reader PR #3539 (OSAKANA TARO, @osakanataro) via witchhunt-reader.
+  if (isCoverWrapperDocument(bookMetadata.coverItemHref)) {
+    std::string inWrapper = findCoverImageInDocument(bookMetadata.coverItemHref);
+    if (inWrapper.empty()) {
+      LOG_DBG("EBP", "Cover document holds no JPEG/PNG reference: %s", bookMetadata.coverItemHref.c_str());
+    } else {
+      LOG_DBG("EBP", "Cover document %s wraps %s", bookMetadata.coverItemHref.c_str(), inWrapper.c_str());
     }
+    bookMetadata.coverItemHref = std::move(inWrapper);
+  }
+
+  // Without a cover picture from the manifest, or with one missing from the archive, the fallbacks
+  // run in turn, the book's own word first: a <meta name="cover"> that names a page, the guide's cover
+  // page, then a manifest item whose id says cover. Each counts only when it leads to a picture that
+  // is in the archive.
+  const auto hasReadableCover = [&](const std::string& path) {
+    if (path.empty()) return false;
+    size_t coverSize = 0;
+    return getItemSize(path, &coverSize);
+  };
+  bool haveCover = hasReadableCover(bookMetadata.coverItemHref);
+  if (!haveCover && !bookMetadata.coverItemHref.empty()) {
+    LOG_DBG("EBP", "Manifest cover not found in archive, trying the fallbacks: %s", bookMetadata.coverItemHref.c_str());
+    bookMetadata.coverItemHref.clear();
+  }
+  const auto takeCover = [&](const char* source, const std::string& pageHref) {
+    if (haveCover || pageHref.empty()) return;
+    std::string found = coverPictureOf(pageHref);
+    if (!hasReadableCover(found)) return;
+    LOG_DBG("EBP", "Found cover image via %s: %s", source, found.c_str());
+    bookMetadata.coverItemHref = std::move(found);
+    haveCover = true;
+  };
+  takeCover("meta cover page", opfParser.metaCoverPageHref);
+  takeCover("guide", opfParser.guideCoverPageHref);
+  takeCover("manifest id", opfParser.coverIdItemHref);
+  // A book that names its cover only in the navigation document's landmarks.
+  if (!haveCover && !opfParser.tocNavPath.empty()) {
+    takeCover("nav landmarks", coverPageFromNavLandmarks(opfParser.tocNavPath));
+  }
+  // Last resort: a picture called cover.jpg / cover.png somewhere in the archive.
+  if (!haveCover) {
+    takeCover("file name", coverPictureByName());
   }
 
   bookMetadata.textReferenceHref = opfParser.textReferenceHref;
@@ -254,6 +280,70 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
 
   LOG_DBG("EBP", "Successfully parsed content.opf");
   return true;
+}
+
+std::string Epub::coverPageFromNavLandmarks(const std::string& navHref) const {
+  const auto scanner = makeUniqueNoThrow<NavCoverLandmark>();
+  if (!scanner) {
+    LOG_ERR("EBP", "No memory to scan the landmarks of %s", navHref.c_str());
+    return {};
+  }
+  if (!readItemContentsToStream(navHref, *scanner, 1024)) {
+    LOG_DBG("EBP", "Could not read navigation document %s", navHref.c_str());
+  }
+  if (scanner->result().empty()) return {};
+  // The link is relative to the navigation document's own folder.
+  const size_t lastSlash = navHref.rfind('/');
+  std::string path = lastSlash == std::string::npos ? std::string{} : navHref.substr(0, lastSlash + 1);
+  path.append(scanner->result());
+  return FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(path));
+}
+
+std::string Epub::coverPictureByName() const {
+  if (unpackedPackage) return {};
+  CoverNameScan scan;
+  ZipFile zf(filepath);
+  if (!zf.enumerateFilePaths([&](const std::string_view path) { scan.feed(path); })) {
+    LOG_DBG("EBP", "Could not list the archive to look for a cover by name");
+    return {};
+  }
+  return scan.result();
+}
+
+std::string Epub::coverPictureOf(const std::string& href) const {
+  if (href.empty()) return {};
+  std::string target = href.substr(0, href.find('#'));
+  if (FsHelpers::hasJpgExtension(std::string_view{target}) || FsHelpers::hasPngExtension(std::string_view{target})) {
+    return target;
+  }
+  return findCoverImageInDocument(target);
+}
+
+std::string Epub::findCoverImageInDocument(const std::string& docHref) const {
+  // ~0.5 KB of fixed buffers, once per OPF parse that needs it: on the heap, not the loop stack.
+  const auto scanner = makeUniqueNoThrow<CoverImageRefScanner>();
+  if (!scanner) {
+    LOG_ERR("EBP", "No memory to scan cover document %s", docHref.c_str());
+    return {};
+  }
+  if (!readItemContentsToStream(docHref, *scanner, 1024)) {
+    LOG_DBG("EBP", "Could not read cover document %s", docHref.c_str());
+  }
+  const std::string_view ref = scanner->result();
+  if (ref.empty()) return {};
+
+  // Relative references inside the document resolve against its own folder.
+  const size_t lastSlash = docHref.rfind('/');
+  std::string path = lastSlash == std::string::npos ? std::string{} : docHref.substr(0, lastSlash + 1);
+  path.append(ref);
+  return FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(path));
+}
+
+std::string Epub::resolvedCoverHref() const {
+  const std::string& href = bookMetadataCache->coreMetadata.coverItemHref;
+  // A book indexed before SVG-wrapper covers were followed still holds the wrapper's path.
+  if (!isCoverWrapperDocument(href)) return href;
+  return findCoverImageInDocument(href);
 }
 
 bool Epub::parseTocNcxFile() const {
@@ -442,8 +532,26 @@ Epub::CssParseStatus Epub::parseCssFiles(const bool forceRebuild) const {
   return parsedAllCss ? CssParseStatus::Complete : CssParseStatus::Partial;
 }
 
+// Opens the optional encrypted-entry accessor. A null result without an error means normal ZIP reads. A hard
+// error refuses the open with a user-presentable reason (getProtectionError()).
+bool Epub::openProtection() {
+  decryptor.reset();
+  protectionError.clear();
+  if (unpackedPackage || isFb2Origin) return true;  // converted packages are never protected
+  std::string err;
+  decryptor = freeink::content::openProtectedBook(filepath, err);
+  if (!err.empty()) {
+    LOG_ERR("EBP", "protected content unavailable: %s", err.c_str());
+    protectionError = err;
+    return false;
+  }
+  if (decryptor) LOG_DBG("EBP", "protected content; on-read access path open");
+  return true;
+}
+
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const ProgressFn& onProgress) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
+  if (!openProtection()) return false;
   int lastReportedProgress = -5;
   const auto reportProgress = [&](const int progress) {
     if (!onProgress) return;
@@ -553,8 +661,34 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const Prog
     tocParsed = parseTocNavFile();
   }
 
+  // Converted books (Amazon exports among them) ship a nav that lists only the parts and front
+  // matter next to an NCX that carries every chapter. A nav whose spine-mapped entries cover less
+  // than half the spine gives the NCX a chance; it is kept only if it maps strictly more entries
+  // (a stale NCX whose hrefs no longer resolve must not replace a smaller nav that works).
+  // Ported from crosspoint-reader PR #2603 (Ryan Jarvis, @Cabalist) via witchhunt-reader.
+  if (tocParsed && !tocNcxItem.empty() &&
+      toc_fallback::navIsSparse(true, bookMetadataCache->getTocMappedCount(), bookMetadataCache->getSpineCount())) {
+    const int navMapped = bookMetadataCache->getTocMappedCount();
+    LOG_DBG("EBP", "Nav TOC is sparse (%d mapped of %d spine items), trying NCX", navMapped,
+            bookMetadataCache->getSpineCount());
+    if (bookMetadataCache->resetTocPassOutput()) {
+      const bool ncxParsed = parseTocNcxFile();
+      const int ncxMapped = bookMetadataCache->getTocMappedCount();
+      if (toc_fallback::shouldAdoptNcx(true, navMapped, ncxParsed, ncxMapped)) {
+        LOG_DBG("EBP", "NCX maps more entries (%d > %d), using it", ncxMapped, navMapped);
+      } else if (bookMetadataCache->resetTocPassOutput()) {
+        tocParsed = parseTocNavFile();
+      } else {
+        tocParsed = false;
+      }
+    } else {
+      tocParsed = false;
+    }
+  }
+
   if (!tocParsed && !tocNcxItem.empty()) {
     LOG_DBG("EBP", "Falling back to NCX TOC");
+    if (!tocNavItem.empty()) bookMetadataCache->resetTocPassOutput();
     tocParsed = parseTocNcxFile();
   }
 
@@ -684,7 +818,7 @@ bool Epub::generateCoverBmp(bool cropped, const bool deferProgressive) const {
     return false;
   }
 
-  const auto coverImageHref = bookMetadataCache->coreMetadata.coverItemHref;
+  const auto coverImageHref = resolvedCoverHref();
   if (coverImageHref.empty()) {
     LOG_ERR("EBP", "No known cover image");
     return false;
@@ -826,7 +960,7 @@ bool Epub::generateThumbBmpInternal(int width, int height, const bool adaptiveCo
     return false;
   }
 
-  const auto coverImageHref = bookMetadataCache->coreMetadata.coverItemHref;
+  const auto coverImageHref = resolvedCoverHref();
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
   } else if (FsHelpers::hasJpgExtension(coverImageHref)) {
@@ -966,6 +1100,38 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
     return content;
   }
 
+  // Decode encrypted entries on demand in memory.
+  if (decryptor && decryptor->isEncrypted(path)) {
+    const size_t plainSize = decryptor->decryptedSize(path);
+    if (plainSize > SIZE_MAX - (trailingNullByte ? 1 : 0)) return nullptr;
+    const size_t total = plainSize + (trailingNullByte ? 1 : 0);
+    uint8_t* decrypted = static_cast<uint8_t*>(malloc(total > 0 ? total : 1));
+    if (!decrypted) {
+      LOG_ERR("EBP", "insufficient memory for %s (%u bytes)", path.c_str(), static_cast<unsigned>(total));
+      return nullptr;
+    }
+    struct BufferSink {
+      uint8_t* data;
+      size_t capacity;
+      size_t written;
+    } state{decrypted, plainSize, 0};
+    auto append = [](void* context, const uint8_t* data, size_t length) {
+      auto* target = static_cast<BufferSink*>(context);
+      if (length > target->capacity - target->written) return false;
+      memcpy(target->data + target->written, data, length);
+      target->written += length;
+      return true;
+    };
+    if (!decryptor->decryptToSink(path, append, &state) || state.written != plainSize) {
+      free(decrypted);
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return nullptr;
+    }
+    if (trailingNullByte) decrypted[plainSize] = 0;
+    if (size) *size = plainSize;
+    return decrypted;
+  }
+
   const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
@@ -1025,6 +1191,22 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
     file.close();
     return success;
   }
+  if (decryptor && decryptor->isEncrypted(path)) {
+    struct StreamSink {
+      Print* out;
+      const reader::ReaderCancellationToken* token;
+    } sink{&out, cancellationToken};
+    auto append = [](void* context, const uint8_t* data, size_t length) {
+      auto* target = static_cast<StreamSink*>(context);
+      if (target->token && target->token->isCancellationRequested()) return false;
+      return target->out->write(data, length) == length;
+    };
+    if (!decryptor->decryptToSink(path, append, &sink)) {
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return false;
+    }
+    return true;
+  }
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, cancellationToken);
 }
 
@@ -1037,6 +1219,10 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
     file.close();
     if (fileSize > std::numeric_limits<size_t>::max()) return false;
     *size = static_cast<size_t>(fileSize);
+    return true;
+  }
+  if (decryptor && decryptor->isEncrypted(path)) {
+    *size = decryptor->decryptedSize(path);
     return true;
   }
   return ZipFile(filepath).getInflatedFileSize(path.c_str(), size);

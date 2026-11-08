@@ -14,6 +14,7 @@ bool save(const KOReaderCredentialStore& store, const char* path) {
   doc["username"] = store.getUsername();
   doc["password_obf"] = obfuscation::obfuscateToBase64(store.getPassword());
   doc["serverUrl"] = store.getServerUrl();
+  doc["customHeader"] = store.getCustomHeader();
   doc["matchMethod"] = static_cast<uint8_t>(store.getMatchMethod());
   doc["sendMetadata"] = store.getSendMetadata();
   doc["syncBookmarks"] = store.getSyncBookmarks();
@@ -74,6 +75,7 @@ bool load(KOReaderCredentialStore& store, const char* json, bool* needsResave) {
     if (needsResave) *needsResave = true;
   }
   store.setServerUrl(server);
+  store.setCustomHeader(doc["customHeader"] | std::string(""));
 
   uint8_t method = doc["matchMethod"] | (uint8_t)0;
   store.setMatchMethod(static_cast<DocumentMatchMethod>(method));

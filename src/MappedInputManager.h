@@ -4,6 +4,8 @@
 
 #include <array>
 
+#include "util/RemoteButtonInput.h"
+
 class GfxRenderer;
 namespace freeink { namespace ui { enum class ScreenEdge : uint8_t; } }
 
@@ -48,7 +50,13 @@ class MappedInputManager {
   }
   void setPowerAsConfirmInReaderMode(bool enabled) { powerAsConfirmInReaderMode = enabled; }
 
-  void update() const { gpio.update(); }
+  void update() const {
+    remoteInput.reset();
+    gpio.update();
+  }
+  // A button of the Bluetooth remote, as one click of this frame; refused while a device key is in play.
+  bool injectRemoteClick(RemoteButton button);
+  bool hasRemoteClick() const { return remoteInput.button != RemoteButton::None; }
   void suppressNextBackRelease() { suppressBackRelease = true; }
   void suppressNextConfirmRelease() { suppressConfirmRelease = true; }
   void suppressNextPowerConfirmRelease() { suppressPowerConfirmRelease = true; }
@@ -92,6 +100,8 @@ class MappedInputManager {
   RowTouch colTouch(int& col, int left, int colStep, int colCount, int yStart, int yEnd, int colWidth = 0) const;
 
   SwipeDir wasSwipe() const;
+  // Like wasSwipe(), but also reports where the gesture started (logical screen coordinates).
+  SwipeDir wasSwipeFrom(int& startX, int& startY) const;
   // Returns a completed swipe only when the gesture started inside the given
   // logical screen rectangle. Left-edge Back gestures stay reserved for Back.
   SwipeDir wasSwipeStartedInRect(int x, int y, int width, int height) const;
@@ -117,6 +127,8 @@ class MappedInputManager {
   const GfxRenderer* renderer = nullptr;
   bool readerMode = false;
   bool powerAsConfirmInReaderMode = false;
+  mutable RemoteButtonInput remoteInput;
+  bool remoteMatches(Button button) const;
   mutable bool suppressBackRelease = false;
   mutable bool suppressConfirmRelease = false;
   mutable bool suppressPowerConfirmRelease = false;

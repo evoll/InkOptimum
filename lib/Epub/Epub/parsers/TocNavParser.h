@@ -33,6 +33,9 @@ class TocNavParser final : public Print {
   std::string currentHref;
   std::string currentTarget;
   std::string currentAnchor;
+  // Scratch for the decode and normalise steps, kept across entries.
+  std::string decodedTarget;
+  std::string normalisedHref;
 
   static void startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void characterData(void* userData, const XML_Char* s, int len);

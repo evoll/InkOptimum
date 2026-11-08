@@ -43,7 +43,10 @@ class PowerManager {
   // deep sleep — milliamps of standby drain. No-op on boards whose rails are
   // PIN_UNASSIGNED (X4/X3). Call after the display driver's deep-sleep command
   // and before deepSleep(); wake is a chip reset, so rails re-enable in the
-  // normal init path. NOTE: cutting the touch rail forfeits touch-to-wake.
+  // normal init path. Display RESET is held LOW when its rail is cut (avoids
+  // back-powering an unpowered controller) and HIGH when its rail remains on
+  // (keeps deep-sleep state stable). NOTE: cutting the touch rail forfeits
+  // touch-to-wake.
   static void powerDownRailsForSleep();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not
@@ -52,6 +55,18 @@ class PowerManager {
 
   // Convenience: wait for release, arm the power-button wakeup, then deep sleep.
   [[noreturn]] static void deepSleepUntilPowerButton();
+
+  // esp_deep_sleep_start() is documented as not returning, but deepSleep()
+  // calls esp_restart() if it ever does (instead of a busy-loop -- see that
+  // function). This reports whether the *previous* boot took that abort
+  // path, and clears the record so it only surfaces once. wakeupCause/
+  // wakePinLevel are the values captured at the moment of the abort.
+  struct AbortedSleepInfo {
+    bool aborted = false;
+    int wakeupCause = 0;
+    int wakePinLevel = 0;
+  };
+  static AbortedSleepInfo takeAbortedSleepInfo();
 };
 
 }  // namespace freeink

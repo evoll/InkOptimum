@@ -1,5 +1,15 @@
 #include "EpubReaderActivity.h"
 
+#include <BlePageTurner.h>
+
+#include <Epub/FlowContext.h>
+#include <Epub/WordSpacing.h>
+#include <Epub/LayoutQuirks.h>
+
+#include "reader/overrides/BookOverridesSettings.h"
+#include "util/NextBook.h"
+#include "activities/util/OptionSelectionActivity.h"
+
 #include "BootLog.h"
 #include <Arduino.h>
 #include <BoardConfig.h>
@@ -18,6 +28,7 @@
 #include <HalSystem.h>
 
 #include <algorithm>
+#include <ctime>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -28,6 +39,7 @@
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
 #include "ClippingListActivity.h"
+#include "ChapterBuildGate.h"
 #include "ClippingSelectionActivity.h"
 #include "ClippingUtils.h"
 #include "DictionaryActivity.h"
@@ -39,10 +51,16 @@
 #include "EpubReaderBookmarkListActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
+#include "FootnotePreviewActivity.h"
+#include <Epub/PrintedPages.h>
+#include "activities/util/KeyboardEntryActivity.h"
+#include <Epub/FootnotePreviews.h>
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
 #include "GlobalActions.h"
 #include "KOReaderCredentialStore.h"
+#include "KOReaderDocumentId.h"
+#include "util/PluginEventBus.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
@@ -215,6 +233,7 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
+  hashLayoutValue(hash, SETTINGS.wordSpacing);
   return hash;
 }
 
@@ -235,6 +254,7 @@ uint32_t bookWidePagesLayoutSignature(const int fontId, const uint16_t viewportW
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
+  hashLayoutValue(hash, SETTINGS.wordSpacing);
   return hash;
 }
 
@@ -780,6 +800,34 @@ bool isInReadFolder(const std::string& path) {
   return path.size() > n && path.compare(0, n, READ_FOLDER) == 0 && path[n] == '/';
 }
 
+// Next openable book after `bookPath` in its folder (file-browser order), or "" when there is none.
+std::string findNextBookInFolder(const std::string& bookPath) {
+  const std::string folder = next_book::folderOf(bookPath);
+  auto dir = Storage.open(folder.c_str());
+  if (!dir || !dir.isDirectory()) return {};
+
+  std::vector<std::string> names;
+  char name[256];
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    const bool isDirectory = file.isDirectory();
+    file.getName(name, sizeof(name));
+    file.close();
+    if (isDirectory || name[0] == '.') continue;
+    const std::string fileName(name);
+    const bool openable = FsHelpers::hasEpubExtension(fileName) || FsHelpers::hasXtcExtension(fileName) ||
+                          FsHelpers::hasTxtExtension(fileName) || FsHelpers::hasMarkdownExtension(fileName) ||
+                          FsHelpers::checkFileExtension(fileName, ".fb2") ||
+                          FsHelpers::checkFileExtension(fileName, ".fb3") ||
+                          FsHelpers::checkFileExtension(fileName, ".docx") ||
+                          FsHelpers::hasConvertedBookExtension(fileName);
+    if (openable) names.push_back(fileName);
+  }
+  dir.close();
+
+  const std::string next = next_book::findNext(std::move(names), next_book::fileNameOf(bookPath));
+  return next.empty() ? std::string{} : folder + next;
+}
+
 // Relocate a finished book into /Read/, then migrate path-keyed state such as
 // cache files, bookmarks, recents, and resume path.
 void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string& dstPath,
@@ -825,7 +873,10 @@ void EpubReaderActivity::resumeReadingPaceTimer(const char*) {
   }
 }
 
-void EpubReaderActivity::armReadingPaceWarmup(const char*) { paceSampleWarmupPending = true; }
+void EpubReaderActivity::armReadingPaceWarmup(const char* reason) {
+  paceSampleWarmupPending = true;
+  if (reason && strcmp(reason, "reader_open") != 0) pluginDwellExcluded = true;
+}
 
 bool EpubReaderActivity::forwardPageReadElapsed(uint32_t& seconds, const char*) const {
   seconds = 0;
@@ -870,6 +921,8 @@ void EpubReaderActivity::recordCurrentPageReadingTime(const char* source) {
   uint32_t seconds = 0;
   if (currentPageReadingSecondsForStats(seconds, source)) {
     sessionReadingSeconds = sessionReadingSeconds > UINT32_MAX - seconds ? UINT32_MAX : sessionReadingSeconds + seconds;
+    if (!pluginDwellExcluded && seconds >= 2 && seconds <= 1800) pluginSessionSeconds += seconds;
+    pluginDwellExcluded = false;
   }
   pageShownAtMs = 0UL;
 }
@@ -1207,6 +1260,7 @@ void EpubReaderActivity::queueCompletionPromptIfNeeded() {
 
 void EpubReaderActivity::onEnter() {
   Activity::onEnter();
+  epub_layout::ornamentMode = epub_layout::sanitizeOrnamentMode(SETTINGS.ornamentMode);
   pageLoadRetryCount = 0;
   coalescedPageDelta.store(0, std::memory_order_relaxed);
   coalescedSpineDelta.store(0, std::memory_order_relaxed);
@@ -1224,6 +1278,8 @@ void EpubReaderActivity::onEnter() {
   mappedInput.setReaderMode(true);
 
   epub->setupCacheDir();
+  // Per-book font size / line spacing override (no-op when the book has none).
+  book_overrides::enterBook(epub->getCachePath());
   lastAutoPageTurnIntervalSeconds = loadAutoPageTurnIntervalSeconds(epub->getCachePath());
   BOOKMARKS.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), "epub");
   const bool fb2BackedBook = epub->getPath().find("/fb2_") != std::string::npos ||
@@ -1282,7 +1338,14 @@ void EpubReaderActivity::onEnter() {
 #endif
   armReadingPaceWarmup("reader_open");
   sessionReadingSeconds = 0;
+  pluginSessionSeconds = 0;
+  pluginDwellExcluded = false;
   hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
+  {
+    const time_t nowEpoch = time(nullptr);
+    pluginSessionStartEpoch = nowEpoch > 1600000000 ? static_cast<long>(nowEpoch) : 0;
+    pluginSessionStartBp = static_cast<int>(getCurrentBookProgressPercent() * 100.0f + 0.5f);
+  }
 
   globalStats = GlobalReadingStats::load();
 
@@ -1299,9 +1362,14 @@ void EpubReaderActivity::onEnter() {
 }
 
 void EpubReaderActivity::onExit() {
+  // A radio still stopped for this book's build may start again on the next screen.
+  if (radioReleasedForBuild.exchange(false)) bleturner::afterPaint();
+  pageRendered.store(false, std::memory_order_release);
   Activity::onExit();
 
   readerWork.cancel();
+  // Give the rest of the UI the global layout settings back.
+  book_overrides::exitBook();
   coalescedPageDelta.store(0, std::memory_order_relaxed);
   coalescedSpineDelta.store(0, std::memory_order_relaxed);
   navigationSettleUntilMs.store(0, std::memory_order_relaxed);
@@ -1345,6 +1413,8 @@ void EpubReaderActivity::onExit() {
     globalStats.save();
   }
 
+  if (epub) emitPluginExitEvents();
+
   BOOKMARKS.unload();
   section.reset();
 
@@ -1368,6 +1438,20 @@ void EpubReaderActivity::onExit() {
 }
 
 void EpubReaderActivity::loop() {
+  // Bluetooth page turner. The radio stopped for a chapter build comes back once that chapter's page is on
+  // screen (the render task has let go of the lock). A link note (Connecting / failed) that changed after the
+  // status bar drew it is painted again.
+  {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock()) {
+      if (radioReleasedForBuild.load() && pageRendered.load(std::memory_order_acquire)) {
+        radioReleasedForBuild = false;
+        bleturner::afterPaint();
+      }
+      if (linkNoteTitle.repaint(bleturner::linkNote())) requestUpdate();
+    }
+  }
+
   // Reader-menu pushes deliberately release the decoded Section to save RAM.
   // CREATE_CLIPPING is the exception: it needs a live Section to read the
   // current/adjacent page cache.  If the menu action arrived after that
@@ -1414,6 +1498,7 @@ void EpubReaderActivity::loop() {
           if (!result.isCancelled) {
             setBookCompleted(true);
             showCompletedFeedback(true);
+            offerNextBook();
           }
           requestUpdate();
         });
@@ -1628,18 +1713,23 @@ void EpubReaderActivity::loop() {
     // menu was opened. If the chosen action pushes a heavier activity, the
     // normal release hook runs again for that next push.
     preserveSectionForNextBackgroundPush = true;
+    // Printed-page list is extracted once per book (nav page-list / NCX pageList) and then streamed.
+    const bool hasPrintedPages =
+        PrintedPages::ensureBuilt(*epub) && PrintedPages::hasNumeric(epub->getCachePath());
     startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
                                renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
                                SETTINGS.orientation, !currentPageFootnotes.empty(), !BOOKMARKS.getBookmarks().empty(),
                                !clippings.empty(),
                                BOOKMARKS.hasBookmarkForPage(bmSpine, bmProgress, bookmarkPageCount), isBookCompleted,
                                automaticPageTurnActive, getAutoPageTurnIntervalSeconds(),
-                               SETTINGS.statusBarTimeLeft != InkMODSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_HIDE),
+                               SETTINGS.statusBarTimeLeft != InkMODSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_HIDE, hasPrintedPages),
                            [this](const ActivityResult& result) {
                              // Always apply orientation change even if the menu was cancelled
                              const auto& menu = std::get<MenuResult>(result.data);
                              applyOrientation(menu.orientation);
                              if (menu.settingsChanged) {
+                               // Reader options edited inside a book that has an override stay with that book.
+                               book_overrides::persistLiveIfActive();
                                // FontSelectionActivity may have used the single SD-font slot for previews.
                                // Re-load the selected reader family and invalidate the section font id before
                                // rebuilding so a family change cannot keep rendering with the old face.
@@ -1953,6 +2043,98 @@ void EpubReaderActivity::loop() {
   }
 
   if (skipChapter) {
+    skipToChapter(nextTriggered);
+    return;
+  }
+
+  if (skipTenPages) {
+    coalescedPageDelta.fetch_add(nextTriggered ? 10 : -10, std::memory_order_relaxed);
+    navigationSettleUntilMs.store(millis(), std::memory_order_relaxed);
+    requestUpdate();
+    return;
+  }
+
+  if (longPress && !fromSideBtn && SETTINGS.longPressButtonBehavior == InkMODSettings::ORIENTATION_CHANGE) {
+    const uint8_t newOrientation =
+        nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
+                      : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
+    applyOrientation(newOrientation);
+    requestUpdate();
+    return;
+  }
+
+  // No current section, attempt to rerender the book
+  if (!section) {
+    requestUpdate();
+    return;
+  }
+
+  const char* pageTurnSource = fromTilt ? "tilt" : (fromSideBtn ? "side" : "front");
+  if (shortPowerTurn || releasedLongPowerTurn || heldLongPowerTurn) {
+    pageTurnSource = "power";
+  }
+  if (prevTriggered) {
+    pageTurn(false, pageTurnSource);
+  } else {
+    pageTurn(true, pageTurnSource);
+  }
+}
+
+// Runs on the render task, under its lock, right before a chapter build. The page turner's radio
+// holds about 50 KB while it runs, and no heap figure taken before a build tells whether the build
+// fits next to it. So the radio stops for every build and starts again once the chapter is built
+// and its page is shown. A radio that did not stop in time, or a start still settling, usually lets
+// go soon after: the build waits up to BUILD_ROOM_WAIT_MS more, then is refused.
+bool EpubReaderActivity::makeRoomForChapterBuild() {
+  bool asked = false;
+  const auto roomMade = [this, &asked] {
+    if (!radioReleasedForBuild.load() && (!asked || !bleturner::status().starting)) {
+      radioReleasedForBuild = bleturner::beforeChapterBuild() != bleturner::BuildRelease::NotHeld;
+    }
+    asked = true;
+    return chapterBuildMayRun(bleturner::status());
+  };
+  const auto nowMs = [] { return static_cast<uint32_t>(millis()); };
+  const auto nap = [](const uint32_t ms) { delay(ms); };
+  if (waitForBuildRoom(roomMade, nowMs, nap, BUILD_ROOM_WAIT_MS, BUILD_ROOM_STEP_MS)) return true;
+  LOG_ERR("ERS", "Bluetooth radio still holds the heap after %u ms; chapter build refused",
+          static_cast<unsigned>(BUILD_ROOM_WAIT_MS));
+  return false;
+}
+
+bool EpubReaderActivity::remoteInputBlocked() const {
+  return pendingCreateClipping || readerMenuRequested || coalescedSpineDelta.load(std::memory_order_relaxed) != 0 ||
+         coalescedPageDelta.load(std::memory_order_relaxed) != 0;
+}
+
+bool EpubReaderActivity::remoteTurn(const bool forward, const bool chapter) {
+  if (!section || !pageRendered.load(std::memory_order_acquire)) return false;
+  // A "Bluetooth failed" note has been read: the page this turn paints shows the title again.
+  bleturner::acknowledgeLinkNote();
+  automaticPageTurnActive = false;
+  if (chapter) {
+    skipToChapter(forward);
+  } else {
+    pageTurn(forward, "remote");
+  }
+  return true;
+}
+
+bool EpubReaderActivity::remoteShortcut(const bool readerMenu) {
+  if (!section || !pageRendered.load(std::memory_order_acquire)) return false;
+  automaticPageTurnActive = false;
+  if (readerMenu) {
+    readerMenuRequested = true;
+    requestUpdate();
+  } else {
+    onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction::CREATE_CLIPPING);
+  }
+  return true;
+}
+
+// A chapter skip: to the next or previous TOC entry, or the neighbouring logical spine chapter. Shared by
+// the buttons' long press and the Bluetooth remote.
+void EpubReaderActivity::skipToChapter(const bool nextTriggered) {
     // Ordinary EPUB chapter boundaries come from NCX/nav anchors, not from
     // spine files. A single contentN.html may contain several real chapters.
     // Prefer those TOC targets; FB2 and split-EPUB internal chunks keep the
@@ -2027,43 +2209,16 @@ void EpubReaderActivity::loop() {
     }
     requestUpdate();
     return;
-  }
-
-  if (skipTenPages) {
-    coalescedPageDelta.fetch_add(nextTriggered ? 10 : -10, std::memory_order_relaxed);
-    navigationSettleUntilMs.store(millis(), std::memory_order_relaxed);
-    requestUpdate();
-    return;
-  }
-
-  if (longPress && !fromSideBtn && SETTINGS.longPressButtonBehavior == InkMODSettings::ORIENTATION_CHANGE) {
-    const uint8_t newOrientation =
-        nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
-                      : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
-    applyOrientation(newOrientation);
-    requestUpdate();
-    return;
-  }
-
-  // No current section, attempt to rerender the book
-  if (!section) {
-    requestUpdate();
-    return;
-  }
-
-  const char* pageTurnSource = fromTilt ? "tilt" : (fromSideBtn ? "side" : "front");
-  if (shortPowerTurn || releasedLongPowerTurn || heldLongPowerTurn) {
-    pageTurnSource = "power";
-  }
-  if (prevTriggered) {
-    pageTurn(false, pageTurnSource);
-  } else {
-    pageTurn(true, pageTurnSource);
-  }
 }
 
 bool EpubReaderActivity::coalesceNavigationWhileLoading() {
   const bool cancellableWorkActive = readerWork.active();
+  // Background chapter preparation must never delay a page turn: any button ends it at the
+  // next 1 KiB parser step. The press itself is still handled below as usual.
+  if (cancellableWorkActive && prefetchActive.load(std::memory_order_relaxed) &&
+      (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased())) {
+    readerWork.cancel();
+  }
   if (!cancellableWorkActive && !RenderLock::peek()) return false;
 
   // Menu/back actions need the main loop to continue. Invalidating the token
@@ -2397,7 +2552,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                if (!result.isCancelled) {
                                  returnToReaderMenuOnBack = false;
                                  const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                                 navigateToHref(footnoteResult.href, true);
+                                 previewOrOpenFootnote(footnoteResult.href, [this] {
+                                   resumeReadingPaceTimer("footnote_preview_back");
+                                   returnToReaderMenu();
+                                 });
                                } else {
                                  resumeReadingPaceTimer("footnotes_cancel");
                                  returnToReaderMenu();
@@ -2449,6 +2607,37 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         returnToReaderMenu();
         requestUpdate();
       });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::GO_TO_PRINTED_PAGE: {
+      int minLabel = 0;
+      int maxLabel = 0;
+      if (!epub || !PrintedPages::labelRange(epub->getCachePath(), minLabel, maxLabel)) break;
+      const std::string title = std::string(tr(STR_GO_TO_PRINTED_PAGE)) + " " + std::to_string(minLabel) + "-" +
+                                std::to_string(maxLabel);
+      startActivityForResult(
+          std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, title, "", 6, InputType::Text),
+          [this, minLabel, maxLabel](const ActivityResult& result) {
+            if (result.isCancelled) {
+              resumeReadingPaceTimer("printed_page_cancel");
+              returnToReaderMenu();
+              return;
+            }
+            const auto value = PrintedPages::parseNumericLabel(std::get<KeyboardResult>(result.data).text);
+            if (!value || *value < minLabel || *value > maxLabel) {
+              returnToReaderMenu();
+              return;
+            }
+            // Exact label first; otherwise the nearest earlier printed page.
+            const auto entry = PrintedPages::findAtOrBefore(epub->getCachePath(), *value);
+            if (!entry) {
+              returnToReaderMenu();
+              return;
+            }
+            returnToReaderMenuOnBack = false;
+            navigateToHref(entry->anchor.empty() ? entry->href : entry->href + "#" + entry->anchor, false);
+            requestUpdate();
+          });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
@@ -2935,6 +3124,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
     case EpubReaderMenuActivity::MenuAction::READER_OPTIONS:
     case EpubReaderMenuActivity::MenuAction::CONTROLS_OPTIONS:
+    case EpubReaderMenuActivity::MenuAction::BLUETOOTH:
       break;
   }
 }
@@ -3151,6 +3341,9 @@ void EpubReaderActivity::executeReaderQuickAction(InkMODSettings::LONG_PRESS_MEN
         requestUpdate();
       }
       break;
+    case InkMODSettings::LONG_MENU_ROTATE_FLIP:
+      applyOrientation(ReaderUtils::flippedOrientation(SETTINGS.orientation));
+      break;
     case InkMODSettings::LONG_MENU_TOGGLE_DARK_MODE:
       if (BoardConfig::isX4Pro()) {
         SETTINGS.screenInverted = !SETTINGS.screenInverted;
@@ -3187,6 +3380,41 @@ void EpubReaderActivity::executeReaderQuickAction(InkMODSettings::LONG_PRESS_MEN
   }
 }
 
+// Shows the note text first (stay on the current page); "open" continues into the book with the
+// usual footnote return stack, "back" runs onBack. Books without a resolvable note text open directly.
+void EpubReaderActivity::previewOrOpenFootnote(const std::string& href, std::function<void()> onBack) {
+  std::string text;
+  if (epub) {
+    if (!FootnotePreviews::cacheExists(epub->getCachePath())) {
+      GUI.drawPopup(renderer, tr(STR_GATHERING_FOOTNOTES));
+      FootnotePreviews::gather(*epub);
+    }
+    FootnotePreviews::Lookup lookup;
+    if (lookup.open(epub->getCachePath(), epub.get(), currentSpineIndex)) lookup.find(href.c_str(), text);
+  }
+  if (text.empty()) {
+    navigateToHref(href, true);
+    return;
+  }
+
+  std::string marker;
+  for (const auto& entry : currentPageFootnotes) {
+    if (entry.href == href) {
+      marker = entry.number;
+      break;
+    }
+  }
+  startActivityForResult(std::make_unique<FootnotePreviewActivity>(renderer, mappedInput, marker, text),
+                         [this, href, onBack = std::move(onBack)](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             navigateToHref(href, true);
+                           } else {
+                             onBack();
+                           }
+                           requestUpdate();
+                         });
+}
+
 void EpubReaderActivity::executeFootnoteQuickAction() {
   if (footnoteDepth > 0 && SETTINGS.pwrBtnFootnoteBack) {
     restoreSavedPosition();
@@ -3194,7 +3422,7 @@ void EpubReaderActivity::executeFootnoteQuickAction() {
   }
 
   if (currentPageFootnotes.size() == 1) {
-    navigateToHref(currentPageFootnotes[0].href, true);
+    previewOrOpenFootnote(currentPageFootnotes[0].href, [this] { requestUpdate(); });
     return;
   }
 
@@ -3204,7 +3432,10 @@ void EpubReaderActivity::executeFootnoteQuickAction() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                               navigateToHref(footnoteResult.href, true);
+                               previewOrOpenFootnote(footnoteResult.href, [this] {
+                                 resumeReadingPaceTimer("footnote_preview_back");
+                                 requestUpdate();
+                               });
                              } else {
                                resumeReadingPaceTimer("footnotes_cancel");
                              }
@@ -3459,6 +3690,35 @@ void EpubReaderActivity::executeLongPressMenuAction() {
     BootLog::step("SYNC", "long-press Menu threshold reached; starting progress sync");
   }
   executeReaderQuickAction(static_cast<InkMODSettings::LONG_PRESS_MENU_ACTION>(SETTINGS.longPressMenuAction));
+}
+
+void EpubReaderActivity::offerNextBook() {
+  if (!epub) return;
+  const std::string original = Fb2::resolveOriginalPath(epub->getPath());
+  // Cache-extracted FB2/converted copies live outside the user's library folders.
+  if (original.empty() || original.find("/.") != std::string::npos) return;
+  const std::string nextPath = findNextBookInFolder(original);
+  if (nextPath.empty()) return;
+
+  std::vector<std::string> names = {tr(STR_FINISHED_STAY), tr(STR_FINISHED_GO_HOME), tr(STR_FINISHED_NEXT_BOOK)};
+  std::vector<std::string> details = {"", "", next_book::fileNameOf(nextPath)};
+  startActivityForResult(
+      std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "FinishedBookSelect", StrId::STR_FINISHED_TITLE,
+                                                std::move(names), 0, true, false, std::move(details)),
+      [this, nextPath](const ActivityResult& result) {
+        if (result.isCancelled) {
+          requestUpdate();
+          return;
+        }
+        const auto& pick = std::get<OptionSelectionResult>(result.data);
+        if (pick.index == 1) {
+          activityManager.goHome();
+        } else if (pick.index == 2) {
+          activityManager.goToReader(nextPath);
+        } else {
+          requestUpdate();
+        }
+      });
 }
 
 void EpubReaderActivity::setBookCompleted(bool isCompleted) {
@@ -3817,6 +4077,9 @@ bool EpubReaderActivity::resolveCurrentEpubTocPageWindow(const int page, int& to
 
 // TODO: Failure handling
 void EpubReaderActivity::render(RenderLock&& lock) {
+  // The sections built or loaded from here on run under the vertical-text setting (it is part of their cache key).
+  FlowContext::setRequest(static_cast<VerticalText>(SETTINGS.verticalText));
+  WordSpacing::current() = std::min<uint8_t>(SETTINGS.wordSpacing, WordSpacing::MAX_VALUE);
   if (!epub) {
     return;
   }
@@ -4666,6 +4929,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
 
     pageLoadRetryCount = 0;
+    // A vertical page turns right to left: the page-turn buttons and swipes read that way while it is on screen.
+    ReaderUtils::reversedPaging() = p->isVertical();
 
     // Collect footnotes from the loaded page
     currentPageFootnotes = std::move(p->footnotes);
@@ -4694,6 +4959,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderContents(std::move(p), renderFontId, layout.marginTop, layout.marginRight, layout.marginBottom,
                    layout.marginLeft);
     pageShownAtMs = millis();
+    pageRendered.store(true, std::memory_order_release);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   if (!saveProgress(currentSpineIndex, section->currentPage, section->pageCount)) {
@@ -4706,6 +4972,70 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
+  }
+
+  prefetchNextSection(viewportWidth, viewportHeight);
+}
+
+void EpubReaderActivity::prefetchNextSection(const uint16_t viewportWidth, const uint16_t viewportHeight) {
+  if (!epub || !section || epub->isFb2Package()) return;
+  if (bleturner::holdsHeap()) return;  // never builds next to the radio
+  const int nextSpine = currentSpineIndex + 1;
+  if (nextSpine >= epub->getSpineItemsCount() || prefetchTriedSpine == nextSpine) return;
+  if (section->pageCount == 0 || section->currentPage + PREFETCH_PAGES_BEFORE_END < static_cast<int>(section->pageCount)) {
+    return;
+  }
+  // Only for the full-quality layout of the selected font: that is the variant the chapter
+  // open path asks for first, so a cache built here is the one it will find.
+  const int readerFontId = SETTINGS.getReaderFontId();
+  if (activeSectionUsesFallbackFont || activeSectionFontId != readerFontId) return;
+  if (coalescedPageDelta.load(std::memory_order_relaxed) != 0 || coalescedSpineDelta.load(std::memory_order_relaxed) != 0 ||
+      mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() || pendingScreenshot) {
+    return;
+  }
+  const auto heap = MemoryBudget::snapshot();
+  if (reader::selectReaderMemoryPolicy(heap.freeHeap, heap.maxAllocHeap).mode != reader::ReaderMemoryMode::Normal) {
+    return;
+  }
+
+  const SectionMemoryConfig config = sectionMemoryConfig(reader::ReaderMemoryMode::Normal, readerFontId, readerFontId);
+  Section next(epub, nextSpine, renderer, config.suffix);
+  if (next.hasSectionFile() &&
+      next.loadSectionFile(config.fontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+                           SETTINGS.forceParagraphIndents, SETTINGS.paragraphAlignment, viewportWidth,
+                           viewportHeight, config.hyphenationEnabled, config.embeddedStyle, config.imageRendering,
+                           config.bionicReadingEnabled, config.guideReadingEnabled)) {
+    prefetchTriedSpine = nextSpine;  // already prepared
+    return;
+  }
+
+  prefetchTriedSpine = nextSpine;
+  LOG_INF("ERS", "Preparing next chapter %d in the background (free=%u maxAlloc=%u)", nextSpine, heap.freeHeap,
+          heap.maxAllocHeap);
+  next.noFramebufferScratch = true;
+  bool imagesSuppressed = false;
+  bool lowMemory = false;
+  bool cancelled = false;
+  bool built = false;
+  {
+    reader::ScopedReaderWork work(readerWork);
+    prefetchActive.store(true, std::memory_order_relaxed);
+    built = next.createSectionFile(config.fontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+                                   SETTINGS.forceParagraphIndents, SETTINGS.paragraphAlignment, viewportWidth,
+                                   viewportHeight, config.hyphenationEnabled, config.embeddedStyle,
+                                   config.imageRendering, config.bionicReadingEnabled, config.guideReadingEnabled,
+                                   []() {}, &imagesSuppressed, &lowMemory, &work.token(), &cancelled);
+    prefetchActive.store(false, std::memory_order_relaxed);
+  }
+  if (cancelled) {
+    // Input arrived; try again when the reader is back on the last pages.
+    prefetchTriedSpine = -1;
+    LOG_DBG("ERS", "Background chapter preparation cancelled by input");
+  } else if (!built) {
+    LOG_DBG("ERS", "Background chapter preparation not completed (images=%u lowMemory=%u)",
+            next.skippedForImages ? 1U : 0U, lowMemory ? 1U : 0U);
+  } else {
+    LOG_INF("ERS", "Next chapter %d ready: %u pages", nextSpine, static_cast<unsigned>(next.pageCount));
   }
 }
 
@@ -5151,7 +5481,18 @@ void EpubReaderActivity::renderStatusBar() const {
 
   int textYOffset = 0;
 
-  if (automaticPageTurnActive) {
+  const bool titleShown = SETTINGS.statusBarTitle != InkMODSettings::STATUS_BAR_TITLE::HIDE_TITLE;
+  const auto note = linkNoteTitle.draw(titleShown, bleturner::linkNote());
+  if (note == bleturner::LinkNote::Connected) {
+    const auto peer = bleturner::linked();
+    char connected[64];
+    snprintf(connected, sizeof(connected), tr(STR_BT_CONNECTED_TO), peer.name[0] != '\0' ? peer.name : peer.addr);
+    title = connected;
+  } else if (note == bleturner::LinkNote::LowMemory) {
+    title = tr(STR_BT_LOW_MEMORY);
+  } else if (note != bleturner::LinkNote::None) {
+    title = note == bleturner::LinkNote::Connecting ? tr(STR_BT_CONNECTING) : tr(STR_BT_FAILED);
+  } else if (automaticPageTurnActive) {
     title = tr(STR_AUTO_TURN_ENABLED) + std::to_string(pageTurnDuration / 1000);
 
     // calculates textYOffset when rendering title in status bar
@@ -5483,7 +5824,42 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
       if (pct < 0) pct = 0;
       if (pct > 100) pct = 100;
       info.progressPercent = pct;
+      // Bottom of the visible page, rounded down; 100 only on the last page of the last chapter.
+      const bool lastPage = currentSpineIndex == epub->getSpineItemsCount() - 1 && section->currentPage + 1 >= section->pageCount;
+      const float chapterEnd = static_cast<float>(section->currentPage + 1) / static_cast<float>(section->pageCount);
+      const int endPct = static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterEnd) * 100.0f);
+      info.endProgressPercent = lastPage ? 100 : std::clamp(endPct, 0, 99);
     }
   }
+  // The end-of-book screen sits one past the last spine item.
+  if (epub && currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount()) {
+    info.progressPercent = 100;
+    info.endProgressPercent = 100;
+  }
   return info;
+}
+
+// reader.exit always; reader.session when at least 10 counted seconds and a trusted start time exist. The counted
+// seconds are the reader's own active-reading counter (page intervals past the idle limit are already excluded).
+void EpubReaderActivity::emitPluginExitEvents() {
+  const int endBp = std::clamp(static_cast<int>(getCurrentBookProgressPercent() * 100.0f + 0.5f), 0, 10000);
+  const std::string book = epub->getPath();
+  PluginEventBus::emit("reader.exit", {{"book", book},
+                                       {"percent", std::to_string((endBp + 50) / 100)},
+                                       {"end_percent", std::to_string(getScreenshotInfo().endProgressPercent)}});
+
+  if (pluginSessionSeconds < 10 || pluginSessionStartEpoch <= 0) return;
+  const int startBp = std::clamp(pluginSessionStartBp, 0, 10000);
+  const std::string document = KOReaderDocumentId::calculate(book);
+  if (document.size() != 32) return;
+  const long duration = static_cast<long>(pluginSessionSeconds);
+  PluginEventBus::emit("reader.session",
+                       {{"book", book},
+                        {"document", document},
+                        {"start_time", std::to_string(pluginSessionStartEpoch)},
+                        {"end_time", std::to_string(pluginSessionStartEpoch + duration)},
+                        {"duration_seconds", std::to_string(duration)},
+                        {"start_progress_bp", std::to_string(startBp)},
+                        {"end_progress_bp", std::to_string(std::max(startBp, endBp))},
+                        {"progress_scale", "10000"}});
 }

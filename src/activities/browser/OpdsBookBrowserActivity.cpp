@@ -4,17 +4,21 @@
 #include <cstring>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <LcpService.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <DownloadSniff.h>
 #include <OpdsStream.h>
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "OpdsProfile.h"
 #include "WifiCredentialStore.h"
 #include "InkMODHumor.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "LcpDeviceStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -22,6 +26,7 @@
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
+#include "util/WifiRoaming.h"
 
 namespace {
 constexpr int PAGE_ITEMS = 23;
@@ -40,6 +45,9 @@ void releaseOpdsEntryHeap(OpdsEntry& entry) {
   std::string().swap(entry.href);
   std::string().swap(entry.id);
   std::string().swap(entry.navigationHref);
+  std::string().swap(entry.isbn);
+  std::string().swap(entry.asin);
+  std::string().swap(entry.series);
   for (auto& acq : entry.acquisitions) std::string().swap(acq.href);
   entry.type = OpdsEntryType::NAVIGATION;
   entry.acquisitionCount = 0;
@@ -52,6 +60,9 @@ void slimOpdsEntryForList(OpdsEntry& entry) {
   std::string().swap(entry.description);
   std::string().swap(entry.id);
   std::string().swap(entry.navigationHref);
+  std::string().swap(entry.isbn);
+  std::string().swap(entry.asin);
+  std::string().swap(entry.series);
   if (entry.type == OpdsEntryType::BOOK) std::string().swap(entry.href);
   for (auto& acq : entry.acquisitions) std::string().swap(acq.href);
 }
@@ -103,6 +114,7 @@ bool ensureOpdsDownloadWifi(bool forceReconnect = false) {
   WiFi.mode(WIFI_STA);
   LOG_INF("OPDS", "Connecting WiFi for book download: ssid=%s free=%u maxAlloc=%u", ssid.c_str(),
           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  wifi_roaming::preferStrongestAccessPoint();
   WiFi.begin(ssid.c_str(), password.c_str());
 
   const uint32_t started = millis();
@@ -137,6 +149,18 @@ const char* acquisitionLabel(const OpdsBookFormat format) {
       return "FB2";
     case OpdsBookFormat::FB2_ZIP:
       return "FB2.ZIP";
+    case OpdsBookFormat::FB3:
+      return "FB3";
+    case OpdsBookFormat::MOBI:
+      return "MOBI";
+    case OpdsBookFormat::AZW3:
+      return "AZW3";
+    case OpdsBookFormat::RTF:
+      return "RTF";
+    case OpdsBookFormat::DOCX:
+      return "DOCX";
+    case OpdsBookFormat::LCP_LICENSE:
+      return "LCP";
   }
   return "BOOK";
 }
@@ -149,41 +173,29 @@ const char* acquisitionExtension(const OpdsBookFormat format) {
       return ".fb2";
     case OpdsBookFormat::FB2_ZIP:
       return ".fb2.zip";
+    case OpdsBookFormat::FB3:
+      return ".fb3";
+    case OpdsBookFormat::MOBI:
+      return ".mobi";
+    case OpdsBookFormat::AZW3:
+      return ".azw3";
+    case OpdsBookFormat::RTF:
+      return ".rtf";
+    case OpdsBookFormat::DOCX:
+      return ".docx";
+    case OpdsBookFormat::LCP_LICENSE:
+      return ".epub";  // the fulfilled publication
   }
   return ".book";
 }
 
-enum class DownloadedBookKind : uint8_t { UNKNOWN, ZIP, FB2_XML };
-
 DownloadedBookKind sniffDownloadedBook(const std::string& path) {
   FsFile file;
   if (!Storage.openFileForRead("OPDS", path.c_str(), file)) return DownloadedBookKind::UNKNOWN;
-
   uint8_t buf[512] = {};
   const int count = file.read(buf, sizeof(buf));
   file.close();
-  if (count < 4) return DownloadedBookKind::UNKNOWN;
-
-  // ZIP local header / empty archive / spanned archive signatures.
-  if (buf[0] == 'P' && buf[1] == 'K' &&
-      ((buf[2] == 0x03 && buf[3] == 0x04) || (buf[2] == 0x05 && buf[3] == 0x06) ||
-       (buf[2] == 0x07 && buf[3] == 0x08))) {
-    return DownloadedBookKind::ZIP;
-  }
-
-  // Raw FB2 may start with BOM/whitespace/XML declaration. Search the small
-  // prefix for the FictionBook root instead of requiring it at byte zero.
-  char ascii[513] = {};
-  const int n = count < 512 ? count : 512;
-  for (int i = 0; i < n; ++i) {
-    unsigned char c = buf[i];
-    if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c - 'A' + 'a');
-    ascii[i] = static_cast<char>(c);
-  }
-  if (strstr(ascii, "<fictionbook") != nullptr || strstr(ascii, ":fictionbook") != nullptr) {
-    return DownloadedBookKind::FB2_XML;
-  }
-  return DownloadedBookKind::UNKNOWN;
+  return sniffBookBytes(buf, count);
 }
 
 
@@ -285,11 +297,11 @@ std::string replaceBookExtension(const std::string& path, const char* newExtensi
   size_t dot = path.find_last_of('.');
   if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) dot = path.size();
 
-  // Treat .fb2.zip as one logical extension.
+  // Treat .fb2.zip / .fb3.zip as one logical extension.
   if (dot < path.size() && path.compare(dot, std::string::npos, ".zip") == 0) {
     const size_t prevDot = path.find_last_of('.', dot == 0 ? 0 : dot - 1);
     if (prevDot != std::string::npos && (slash == std::string::npos || prevDot > slash) &&
-        path.compare(prevDot, dot - prevDot, ".fb2") == 0) {
+        (path.compare(prevDot, dot - prevDot, ".fb2") == 0 || path.compare(prevDot, dot - prevDot, ".fb3") == 0)) {
       dot = prevDot;
     }
   }
@@ -415,6 +427,13 @@ std::string resolveOpdsUrl(const std::string& baseUrl, const std::string& ref) {
 void OpdsBookBrowserActivity::onEnter() {
   Activity::onEnter();
 
+  // Apply the server's HTTP identity (KOReader User-Agent, API-token header, ...) to every request.
+  {
+    opds_profile::Header header;
+    opds_profile::parseHeaderLine(server.customHeader, header);
+    HttpDownloader::setRequestProfile(server.userAgent, header.name, header.value);
+  }
+
   sdFontSystem.releaseLoadedFont(renderer);
 
   state = BrowserState::CHECK_WIFI;
@@ -446,6 +465,7 @@ void OpdsBookBrowserActivity::onEnter() {
 
 void OpdsBookBrowserActivity::onExit() {
   Activity::onExit();
+  HttpDownloader::clearRequestProfile();
   clearEntries();
   navigationHistory.clear();
 
@@ -787,6 +807,18 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
     if (!book.author.empty()) {
       authorLines = renderer.wrappedText(authorFont, book.author.c_str(), textWidth, 2);
       if (authorLines.empty()) authorLines.push_back(book.author);
+    }
+
+    // Extended metadata (calibre series, ISBN, ASIN) goes under the author in the same small font.
+    {
+      std::string meta = book.series;
+      if (!book.isbn.empty()) meta += (meta.empty() ? "ISBN " : "  ·  ISBN ") + book.isbn;
+      if (!book.asin.empty()) meta += (meta.empty() ? "ASIN " : "  ·  ASIN ") + book.asin;
+      if (!meta.empty()) {
+        auto metaLines = renderer.wrappedText(authorFont, meta.c_str(), textWidth, 2);
+        if (metaLines.empty()) metaLines.push_back(meta);
+        for (auto& line : metaLines) authorLines.push_back(std::move(line));
+      }
     }
 
     const char* desc = book.description.empty() ? "Описание в каталоге отсутствует" : book.description.c_str();
@@ -1349,8 +1381,9 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const size_t a
   const std::string legacyDownloadUrl = UrlUtils::buildUrl(feedUrl, acquisition.href);
   LOG_INF("OPDS", "Download resolve: format=%s href=%s rfc=%s legacy=%s", acquisitionLabel(acquisition.format),
           acquisition.href.c_str(), downloadUrl.c_str(), legacyDownloadUrl.c_str());
-  Storage.mkdir(OPDS_DOWNLOAD_DIR, true);
-  std::string filename = std::string(OPDS_DOWNLOAD_DIR) + "/" +
+  const std::string downloadDir = server.downloadFolder.empty() ? std::string(OPDS_DOWNLOAD_DIR) : server.downloadFolder;
+  Storage.mkdir(downloadDir.c_str(), true);
+  std::string filename = downloadDir + "/" +
                          StringUtils::sanitizeFilename(buildBookFilenameBase(book, server.filenameFormat)) +
                          acquisitionExtension(acquisition.format);
 
@@ -1403,6 +1436,11 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const size_t a
       requestUpdate(true);
     }
   };
+
+  if (acquisition.format == OpdsBookFormat::LCP_LICENSE) {
+    downloadLcpBook(downloadUrl, filename, progressCallback, cancelRequested);
+    return;
+  }
 
   // Keep a partial OPDS file on transient socket errors. Some catalog servers
   // use chunked downloads and occasionally close a long transfer mid-body.
@@ -1508,8 +1546,13 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const size_t a
         correctedFilename = replaceBookExtension(filename, ".fb2");
       } else if (actualKind == DownloadedBookKind::ZIP && acquisition.format == OpdsBookFormat::FB2) {
         correctedFilename = replaceBookExtension(filename, ".fb2.zip");
+      } else if (actualKind == DownloadedBookKind::MOBI && acquisition.format != OpdsBookFormat::MOBI &&
+                 acquisition.format != OpdsBookFormat::AZW3) {
+        correctedFilename = replaceBookExtension(filename, ".mobi");
+      } else if (actualKind == DownloadedBookKind::RTF && acquisition.format != OpdsBookFormat::RTF) {
+        correctedFilename = replaceBookExtension(filename, ".rtf");
       } else if (actualKind == DownloadedBookKind::UNKNOWN) {
-        LOG_ERR("OPDS", "Downloaded payload is neither ZIP nor FB2 XML: %s", filename.c_str());
+        LOG_ERR("OPDS", "Downloaded payload is not a recognised book container: %s", filename.c_str());
         Storage.remove(filename.c_str());
         result = HttpDownloader::FILE_ERROR;
         errorMessage = tr(STR_DOWNLOAD_FAILED);
@@ -1571,6 +1614,146 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const size_t a
   // The feed was deliberately released before TLS allocation. Reload it now
   // so browsing continues with a clean heap instead of retaining a fragmented
   // in-memory catalogue throughout the download.
+  showLoadingBeforeFetch();
+  fetchFeed(currentPath);
+}
+
+void OpdsBookBrowserActivity::downloadLcpBook(const std::string& licenseUrl, const std::string& filename,
+                                              const HttpDownloader::ProgressCallback& progress, bool& cancelRequested) {
+  auto fail = [this](const char* message) {
+    errorMessage = message;
+    state = BrowserState::ERROR;
+    requestUpdateAndWait();
+  };
+
+  // The license comes from the catalog (its credentials); the LCP service only ever sees the license itself.
+  std::string licenseText;
+  constexpr size_t MAX_LICENSE_BYTES = 256 * 1024;
+  if (!HttpDownloader::fetchUrl(licenseUrl, licenseText, server.username, server.password) || licenseText.empty() ||
+      licenseText.size() > MAX_LICENSE_BYTES) {
+    LOG_ERR("OPDS", "LCP license fetch failed (%zu bytes)", licenseText.size());
+    fail(tr(STR_FETCH_FEED_FAILED));
+    return;
+  }
+  freeink::content::LcpLicense license;
+  if (!freeink::content::parseLcpLicense(licenseText.data(), licenseText.size(), &license)) {
+    LOG_ERR("OPDS", "Not an LCP license document");
+    fail(tr(STR_DOWNLOAD_FAILED));
+    return;
+  }
+
+  LOG_INF("OPDS", "LCP fulfill: %s -> %s", licenseUrl.c_str(), filename.c_str());
+  int fulfillStatus = 0;
+  const auto result = HttpDownloader::postToFile(lcpservice::FULFILL_URL, licenseText, lcpservice::LICENSE_CONTENT_TYPE,
+                                                 filename, progress, &cancelRequested, &fulfillStatus);
+  if (result == HttpDownloader::ABORTED) {
+    mappedInput.suppressNextBackRelease();
+    showLoadingBeforeFetch();
+    fetchFeed(currentPath);
+    return;
+  }
+  if (result != HttpDownloader::OK || sniffDownloadedBook(filename) != DownloadedBookKind::ZIP) {
+    LOG_ERR("OPDS", "LCP fulfillment failed (result=%d, status=%d)", static_cast<int>(result), fulfillStatus);
+    Storage.remove(filename.c_str());
+    // 0 = no connection to the service at all; 4xx/5xx = the service answered but refused or broke.
+    fail(fulfillStatus == 0 && result == HttpDownloader::HTTP_ERROR ? tr(STR_LCP_OFFLINE)
+         : fulfillStatus == 422                                     ? tr(STR_LCP_UNSUPPORTED)
+         : fulfillStatus >= 400                                     ? tr(STR_LCP_SERVICE_ERROR)
+                                                                    : tr(STR_DOWNLOAD_FAILED));
+    return;
+  }
+  clearBookCache(filename);
+
+  pendingLcpLicense = std::move(license);
+  pendingLcpLicenseText = std::move(licenseText);
+  pendingLcpPath = filename;
+  startLcpUnlock();
+}
+
+bool OpdsBookBrowserActivity::tryLcpUnlock(const std::string& userKeyHex, bool& wrong) {
+  wrong = false;
+  state = BrowserState::LOADING;
+  statusMessage = tr(STR_LOADING);
+  requestUpdateAndWait();
+  switch (lcpclient::unlock(pendingLcpPath, pendingLcpLicenseText, pendingLcpLicense, userKeyHex)) {
+    case lcpclient::Result::Ok:
+      return true;
+    case lcpclient::Result::WrongPassphrase:
+      wrong = true;
+      return false;
+    case lcpclient::Result::Unsupported:
+      errorMessage = tr(STR_LCP_UNSUPPORTED);
+      break;
+    case lcpclient::Result::OfficialBuildRequired:
+      errorMessage = tr(STR_LCP_OFFICIAL_BUILD);
+      break;
+    case lcpclient::Result::Offline:
+      errorMessage = tr(STR_LCP_OFFLINE);
+      break;
+    case lcpclient::Result::DeviceRejected:
+      errorMessage = tr(STR_LCP_DEVICE_REJECTED);
+      break;
+    case lcpclient::Result::ServiceError:
+      errorMessage = tr(STR_LCP_SERVICE_ERROR);
+      break;
+    case lcpclient::Result::NeedPassphrase:
+    case lcpclient::Result::Failed:
+      errorMessage = tr(STR_DOWNLOAD_FAILED);
+      break;
+  }
+  state = BrowserState::ERROR;
+  requestUpdateAndWait();
+  return false;
+}
+
+// A hash saved for this provider skips the prompt; only a stale one (wrong passphrase) asks the reader.
+void OpdsBookBrowserActivity::startLcpUnlock() {
+  if (!pendingLcpLicense.provider.empty()) {
+    const std::string saved = LCP_PASSPHRASES.get(pendingLcpLicense.provider);
+    if (!saved.empty()) {
+      bool wrong = false;
+      if (tryLcpUnlock(saved, wrong)) {
+        finishLcpDownload();
+        return;
+      }
+      if (!wrong) return;  // terminal error already on screen
+    }
+  }
+  promptLcpPassphrase(/*retry=*/false);
+}
+
+void OpdsBookBrowserActivity::promptLcpPassphrase(const bool retry) {
+  consumeConfirm = true;
+  state = BrowserState::SEARCH_INPUT;
+  requestUpdate();
+  // The license hint is the prompt the provider wrote for this passphrase.
+  const char* title = retry                             ? tr(STR_LCP_WRONG_PASSPHRASE)
+                      : !pendingLcpLicense.hint.empty() ? pendingLcpLicense.hint.c_str()
+                                                        : tr(STR_LCP_PASSPHRASE);
+  auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, title);
+  startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      // Keep the book: without its key the reader shows the protection notice, and downloading the title again
+      // offers the passphrase prompt once more.
+      finishLcpDownload();
+      return;
+    }
+    const std::string userKeyHex = lcpclient::userKeyHexFromPassphrase(std::get<KeyboardResult>(result.data).text);
+    bool wrong = false;
+    if (tryLcpUnlock(userKeyHex, wrong)) {
+      // Remember the working hash per provider (best effort) so the next borrow from this library is silent.
+      if (!pendingLcpLicense.provider.empty()) LCP_PASSPHRASES.put(pendingLcpLicense.provider, userKeyHex);
+      finishLcpDownload();
+    } else if (wrong) {
+      promptLcpPassphrase(/*retry=*/true);
+    }
+  });
+}
+
+void OpdsBookBrowserActivity::finishLcpDownload() {
+  pendingLcpLicenseText.clear();
+  pendingLcpLicense = {};
+  pendingLcpPath.clear();
   showLoadingBeforeFetch();
   fetchFeed(currentPath);
 }

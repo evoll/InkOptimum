@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include "../reader/EpubReaderBookmarkListActivity.h"
+#include "GlobalBookmarksListActivity.h"
 #include "BookmarkStore.h"
 #include "InkMODState.h"
 #include "FileBrowserActionActivity.h"
@@ -16,13 +17,16 @@ namespace {
 constexpr unsigned long BOOKMARK_DELETE_HOLD_MS = 1000;
 }
 
+// Row 0 is the synthetic "All bookmarks" entry; rows 1..N map to books[0..N-1].
+int BookmarksHomeActivity::rowCount() const { return books.empty() ? 0 : static_cast<int>(books.size()) + 1; }
+
 void BookmarksHomeActivity::reloadBookmarks() {
   books.clear();
   BookmarkStore::getAllBookmarkedBooks(books);
   if (books.empty()) {
     selectedIndex = 0;
-  } else if (selectedIndex >= static_cast<int>(books.size())) {
-    selectedIndex = static_cast<int>(books.size()) - 1;
+  } else if (selectedIndex >= rowCount()) {
+    selectedIndex = rowCount() - 1;
   }
 }
 
@@ -46,7 +50,7 @@ void BookmarksHomeActivity::loop() {
     const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
     const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
     const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
-    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, static_cast<int>(books.size()),
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, rowCount(),
                                              Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, metrics.listRowHeight);
     if (touch.handled && !touch.activate) { requestUpdate(); return; }
     touchActivate = touch.activate;
@@ -59,7 +63,7 @@ void BookmarksHomeActivity::loop() {
   if (!books.empty() && !longPressOpenHandled && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       mappedInput.getHeldTime() >= BOOKMARK_DELETE_HOLD_MS) {
     longPressOpenHandled = true;
-    showBookmarkBookActionMenu(selectedIndex, true);
+    if (selectedIndex > 0) showBookmarkBookActionMenu(selectedIndex - 1, true);
     return;
   }
 
@@ -68,13 +72,19 @@ void BookmarksHomeActivity::loop() {
       longPressOpenHandled = false;
       return;
     }
-    if (!books.empty() && selectedIndex >= 0 && selectedIndex < static_cast<int>(books.size())) {
-      openBookmarkList(selectedIndex);
+    if (selectedIndex == 0 && !books.empty()) {
+      startActivityForResult(std::make_unique<GlobalBookmarksListActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) {
+                               reloadBookmarks();
+                               requestUpdate();
+                             });
+    } else if (selectedIndex > 0 && selectedIndex < rowCount()) {
+      openBookmarkList(selectedIndex - 1);
     }
     return;
   }
 
-  const int listSize = static_cast<int>(books.size());
+  const int listSize = rowCount();
 
   buttonNavigator.onNextRelease([this, listSize] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, listSize);
@@ -112,9 +122,9 @@ void BookmarksHomeActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_BOOKMARKS));
   } else {
     GUI.drawList(
-        renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, books.size(), selectedIndex,
-        [this](int index) { return books[index].bookTitle; }, [this](int index) { return books[index].bookAuthor; },
-        nullptr);
+        renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, rowCount(), selectedIndex,
+        [this](int index) { return index == 0 ? std::string(tr(STR_ALL_BOOKMARKS)) : books[index - 1].bookTitle; },
+        [this](int index) { return index == 0 ? std::string() : books[index - 1].bookAuthor; }, nullptr);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_HOME), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

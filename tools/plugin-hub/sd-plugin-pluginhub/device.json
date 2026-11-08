@@ -1,0 +1,29 @@
+{
+  "title": "My Plugin Hub",
+  "description": "Plugins from my own server",
+  "token": { "file": "token.json", "path": "token" },
+  "browse": {
+    "url": "https://hub.example.com/catalog.json?page={page}&limit={limit}",
+    "headers": { "Authorization": "Bearer {token}" },
+    "lists_url": "https://hub.example.com/lists.json",
+    "items": "items",
+    "fields": {
+      "id": "id",
+      "title": "title",
+      "author": "author",
+      "version": "version",
+      "description": "description"
+    },
+    "compatibility": {
+      "firmware_family": "families",
+      "plugin_api_min": "api_min",
+      "requires": "requires"
+    },
+    "page_size": 8
+  },
+  "download": {
+    "headers": { "Authorization": "Bearer {token}" },
+    "dest_dir": "/.inkmod/plugins",
+    "bundle": { "base": "base", "files": "files", "subdir": "{id}" }
+  }
+}

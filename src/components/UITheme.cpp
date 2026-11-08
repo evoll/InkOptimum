@@ -15,6 +15,7 @@
 #include "RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
+#include "components/themes/grid/GridTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
@@ -98,6 +99,12 @@ void UITheme::setTheme(InkMODSettings::UI_THEME type) {
       LOG_DBG("UI", "Using Dashboard theme");
       currentTheme = std::make_unique<DashboardTheme>();
       currentMetrics = &DashboardMetrics::values;
+      currentType = type;
+      break;
+    case InkMODSettings::UI_THEME::GRID:
+      LOG_DBG("UI", "Using Grid theme");
+      currentTheme = std::make_unique<GridTheme>();
+      currentMetrics = &GridMetrics::values;
       currentType = type;
       break;
     default:
@@ -243,16 +250,32 @@ UIIcon UITheme::getFileIcon(const std::string& filename) {
     return Folder;
   }
   if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-      FsHelpers::checkFileExtension(filename, ".fb2") || FsHelpers::checkFileExtension(filename, ".fb2.zip")) {
+      FsHelpers::checkFileExtension(filename, ".fb2") || FsHelpers::checkFileExtension(filename, ".fb2.zip") ||
+      FsHelpers::checkFileExtension(filename, ".fb3") || FsHelpers::checkFileExtension(filename, ".fb3.zip") ||
+      (FsHelpers::checkFileExtension(filename, ".docx") || FsHelpers::hasConvertedBookExtension(filename))) {
     return Book;
   }
   if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
     return Text;
   }
-  if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
+  if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) ||
+      FsHelpers::hasJpgExtension(filename)) {
     return Image;
   }
   return File;
+}
+
+extern GfxRenderer renderer;
+
+int UITheme::getStatusBarFontId() {
+  switch (SETTINGS.statusBarTextSize) {
+    case 1:
+      return UI_10_FONT_ID;
+    case 2:
+      return UI_12_FONT_ID;
+    default:
+      return SMALL_FONT_ID;
+  }
 }
 
 int UITheme::getStatusBarHeight() {
@@ -264,7 +287,11 @@ int UITheme::getStatusBarHeight() {
                              SETTINGS.statusBarBattery;
   const bool showProgressBar =
       SETTINGS.statusBarProgressBar != InkMODSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS;
-  return (showStatusBar ? (metrics.statusBarVerticalMargin) : 0) +
+  // A larger font makes the text band taller by what its line is taller than the small font's.
+  const int fontExtra =
+      showStatusBar ? std::max(0, renderer.getLineHeight(getStatusBarFontId()) - renderer.getLineHeight(SMALL_FONT_ID))
+                    : 0;
+  return (showStatusBar ? (metrics.statusBarVerticalMargin + fontExtra) : 0) +
          (showProgressBar ? (((SETTINGS.statusBarProgressBarThickness + 1) * 2) + metrics.progressBarMarginTop) : 0);
 }
 

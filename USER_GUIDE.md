@@ -648,13 +648,12 @@ Subsequent opens are usually faster once the necessary cache has been created.
 
 # 29. Supported interface languages
 
-inkMOD includes complete **Russian** and **Ukrainian** localization together with the other languages inherited and maintained by the project.
+inkMOD includes complete **Russian** localization together with the other languages inherited and maintained by the project.
 
 The on-screen keyboard includes dedicated layouts for:
 
 * English;
-* Russian;
-* Ukrainian.
+* Russian.
 
 Custom fonts can be used when a book requires characters that are missing from the currently selected reader font.
 
@@ -708,7 +707,7 @@ Project development focuses on:
 * low-memory operation;
 * good FB2/EPUB typography;
 * useful reader tools;
-* Russian and Ukrainian localization;
+* Russian localization;
 * extending the Xteink without requiring users to preprocess their entire library.
 
 Project repository:

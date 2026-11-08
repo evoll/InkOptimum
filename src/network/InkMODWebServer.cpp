@@ -1,4 +1,10 @@
 #include "InkMODWebServer.h"
+
+#include <Memory.h>
+
+#include "MultipartRoute.h"
+#include <PluginItems.h>
+#include "util/UrlUtils.h"
 #include "util/TaskWatchdog.h"
 
 #include <ArduinoJson.h>
@@ -7,6 +13,7 @@
 #endif
 #include <Epub.h>
 #include <Fb2.h>
+#include <FileReplace.h>
 #include <FsHelpers.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
@@ -15,15 +22,25 @@
 #include <ZipFile.h>
 #include <esp_task_wdt.h>
 
+#include <fcntl.h>
+#include <lwip/sockets.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
 #include <iterator>
 
 #include "AppVersion.h"
+#include "WebAccessGuard.h"
 #include "InkMODSettings.h"
+#include "diagnostics/DiagnosticManager.h"
 #include "InkMODState.h"
 #include "FontInstaller.h"
+#include "StaticEtag.h"
+#include <FontUploadRules.h>
+#include <VectorFontSupport.h>
+#include "OpdsProfile.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
@@ -103,6 +120,25 @@ constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
 
+// millis() of each WebSocket client's last event, 0 for a free slot.
+uint32_t wsLastActivity[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+// A client that vanishes mid-upload (phone asleep, Wi-Fi lost) would keep its slot and the upload lock until TCP
+// gives up. Clients send data without pause, so close one silent for two minutes. No ping heartbeat: the Calibre
+// plugin does not answer pings while it uploads.
+constexpr uint32_t WS_IDLE_TIMEOUT_MS = 120000;
+
+void closeIdleWsClients(WebSocketsServer& ws) {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
+    if (wsLastActivity[i] == 0) {
+      if (ws.clientIsConnected(i)) wsLastActivity[i] = now;  // time a new client from its first sight
+    } else if (now - wsLastActivity[i] > WS_IDLE_TIMEOUT_MS && ws.clientIsConnected(i)) {
+      LOG_INF("WS", "Client %u sent nothing for %u s, closing it", i, static_cast<unsigned>(WS_IDLE_TIMEOUT_MS / 1000));
+      ws.disconnect(i);
+    }
+  }
+}
+
 // Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
 InkMODWebServer* wsInstance = nullptr;
 
@@ -160,7 +196,12 @@ String normalizeWebPath(const String& inputPath) {
   return result;
 }
 
+// Suffix of the file a plain upload is written to before it replaces its target.
+constexpr const char* kUploadTempSuffix = ".upl";
+
 bool isProtectedPath(const String& path) {
+  // Credential files are refused unconditionally, even with "show hidden files" enabled.
+  if (web_access::isSecretPath(path.c_str())) return true;
   // Managed system folders are hidden from listings but their dedicated web
   // tools must still be able to upload files while "show hidden" is disabled.
   if (path == "/.dictionaries" || path.startsWith("/.dictionaries/") || path == "/.screenshots" ||
@@ -243,6 +284,18 @@ void InkMODWebServer::begin() {
     return;
   }
 
+  // Hotspot: send captive-portal checks (GET/HEAD for a foreign host name that our DNS answered with this
+  // address) to the home page so the phone opens it. Added before the handlers because WebDAV claims every GET.
+  if (apMode) {
+    server->addMiddleware([](WebServer& s, Middleware::Callback next) {
+      const bool check = s.method() == HTTP_GET || s.method() == HTTP_HEAD;
+      if (!check || !UrlUtils::isForeignHost(s.header("Host").c_str())) return next();
+      s.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+      s.send(302, "text/plain", "");
+      return true;
+    });
+  }
+
   // Setup routes
   LOG_DBG("WEB", "Setting up routes...");
   server->on("/", HTTP_GET, [this] { handleRoot(); });
@@ -260,19 +313,32 @@ void InkMODWebServer::begin() {
   server->on("/logo.png", HTTP_GET, [this] { handleLogo(); });
 
   server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
+  server->on("/api/diagnostics", HTTP_GET, [this] { handleDiagnostics(); });
   server->on("/api/files", HTTP_GET, [this] { handleFileListData(); });
   server->on("/download", HTTP_GET, [this] { handleDownload(); });
 
+  // File-taking POST routes accept multipart/form-data and nothing else (MultipartRoute.h): a body of any other
+  // type used to reach server->upload() through the framework's raw() path and dereference null.
+  // Ownership passes to the WebServer, which deletes the handler when stopped.
+  const auto addMultipartRoute = [this](const char* path, MultipartRoute::Action finished,
+                                        MultipartRoute::Action part) {
+    if (auto route = makeUniqueNoThrow<MultipartRoute>(path, std::move(finished), std::move(part))) {
+      server->addHandler(route.release());
+    } else {
+      LOG_ERR("WEB", "OOM: route %s not available", path);
+    }
+  };
+
   // Upload endpoint with special handling for multipart form data
-  server->on("/upload", HTTP_POST, [this] { handleUploadPost(upload); }, [this] { handleUpload(upload); });
+  addMultipartRoute("/upload", [this] { handleUploadPost(upload); }, [this] { handleUpload(upload); });
   // Browser-generated native metadata goes straight to the hidden cache,
   // never beside the user's books as hundreds of visible .inkprep files.
-  server->on("/api/books/cache", HTTP_POST, [this] { handleUploadPost(bookCacheUpload); },
-             [this] { handleUpload(bookCacheUpload, true); });
-  server->on("/api/books/fb2-package", HTTP_POST, [this] { handleUploadPost(fb2PackageUpload); },
-             [this] { handleUpload(fb2PackageUpload, false, true); });
-  server->on("/api/books/wrapped-epub", HTTP_POST, [this] { handleUploadPost(wrappedEpubUpload); },
-             [this] { handleUpload(wrappedEpubUpload, false, false, true); });
+  addMultipartRoute("/api/books/cache", [this] { handleUploadPost(bookCacheUpload); },
+                    [this] { handleUpload(bookCacheUpload, true); });
+  addMultipartRoute("/api/books/fb2-package", [this] { handleUploadPost(fb2PackageUpload); },
+                    [this] { handleUpload(fb2PackageUpload, false, true); });
+  addMultipartRoute("/api/books/wrapped-epub", [this] { handleUploadPost(wrappedEpubUpload); },
+                    [this] { handleUpload(wrappedEpubUpload, false, false, true); });
 
   // Create folder endpoint
   server->on("/mkdir", HTTP_POST, [this] { handleCreateFolder(); });
@@ -292,11 +358,51 @@ void InkMODWebServer::begin() {
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
   server->on("/api/wallpapers/apply", HTTP_POST, [this] { handleApplyWallpaper(); });
 
+  // Weather, notes and diagnostics (WebExtras.cpp)
+  server->on("/weather", HTTP_GET, [this] { handleWeatherPage(); });
+  server->on("/notes", HTTP_GET, [this] { handleNotesPage(); });
+  server->on("/diagnostics", HTTP_GET, [this] { handleDiagnosticsPage(); });
+  server->on("/stats", HTTP_GET, [this] { handleStatsPage(); });
+  server->on("/api/stats", HTTP_GET, [this] { handleGetStats(); });
+  server->on("/api/weather", HTTP_GET, [this] { handleGetWeather(); });
+  server->on("/api/weather/settings", HTTP_POST, [this] { handlePostWeatherSettings(); });
+  server->on("/api/weather/cache", HTTP_POST, [this] { handlePostWeatherCache(); });
+  server->on("/api/notes", HTTP_GET, [this] { handleGetNotes(); });
+  server->on("/api/notes/book", HTTP_GET, [this] { handleGetBookNotes(); });
+  server->on("/api/notes/bookmark/rename", HTTP_POST, [this] { handleRenameBookmark(); });
+  server->on("/api/notes/bookmark/delete", HTTP_POST, [this] { handleDeleteBookmark(); });
+  server->on("/api/notes/clipping/delete", HTTP_POST, [this] { handleDeleteClipping(); });
+
   // Font management endpoints
   server->on("/fonts", HTTP_GET, [this] { handleFontsPage(); });
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
-  server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
+  addMultipartRoute("/api/fonts/upload", [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
+  server->on("/dictionary", HTTP_GET, [this] { handleDictionaryPage(); });
+  server->on("/api/dictionaries", HTTP_GET, [this] { handleListDictionaries(); });
+  server->on("/api/dictionaries/lookup", HTTP_GET, [this] { handleLookupDictionary(); });
+  server->on("/api/dictionaries/delete", HTTP_POST, [this] { handleDeleteDictionary(); });
+  server->on("/api/koreader/profiles", HTTP_GET, [this] { handleGetKoProfiles(); });
+  server->on("/api/koreader/profiles", HTTP_POST, [this] { handlePostKoProfile(); });
+  server->on("/api/koreader/profiles/activate", HTTP_POST, [this] { handleKoProfileAction(false); });
+  server->on("/api/koreader/profiles/delete", HTTP_POST, [this] { handleKoProfileAction(true); });
+  server->on("/api/fonts/catalog", HTTP_GET, [this] { handleFontCatalog(); });
   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); });
+
+  // Web plugins (WebPlugins.cpp)
+  server->on("/plugins", HTTP_GET, [this] { handlePluginsPage(); });
+  server->on("/plugins-run", HTTP_GET, [this] { handlePluginsPage(); });
+  server->on("/api/plugins", HTTP_GET, [this] { handleGetPlugins(); });
+  server->on("/plugin", HTTP_GET, [this] { handlePluginFile(); });
+  server->on("/api/relay", HTTP_POST, [this] { handlePluginRelay(); });
+  server->on("/api/crypto", HTTP_POST, [this] { handlePluginCrypto(); });
+  server->on("/api/book-key", HTTP_POST, [this] { handlePluginBookKey(); });
+  server->on("/api/lcp-unlock", HTTP_POST, [this] { handlePluginLcpUnlock(); });
+  server->on("/api/fetch", HTTP_POST, [this] { handlePluginFetch(); });
+  addMultipartRoute("/api/plugin-fs", [this] { handlePluginFsDone(); }, [this] { handlePluginFsData(); });
+  server->on("/api/plugin-jobs", HTTP_POST, [this] { handlePluginJobEnqueue(); });
+  server->on("/api/plugin-jobs/claim", HTTP_GET, [this] { handlePluginJobClaim(); });
+  server->on("/api/plugin-jobs/complete", HTTP_POST, [this] { handlePluginJobComplete(); });
+  server->on("/api/plugin-jobs/status", HTTP_GET, [this] { handlePluginJobStatus(); });
 
   // OPDS server endpoints
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
@@ -312,8 +418,9 @@ void InkMODWebServer::begin() {
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
 
   // Collect WebDAV headers and register handler
-  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
-  server->collectHeaders(davHeaders, 6);
+  // Host is collected for the hotspot's captive-portal check.
+  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout", "Host", "If-None-Match"};
+  server->collectHeaders(davHeaders, 8);
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -322,13 +429,14 @@ void InkMODWebServer::begin() {
   // Start WebSocket server for fast binary uploads
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
   wsServer.reset(new WebSocketsServer(wsPort));
+  std::fill(std::begin(wsLastActivity), std::end(wsLastActivity), 0);
   wsInstance = const_cast<InkMODWebServer*>(this);
   wsServer->begin();
   wsServer->onEvent(wsEventCallback);
   LOG_DBG("WEB", "WebSocket server started");
 
-  udpActive = udp.begin(LOCAL_UDP_PORT);
-  LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
+  openDiscoverySocket();
+  LOG_DBG("WEB", "Discovery UDP %s on port %d", discoverySocket >= 0 ? "enabled" : "failed", LOCAL_UDP_PORT);
 
   running = true;
 
@@ -381,10 +489,7 @@ void InkMODWebServer::stop() {
     LOG_DBG("WEB", "WebSocket server stopped");
   }
 
-  if (udpActive) {
-    udp.stop();
-    udpActive = false;
-  }
+  closeDiscoverySocket();
 
   // Brief delay to allow any in-flight handleClient() calls to complete
   delay(20);
@@ -429,29 +534,54 @@ void InkMODWebServer::handleClient() {
   // Handle WebSocket events
   if (wsServer) {
     wsServer->loop();
+    closeIdleWsClients(*wsServer);
   }
 
-  // Respond to discovery broadcasts
-  if (udpActive) {
-    int packetSize = udp.parsePacket();
-    if (packetSize > 0) {
-      char buffer[16];
-      int len = udp.read(buffer, sizeof(buffer) - 1);
-      if (len > 0) {
-        buffer[len] = '\0';
-        if (strcmp(buffer, "hello") == 0) {
-          String hostname = WiFi.getHostname();
-          if (hostname.isEmpty()) {
-            hostname = "inkmod";
-          }
-          String message = "crosspoint (on " + hostname + ");" + String(wsPort);
-          udp.beginPacket(udp.remoteIP(), udp.remotePort());
-          udp.write(reinterpret_cast<const uint8_t*>(message.c_str()), message.length());
-          udp.endPacket();
-        }
-      }
-    }
+  answerDiscovery();
+}
+
+// Discovery uses a plain socket: NetworkUDP keeps a 1,460-byte send buffer while it is open, for a
+// reply of a few dozen bytes.
+void InkMODWebServer::openDiscoverySocket() {
+  if (discoverySocket >= 0) return;
+  const int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (fd < 0) return;
+  sockaddr_in addr = {};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(LOCAL_UDP_PORT);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
+      fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) < 0) {
+    close(fd);
+    return;
   }
+  discoverySocket = fd;
+}
+
+void InkMODWebServer::closeDiscoverySocket() {
+  if (discoverySocket < 0) return;
+  close(discoverySocket);
+  discoverySocket = -1;
+}
+
+// Answers a "hello" broadcast with the device name and WebSocket port.
+void InkMODWebServer::answerDiscovery() const {
+  if (discoverySocket < 0) return;
+  char buffer[16];
+  sockaddr_in from = {};
+  socklen_t fromLen = sizeof(from);
+  const int len =
+      recvfrom(discoverySocket, buffer, sizeof(buffer) - 1, 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
+  if (len <= 0) return;
+  buffer[len] = '\0';
+  if (strcmp(buffer, "hello") != 0) return;
+  const char* hostname = WiFi.getHostname();
+  char message[96];
+  const int messageLen = snprintf(message, sizeof(message), "crosspoint (on %s);%u",
+                                  hostname && hostname[0] ? hostname : "inkmod", static_cast<unsigned>(wsPort));
+  if (messageLen <= 0) return;
+  sendto(discoverySocket, message, std::min(static_cast<size_t>(messageLen), sizeof(message) - 1), 0,
+         reinterpret_cast<sockaddr*>(&from), fromLen);
 }
 
 InkMODWebServer::WsUploadStatus InkMODWebServer::getWsUploadStatus() const {
@@ -466,7 +596,21 @@ InkMODWebServer::WsUploadStatus InkMODWebServer::getWsUploadStatus() const {
   return status;
 }
 
+// Pages are baked into flash, so a content hash is a stable validator for the lifetime of the image. A matching
+// If-None-Match is answered with 304; `no-cache` makes the browser revalidate instead of guessing freshness.
+static bool sendNotModifiedIfCurrent(WebServer* server, const char* data, size_t len) {
+  const std::string etag = static_etag::make(reinterpret_cast<const uint8_t*>(data), len);
+  server->sendHeader("ETag", etag.c_str());
+  server->sendHeader("Cache-Control", "no-cache");
+  if (static_etag::matches(server->header("If-None-Match").c_str(), etag)) {
+    server->send(304);
+    return true;
+  }
+  return false;
+}
+
 static void sendHtmlContent(WebServer* server, const char* data, size_t len) {
+  if (sendNotModifiedIfCurrent(server, data, len)) return;
   server->sendHeader("Content-Encoding", "gzip");
   server->send_P(200, "text/html", data, len);
 }
@@ -477,12 +621,14 @@ void InkMODWebServer::handleRoot() const {
 }
 
 void InkMODWebServer::handleJszip() const {
+  if (sendNotModifiedIfCurrent(server.get(), reinterpret_cast<const char*>(jszip_minJs), jszip_minJsCompressedSize)) return;
   server->sendHeader("Content-Encoding", "gzip");
   server->send_P(200, "application/javascript", jszip_minJs, jszip_minJsCompressedSize);
   LOG_DBG("WEB", "Served jszip.min.js");
 }
 
 void InkMODWebServer::handleI18nJs() const {
+  if (sendNotModifiedIfCurrent(server.get(), reinterpret_cast<const char*>(i18nJs), i18nJsCompressedSize)) return;
   server->sendHeader("Content-Encoding", "gzip");
   server->send_P(200, "application/javascript", i18nJs, i18nJsCompressedSize);
   LOG_DBG("WEB", "Served i18n.js");
@@ -522,10 +668,23 @@ void InkMODWebServer::handleStatus() const {
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["uptime"] = millis() / 1000;
   doc["device"] = gpio.deviceIsX3() ? "X3" : "X4";
+  doc["firmwareFamily"] = plugincat::identity::FAMILY;
+  doc["pluginApi"] = plugincat::identity::PLUGIN_API;
+  doc["pluginCapabilities"] = plugincat::identity::CAPABILITIES;  // same list CrossPoint reports
 
   String json;
   serializeJson(doc, json);
   server->send(200, "application/json", json);
+}
+
+// Plain-text diagnostic report for bug reports. `?download=1` makes the browser save it as a file.
+void InkMODWebServer::handleDiagnostics() const {
+  const String report = DIAGNOSTICS.buildReport();
+  if (server->hasArg("download")) {
+    server->sendHeader("Content-Disposition", "attachment; filename=\"inkmod-diagnostic.txt\"");
+  }
+  server->sendHeader("Cache-Control", "no-store");
+  server->send(200, "text/plain; charset=utf-8", report);
 }
 
 void InkMODWebServer::scanFiles(const char* path, const std::function<void(FileInfo)>& callback) const {
@@ -829,9 +988,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     // v1.1.7 added wrappedEpubUpload as a fourth UploadState. Keep that
     // state buffer lazy so ordinary SoftAP transfers retain the same steady
     // heap footprint as v1.1.6. Allocate it only when this endpoint is used.
-    if (state.buffer.size() != UploadState::UPLOAD_BUFFER_SIZE) {
-      state.buffer.resize(UploadState::UPLOAD_BUFFER_SIZE);
-    }
+    const bool bufferReady = state.ensureBuffer();
 
     // Browsers (notably Safari directory uploads) may report multipart
     // filename as "TopFolder/sub/file.ext". The destination directory is
@@ -853,6 +1010,13 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     totalWriteTime = 0;
     writeCount = 0;
 
+    if (!bufferReady) {
+      // Not enough contiguous heap for the write buffer: refuse cleanly instead of aborting.
+      state.error = "Not enough free memory for the upload, try again";
+      LOG_ERR("WEB", "[UPLOAD] Refused: maxAlloc=%u", static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      return;
+    }
+
     // Get upload path from query parameter (defaults to root if not specified)
     // Note: We use query parameter instead of form data because multipart form
     // fields aren't available until after file upload completes
@@ -867,7 +1031,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
       const bool wrappedMode = preparedWrappedEpub || (preparedBookCache && server->arg("wrapped") == "1");
       const bool fb2Mode = preparedFb2Package || (preparedBookCache && server->arg("fb2") == "1");
       const bool extensionOk = wrappedMode ? lowerBookPath.endsWith(".zip")
-                               : fb2Mode ? (lowerBookPath.endsWith(".fb2") || lowerBookPath.endsWith(".zip"))
+                               : fb2Mode ? (lowerBookPath.endsWith(".fb2") || lowerBookPath.endsWith(".fb3") || lowerBookPath.endsWith(".docx") || FsHelpers::hasConvertedBookExtension(lowerBookPath) || lowerBookPath.endsWith(".zip"))
                                          : lowerBookPath.endsWith(".epub");
       if (isProtectedPath(bookPath) || !extensionOk || !Storage.exists(bookPath.c_str())) {
         state.error = "Invalid or missing book path";
@@ -931,7 +1095,14 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
 
     // Check if file already exists - SD operations can be slow
     resetTaskWatchdogIfSubscribed();
-    if (Storage.exists(filePath.c_str())) {
+    // A plain upload is written beside its target and swapped in when it completes, so an upload
+    // that breaks off keeps the file it would have replaced. The prepared-cache uploads already
+    // arrive under a temporary name.
+    const bool plainUpload = !preparedBookCache && !preparedFb2Package && !preparedWrappedEpub;
+    if (plainUpload) {
+      filePath += kUploadTempSuffix;
+      Storage.remove(filePath.c_str());
+    } else if (Storage.exists(filePath.c_str())) {
       LOG_DBG("WEB", "[UPLOAD] Overwriting existing file: %s", filePath.c_str());
       resetTaskWatchdogIfSubscribed();
       Storage.remove(filePath.c_str());
@@ -1015,8 +1186,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
                              header[3] == 0x42 && header[4] == 7;
           check.close();
           const String finalPath = state.path + "/book.bin";
-          if (!valid || (Storage.exists(finalPath.c_str()) && !Storage.remove(finalPath.c_str())) ||
-              !Storage.rename(filePath.c_str(), finalPath.c_str())) {
+          if (!valid || !FileReplace::replace(Storage, filePath.c_str(), finalPath.c_str())) {
             Storage.remove(filePath.c_str());
             state.success = false;
             state.error = "Prepared cache validation/install failed";
@@ -1029,11 +1199,9 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
         } else if (preparedFb2Package) {
           const String finalPath = state.path + "/package.epub";
           const String markerPath = state.path + "/.browser_prepared_epub";
-          if ((Storage.exists(finalPath.c_str()) && !Storage.remove(finalPath.c_str())) ||
-              !Storage.rename(filePath.c_str(), finalPath.c_str()) ||
+          if (!FileReplace::replace(Storage, filePath.c_str(), finalPath.c_str()) ||
               !Storage.writeFile(markerPath.c_str(), "1")) {
             Storage.remove(filePath.c_str());
-            Storage.remove(finalPath.c_str());
             Storage.remove(markerPath.c_str());
             state.success = false;
             state.error = "Prepared FB2 package install failed";
@@ -1046,8 +1214,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
           size_t containerSize = 0;
           const bool valid = ZipFile(filePath.c_str()).getInflatedFileSize("META-INF/container.xml", &containerSize) &&
                              containerSize > 0;
-          if (!valid || (Storage.exists(finalPath.c_str()) && !Storage.remove(finalPath.c_str())) ||
-              !Storage.rename(filePath.c_str(), finalPath.c_str())) {
+          if (!valid || !FileReplace::replace(Storage, filePath.c_str(), finalPath.c_str())) {
             Storage.remove(filePath.c_str());
             state.success = false;
             state.error = "Prepared wrapped EPUB install failed";
@@ -1055,9 +1222,22 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
             LOG_INF("WEB", "Installed browser-prepared wrapped EPUB: %s", finalPath.c_str());
           }
         } else {
-          // Clear epub cache to prevent stale metadata issues when overwriting files
-          clearBookCachePreservingUserState(filePath.c_str());
+          const String tempPath = filePath + kUploadTempSuffix;
+          if (FileReplace::replace(Storage, tempPath.c_str(), filePath.c_str())) {
+            // Clear epub cache to prevent stale metadata issues when overwriting files
+            clearBookCachePreservingUserState(filePath.c_str());
+          } else {
+            Storage.remove(tempPath.c_str());
+            state.success = false;
+            state.error = "Failed to move the uploaded file into place";
+          }
         }
+      } else if (!preparedBookCache && !preparedFb2Package && !preparedWrappedEpub) {
+        String tempPath = state.path;
+        if (!tempPath.endsWith("/")) tempPath += "/";
+        tempPath += state.fileName;
+        tempPath += kUploadTempSuffix;
+        Storage.remove(tempPath.c_str());  // failed write: the old file stays
       }
     }
     if (preparedWrappedEpub) {
@@ -1073,6 +1253,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
       String filePath = state.path;
       if (!filePath.endsWith("/")) filePath += "/";
       filePath += state.fileName;
+      if (!preparedBookCache && !preparedFb2Package && !preparedWrappedEpub) filePath += kUploadTempSuffix;
       Storage.remove(filePath.c_str());
     }
     state.error = "Upload aborted";
@@ -1318,7 +1499,13 @@ void InkMODWebServer::handleMove() const {
 }
 
 namespace {
-void clearBookCachesRecursively(const String& itemPath) {
+// Every level of this walk keeps a directory handle and a name buffer on the stack of the web task, so
+// the depth is capped: FAT allows ~125 nested folders and an unbounded walk would overflow the stack.
+// Books deeper than the cap only leave an orphaned cache folder behind, which cache cleanup removes.
+constexpr int kCacheClearMaxDepth = 8;
+
+void clearBookCachesRecursively(const String& itemPath, const int depth = 0) {
+  if (depth > kCacheClearMaxDepth) return;
   HalFile node = Storage.open(itemPath.c_str());
   if (!node) return;
 
@@ -1329,7 +1516,7 @@ void clearBookCachesRecursively(const String& itemPath) {
   }
 
   HalFile child = node.openNextFile();
-  char name[500];
+  char name[256];  // FAT long file names are at most 255 characters
   while (child) {
     child.getName(name, sizeof(name));
     const bool isDir = child.isDirectory();
@@ -1339,7 +1526,7 @@ void clearBookCachesRecursively(const String& itemPath) {
     if (!childPath.endsWith("/")) childPath += "/";
     childPath += name;
     if (isDir)
-      clearBookCachesRecursively(childPath);
+      clearBookCachesRecursively(childPath, depth + 1);
     else
       clearBookCache(childPath.c_str());
 
@@ -1722,9 +1909,14 @@ void InkMODWebServer::handlePostSettings() {
     }
   }
 
-  SETTINGS.saveToFile();
+  const bool saved = SETTINGS.saveToFile();
 
-  LOG_DBG("WEB", "Applied %d setting(s)", applied);
+  LOG_DBG("WEB", "Applied %d setting(s), saved=%d", applied, saved);
+  if (!saved) {
+    // The new values are active until reboot, but they did not reach the SD card.
+    server->send(500, "text/plain", "Settings applied but could not be saved to the SD card");
+    return;
+  }
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");
 }
 
@@ -1738,7 +1930,7 @@ void InkMODWebServer::handleGetOpdsServers() const {
   server->send(200, "application/json", "");
   server->sendContent("[");
 
-  char output[512];
+  char output[896];  // name/url + user agent (120) + custom header (~250)
   constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
 
@@ -1749,6 +1941,9 @@ void InkMODWebServer::handleGetOpdsServers() const {
     doc["url"] = servers[i].url;
     doc["username"] = servers[i].username;
     doc["filenameFormat"] = opdsFilenameFormatToJson(servers[i].filenameFormat);
+    doc["userAgent"] = servers[i].userAgent;
+    doc["customHeader"] = servers[i].customHeader;
+    doc["downloadFolder"] = servers[i].downloadFolder;
     // Never expose passwords over the API вЂ” only indicate whether one is set
     doc["hasPassword"] = !servers[i].password.empty();
 
@@ -1784,6 +1979,36 @@ void InkMODWebServer::handlePostOpdsServer() {
   opdsServer.username = doc["username"] | std::string("");
   opdsServer.filenameFormat = opdsFilenameFormatFromJson(doc["filenameFormat"] | "");
 
+  // HTTP identity. Fields absent from the payload (older clients) keep the stored values below.
+  const bool hasUserAgentField = doc["userAgent"].is<const char*>() || doc["userAgent"].is<std::string>();
+  const bool hasHeaderField = doc["customHeader"].is<const char*>() || doc["customHeader"].is<std::string>();
+  if (hasUserAgentField) {
+    const std::string rawAgent = doc["userAgent"] | std::string("");
+    opdsServer.userAgent = opds_profile::sanitizeUserAgent(rawAgent);
+    if (opdsServer.userAgent.empty() && !rawAgent.empty()) {
+      server->send(400, "text/plain", "Invalid User-Agent");
+      return;
+    }
+  }
+  const bool hasFolderField = doc["downloadFolder"].is<const char*>() || doc["downloadFolder"].is<std::string>();
+  if (hasFolderField) {
+    const std::string rawFolder = doc["downloadFolder"] | std::string("");
+    opdsServer.downloadFolder = opds_profile::sanitizeDownloadFolder(rawFolder);
+    const bool rootOnly = rawFolder.find_first_not_of(" \t/") == std::string::npos;
+    if (opdsServer.downloadFolder.empty() && !rootOnly) {
+      server->send(400, "text/plain", "Invalid download folder (use an SD path like /Books/OPDS)");
+      return;
+    }
+  }
+  if (hasHeaderField) {
+    opds_profile::Header header;
+    if (!opds_profile::parseHeaderLine(doc["customHeader"] | std::string(""), header)) {
+      server->send(400, "text/plain", "Invalid custom header (use \"Name: value\"; reserved names are not allowed)");
+      return;
+    }
+    opdsServer.customHeader = opds_profile::formatHeaderLine(header);
+  }
+
   // The password field is optional in the JSON payload. When absent (vs. present but empty),
   // we preserve the existing password вЂ” the web UI omits it when the user hasn't changed it.
   bool hasPasswordField = doc["password"].is<const char*>() || doc["password"].is<std::string>();
@@ -1805,6 +2030,9 @@ void InkMODWebServer::handlePostOpdsServer() {
     if (existing && !hasFilenameFormatField) {
       opdsServer.filenameFormat = existing->filenameFormat;
     }
+    if (existing && !hasUserAgentField) opdsServer.userAgent = existing->userAgent;
+    if (existing && !hasHeaderField) opdsServer.customHeader = existing->customHeader;
+    if (existing && !hasFolderField) opdsServer.downloadFolder = existing->downloadFolder;
     opdsServer.password = password;
     OPDS_STORE.updateServer(static_cast<size_t>(idx), opdsServer);
     LOG_DBG("WEB", "Updated OPDS server at index %d", idx);
@@ -1999,6 +2227,7 @@ void InkMODWebServer::wsEventCallback(uint8_t num, WStype_t type, uint8_t* paylo
 //   3. Server sends TEXT "PROGRESS:<received>:<total>" after each chunk
 //   4. Server sends TEXT "DONE" or "ERROR:<message>" when complete
 void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (num < WEBSOCKETS_SERVER_CLIENT_MAX) wsLastActivity[num] = type == WStype_DISCONNECTED ? 0 : millis();
   switch (type) {
     case WStype_DISCONNECTED:
       LOG_DBG("WS", "Client %u disconnected", num);
@@ -2207,14 +2436,23 @@ void InkMODWebServer::handleFontList() const {
     }
     out.append("],\"files\":[");
     bool firstFile = true;
-    for (const auto& file : family.files) {
+    // A TrueType family lists its real files, not the per-size placeholders the size menu uses.
+    std::vector<const std::string*> listed;
+    if (family.vector) {
+      for (const auto& path : family.vectorPaths) {
+        if (!path.empty()) listed.push_back(&path);
+      }
+    } else {
+      for (const auto& file : family.files) listed.push_back(&file.path);
+    }
+    for (const std::string* filePath : listed) {
       if (!firstFile) out.append(",");
       firstFile = false;
-      const char* name = strrchr(file.path.c_str(), '/');
-      name = name ? name + 1 : file.path.c_str();
+      const char* name = strrchr(filePath->c_str(), '/');
+      name = name ? name + 1 : filePath->c_str();
       unsigned long size = 0;
       HalFile f;
-      if (Storage.openFileForRead("WEB", file.path.c_str(), f)) {
+      if (Storage.openFileForRead("WEB", filePath->c_str(), f)) {
         size = static_cast<unsigned long>(f.size());
         f.close();
       }
@@ -2244,8 +2482,11 @@ void InkMODWebServer::handleFontUploadData() {
       fontUpload.file = HalFile();
       fontUpload.familyName.clear();
       fontUpload.filePath.clear();
+      fontUpload.tempPath.clear();
       fontUpload.valid = false;
       fontUpload.magicChecked = false;
+      fontUpload.kind = 0;
+      fontUpload.error.clear();
       fontUpload.bytesWritten = 0;
       fontUpload.bufferPos = 0;
 
@@ -2260,12 +2501,26 @@ void InkMODWebServer::handleFontUploadData() {
       // a .cpfont basename of alphanumeric + hyphen + underscore. Without
       // this an attacker could supply "../../.inkmod/settings.json" as
       // a "filename" and have it written outside the fonts directory.
-      if (!FontInstaller::isValidCpfontFilename(filename.c_str())) {
+      const font_upload::Kind uploadKind = font_upload::classify(filename.c_str());
+      if (uploadKind == font_upload::Kind::None) {
         LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
         break;
       }
+#if !INKMOD_VECTOR_FONTS
+      if (uploadKind == font_upload::Kind::Vector) {
+        LOG_ERR("WEB", "TrueType upload refused: this board has no PSRAM");
+        fontUpload.error = "TrueType fonts need a board with PSRAM; convert to .cpfont first";
+        break;
+      }
+#endif
+      fontUpload.kind = static_cast<uint8_t>(uploadKind);
 
       fontUpload.familyName = family.c_str();
+
+      if (!fontUpload.ensureBuffer()) {
+        LOG_ERR("WEB", "Font upload refused: maxAlloc=%u", static_cast<unsigned>(ESP.getMaxAllocHeap()));
+        break;
+      }
 
       // Create a temporary FontInstaller for directory creation
       FontInstaller installer(sdFontSystem.registry());
@@ -2277,9 +2532,13 @@ void InkMODWebServer::handleFontUploadData() {
       char path[192];
       FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path));
       fontUpload.filePath = path;
+      // Write to a side file and swap it in only after a complete, valid upload, so a dropped
+      // connection never leaves a truncated .cpfont (or destroys the one being replaced).
+      fontUpload.tempPath = fontUpload.filePath + kUploadTempSuffix;
+      Storage.remove(fontUpload.tempPath.c_str());
 
-      if (!Storage.openFileForWrite("WEB", path, fontUpload.file)) {
-        LOG_ERR("WEB", "Failed to open font file for write: %s", path);
+      if (!Storage.openFileForWrite("WEB", fontUpload.tempPath.c_str(), fontUpload.file)) {
+        LOG_ERR("WEB", "Failed to open font file for write: %s", fontUpload.tempPath.c_str());
         break;
       }
 
@@ -2294,8 +2553,9 @@ void InkMODWebServer::handleFontUploadData() {
 
       // Validate magic bytes on first chunk only
       if (!fontUpload.magicChecked && upload.currentSize >= 8) {
-        if (memcmp(upload.buf, "CPFONT\0\0", 8) != 0) {
-          LOG_ERR("WEB", "Invalid .cpfont magic bytes");
+        if (!font_upload::magicMatches(static_cast<font_upload::Kind>(fontUpload.kind), upload.buf,
+                                       upload.currentSize)) {
+          LOG_ERR("WEB", "Invalid font magic bytes");
           fontUpload.valid = false;
           break;
         }
@@ -2314,7 +2574,12 @@ void InkMODWebServer::handleFontUploadData() {
         remaining -= chunk;
 
         if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
+          if (fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos) != fontUpload.bufferPos) {
+            LOG_ERR("WEB", "Font upload: SD write failed");
+            fontUpload.valid = false;
+            fontUpload.bufferPos = 0;
+            break;
+          }
           fontUpload.bytesWritten += fontUpload.bufferPos;
           fontUpload.bufferPos = 0;
           resetTaskWatchdogIfSubscribed();
@@ -2326,17 +2591,28 @@ void InkMODWebServer::handleFontUploadData() {
     case UPLOAD_FILE_END: {
       // Flush remaining buffer
       if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-        fontUpload.bytesWritten += fontUpload.bufferPos;
+        if (fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos) != fontUpload.bufferPos) {
+          LOG_ERR("WEB", "Font upload: final SD write failed");
+          fontUpload.valid = false;
+        } else {
+          fontUpload.bytesWritten += fontUpload.bufferPos;
+        }
         fontUpload.bufferPos = 0;
       }
       if (fontUpload.file.isOpen()) {
         fontUpload.file.close();
       }
 
-      if (!fontUpload.valid && !fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
+      // A font without the magic header (shorter than 8 bytes) is never valid.
+      if (fontUpload.valid && !fontUpload.magicChecked) fontUpload.valid = false;
+
+      if (!fontUpload.tempPath.empty()) {
+        if (fontUpload.valid) {
+          fontUpload.valid = FileReplace::replace(Storage, fontUpload.tempPath.c_str(), fontUpload.filePath.c_str());
+        }
+        if (!fontUpload.valid) Storage.remove(fontUpload.tempPath.c_str());
       }
+      fontUpload.releaseBuffer();
 
       LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes", fontUpload.valid, fontUpload.bytesWritten);
       break;
@@ -2346,10 +2622,11 @@ void InkMODWebServer::handleFontUploadData() {
       if (fontUpload.file) {
         fontUpload.file.close();
       }
-      if (!fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
+      if (!fontUpload.tempPath.empty()) {
+        Storage.remove(fontUpload.tempPath.c_str());
       }
       fontUpload.valid = false;
+      fontUpload.releaseBuffer();
       LOG_DBG("WEB", "Font upload aborted");
       break;
     }
@@ -2362,7 +2639,12 @@ void InkMODWebServer::handleFontUpload() {
     server->send(200, "application/json", "{\"ok\":true}");
     LOG_DBG("WEB", "Font upload complete: %s", fontUpload.filePath.c_str());
   } else {
-    server->send(400, "application/json", "{\"error\":\"Invalid .cpfont file\"}");
+    const char* msg = fontUpload.error.empty() ? "Invalid .cpfont / .ttf / .otf file" : fontUpload.error.c_str();
+    JsonDocument errDoc;
+    errDoc["error"] = msg;
+    String errJson;
+    serializeJson(errDoc, errJson);
+    server->send(400, "application/json", errJson);
   }
 }
 

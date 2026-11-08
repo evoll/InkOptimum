@@ -114,7 +114,13 @@ class SdCardFont {
   // Used to generate deterministic font IDs for section cache invalidation.
   uint32_t contentHash() const { return contentHash_; }
 
+  // Bumped whenever the prewarmed glyph cache is dropped, so a caller that remembers what it prewarmed
+  // can tell that the memory is gone.
+  uint32_t cacheGeneration() const { return cacheGeneration_; }
+
  private:
+  uint32_t cacheGeneration_ = 0;
+
   // Per-style metadata (parsed from file header/TOC)
   struct CpFontHeader {
     uint32_t intervalCount = 0;
@@ -234,6 +240,8 @@ class SdCardFont {
 
   Stats stats_;
   uint32_t contentHash_ = 0;
+  uint32_t fileSize_ = 0;  // bounds glyph bitmap offsets (glyphEntryValid)
+  uint8_t corruptGlyphsLogged_ = 0;
   bool loaded_ = false;
 
   // Per-style helpers
@@ -246,6 +254,9 @@ class SdCardFont {
   void applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const;
   void applyGlyphMissCallback(uint8_t styleIdx);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
+  // False for a glyph entry the file cannot back (a corrupt .cpfont): its data length must be the packed
+  // size of its pixels and its bitmap must lie inside the file. Logs the first few per font.
+  bool glyphEntryValid(const PerStyle& s, const EpdGlyph& glyph, uint32_t codepoint);
   int fetchAdvancesForCodepoints(uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
   template <typename Iter>
   int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask);

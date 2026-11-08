@@ -66,7 +66,7 @@ class KeyboardEntryActivity : public Activity {
   int selectedRow = 0;
   int selectedCol = 0;
   int shiftState = 0;
-  enum class Language : uint8_t { English, Russian, Ukrainian };
+  enum class Language : uint8_t { English, Russian };
   Language language = Language::English;
   char selectedAsciiKey[2] = {'\0', '\0'};
   bool symMode = false;

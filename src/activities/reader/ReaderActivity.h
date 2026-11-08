@@ -13,11 +13,15 @@ class ReaderActivity final : public Activity {
   std::string initialBookPath;
   std::string currentBookPath;  // Track current book path for navigation
   bool suppressInitialBackRelease = false;
+  static std::string lastProtectionError;
+  void showProtectionError();
   static std::unique_ptr<Epub> loadEpub(const std::string& path, const std::function<void(uint8_t)>& onProgress);
   static std::unique_ptr<Xtc> loadXtc(const std::string& path);
   static std::unique_ptr<Txt> loadTxt(const std::string& path);
   static bool isXtcFile(const std::string& path);
   static bool isTxtFile(const std::string& path);
+  static bool isMarkdownFile(const std::string& path);
+  static bool isDocxFile(const std::string& path);
   // Whether to paint the "Loading" popup on entry. Skipped for already-cached
   // EPUBs, whose open is ~ms and would otherwise cost an extra full e-ink
   // refresh before the reader paints its first page.

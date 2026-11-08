@@ -55,8 +55,8 @@ void popPathComponent(std::string& result) {
 }
 }  // namespace
 
-std::string decodeUriEscapes(const std::string_view path) {
-  std::string decoded;
+void decodeUriEscapes(const std::string_view path, std::string& decoded) {
+  decoded.clear();
   decoded.reserve(path.size());
 
   for (size_t i = 0; i < path.size(); i++) {
@@ -69,17 +69,21 @@ std::string decodeUriEscapes(const std::string_view path) {
 
     decoded += path[i];
   }
+}
 
+std::string decodeUriEscapes(const std::string_view path) {
+  std::string decoded;
+  decodeUriEscapes(path, decoded);
   return decoded;
 }
 
-std::string normalisePath(const std::string_view path) {
+void normalisePath(const std::string_view path, std::string& result) {
   // Build the normalized path directly in one reserved string. The previous
   // implementation allocated a vector plus a separate std::string for every
   // component, which made this very common EPUB helper unnecessarily heap-heavy.
   // Preserve its exact legacy semantics: ".." is resolved only when it is
   // followed by '/', while a trailing ".." remains a literal component.
-  std::string result;
+  result.clear();
   result.reserve(path.size());
 
   size_t componentStart = 0;
@@ -101,7 +105,11 @@ std::string normalisePath(const std::string_view path) {
   if (componentStart < path.size()) {
     appendPathComponent(result, path.data() + componentStart, path.size() - componentStart);
   }
+}
 
+std::string normalisePath(const std::string_view path) {
+  std::string result;
+  normalisePath(path, result);
   return result;
 }
 
@@ -178,7 +186,16 @@ bool hasXtcExtension(std::string_view fileName) {
 
 bool hasTxtExtension(std::string_view fileName) { return checkLiteralExtension(fileName, ".txt"); }
 
-bool hasMarkdownExtension(std::string_view fileName) { return checkLiteralExtension(fileName, ".md"); }
+bool hasMarkdownExtension(std::string_view fileName) {
+  return checkLiteralExtension(fileName, ".md") || checkLiteralExtension(fileName, ".markdown");
+}
+
+bool hasConvertedBookExtension(std::string_view fileName) {
+  return checkLiteralExtension(fileName, ".html") || checkLiteralExtension(fileName, ".htm") ||
+         checkLiteralExtension(fileName, ".xhtml") || checkLiteralExtension(fileName, ".rtf") ||
+         checkLiteralExtension(fileName, ".mobi") || checkLiteralExtension(fileName, ".azw") ||
+         checkLiteralExtension(fileName, ".azw3") || checkLiteralExtension(fileName, ".prc");
+}
 
 bool hasCssExtension(std::string_view fileName) { return checkLiteralExtension(fileName, ".css"); }
 

@@ -22,6 +22,7 @@ class BookmarksHomeActivity final : public Activity {
   bool longPressOpenHandled = false;
   ButtonNavigator buttonNavigator;
 
+  int rowCount() const;
   void reloadBookmarks();
   void openBookmarkList(int bookIndex);
   void showBookmarkBookActionMenu(int bookIndex, bool ignoreInitialConfirmRelease = false);

@@ -17,6 +17,12 @@ struct OpdsServer {
   std::string username;
   std::string password;  // Plaintext in memory; obfuscated with hardware key on disk
   OpdsFilenameFormat filenameFormat = OpdsFilenameFormat::AUTHOR_TITLE;
+  // Optional HTTP identity (see lib/OpdsProfile). Empty = the firmware default.
+  std::string userAgent;
+  std::string customHeader;  // "Name: value", validated by opds_profile::parseHeaderLine
+  // Optional SD folder for downloads from this server (sanitised by opds_profile::sanitizeDownloadFolder).
+  // Empty = "/My downloads".
+  std::string downloadFolder;
 };
 
 class OpdsServerStore;

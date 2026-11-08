@@ -1,10 +1,13 @@
 #include "Utf8.h"
 
+#include "GlyphKey.h"
+
 int utf8CodepointLen(const unsigned char c) {
   if (c < 0x80) return 1;          // 0xxxxxxx
   if ((c >> 5) == 0x6) return 2;   // 110xxxxx
   if ((c >> 4) == 0xE) return 3;   // 1110xxxx
   if ((c >> 3) == 0x1E) return 4;  // 11110xxx
+  if (c == 0xFD) return 6;         // 1111110x: a glyph key (GlyphKey.h), the six-byte form
   return 1;                        // fallback for invalid
 }
 
@@ -44,6 +47,16 @@ uint32_t utf8NextCodepoint(const unsigned char** string) {
   }
 
   // Reject overlong encodings, surrogates, and out-of-range values
+  // Glyph keys: only the six-byte form, and only a value that is one.
+  if (bytes == 6) {
+    if (!glyphkey::isKey(cp)) {
+      (*string)++;
+      return REPLACEMENT_GLYPH;
+    }
+    *string += 6;
+    return cp;
+  }
+
   const bool overlong = (bytes == 2 && cp < 0x80) || (bytes == 3 && cp < 0x800) || (bytes == 4 && cp < 0x10000);
   const bool surrogate = (cp >= 0xD800 && cp <= 0xDFFF);
   if (overlong || surrogate || cp > 0x10FFFF) {
@@ -66,6 +79,9 @@ void utf8AppendCodepoint(uint32_t cp, std::string& out) {
     out += static_cast<char>(0xE0 | (cp >> 12));
     out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
     out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (glyphkey::isKey(cp)) {
+    out += static_cast<char>(0xFC | (cp >> 30));
+    for (int shift = 24; shift >= 0; shift -= 6) out += static_cast<char>(0x80 | ((cp >> shift) & 0x3F));
   } else {
     out += static_cast<char>(0xF0 | (cp >> 18));
     out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));

@@ -8,8 +8,12 @@
 namespace FsHelpers {
 
 std::string decodeUriEscapes(std::string_view path);
+// Same, into a string the caller keeps between calls (its capacity is reused, its old content replaced).
+void decodeUriEscapes(std::string_view path, std::string& out);
 
 std::string normalisePath(std::string_view path);
+// Same, into a string the caller keeps between calls. `out` must not alias `path`.
+void normalisePath(std::string_view path, std::string& out);
 
 void sortFileList(std::vector<std::string>& strs);
 
@@ -59,6 +63,13 @@ inline bool hasTxtExtension(const String& fileName) {
 
 // Check for .md extension (case-insensitive)
 bool hasMarkdownExtension(std::string_view fileName);
+
+// Books the FB2 class reads besides .fb2/.fb3/.docx: .html/.htm/.xhtml, .rtf and
+// .mobi/.azw/.azw3/.prc (case-insensitive).
+bool hasConvertedBookExtension(std::string_view fileName);
+inline bool hasConvertedBookExtension(const String& fileName) {
+  return hasConvertedBookExtension(std::string_view{fileName.c_str(), fileName.length()});
+}
 
 // Check for .css extension (case-insensitive)
 bool hasCssExtension(std::string_view fileName);

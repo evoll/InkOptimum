@@ -1,0 +1,4 @@
+add_executable(DictArticlesTest DictArticlesTest.cpp)
+target_include_directories(DictArticlesTest PRIVATE ${REPO_ROOT}/lib/DictArticles)
+target_link_libraries(DictArticlesTest PRIVATE inkmod_test_common GTest::gtest_main)
+gtest_discover_tests(DictArticlesTest)

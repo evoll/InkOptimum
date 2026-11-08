@@ -1,0 +1,7 @@
+{
+  "title": "Dropbox",
+  "version": "1.0.0",
+  "author": "inkMOD",
+  "description": "Browse your Dropbox folders and download books to the SD card (browser page, device relays the traffic).",
+  "mount": "plugins"
+}

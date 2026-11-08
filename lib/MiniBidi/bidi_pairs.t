@@ -1,4 +1,4 @@
-/* bidi_pairs.t — unified mirror + bracket table for InkMOD.
+/* bidi_pairs.t — unified mirror + bracket table for CrossPoint.
  *
  * Replaces both mirroring.t and brackets.t.  canonical.t is dropped
  * (fullwidth brackets are not used in Hebrew epub content).

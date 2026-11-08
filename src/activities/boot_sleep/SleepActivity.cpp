@@ -359,22 +359,15 @@ bool tryOpenSleepDirectory(FsFile& dir, std::string& sleepDir, const std::string
   return false;
 }
 
-bool openPreferredSleepDirectory(FsFile& dir, std::string& sleepDir) {
-  sleepDir.clear();
-
-  if (tryOpenSleepDirectory(dir, sleepDir, APP_STATE.preferredSleepFolderPath)) {
-    return true;
+// The sleep folders to try, in order: the one the user picked, then "/.sleep", then "/sleep". A folder that
+// exists but holds no usable image no longer hides the next one (an empty /.sleep left /sleep unused).
+std::vector<std::string> sleepDirectoryCandidates() {
+  std::vector<std::string> candidates;
+  if (!APP_STATE.preferredSleepFolderPath.empty()) candidates.push_back(APP_STATE.preferredSleepFolderPath);
+  for (const char* fixed : {"/.sleep", "/sleep"}) {
+    if (std::find(candidates.begin(), candidates.end(), fixed) == candidates.end()) candidates.emplace_back(fixed);
   }
-
-  if (!APP_STATE.preferredSleepFolderPath.empty()) {
-    LOG_INF("SLP", "Preferred sleep folder missing, falling back: %s", APP_STATE.preferredSleepFolderPath.c_str());
-  }
-
-  if (tryOpenSleepDirectory(dir, sleepDir, "/.sleep")) {
-    return true;
-  }
-
-  return tryOpenSleepDirectory(dir, sleepDir, "/sleep");
+  return candidates;
 }
 
 bool selectPinnedSleepImage(SleepImageMode mode, const std::string& favorite, SleepImageSelection& selection) {
@@ -404,18 +397,14 @@ bool selectPinnedSleepImage(SleepImageMode mode, const std::string& favorite, Sl
   return false;
 }
 
-bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection) {
-  (void)mode;
+// The usable BMP/PNG files of one sleep folder, by name. Returns false when the folder cannot be opened.
+bool collectSleepFiles(const std::string& sleepDir, std::vector<std::string>& files) {
   FsFile dir;
-  std::string sleepDir;
-  if (!openPreferredSleepDirectory(dir, sleepDir)) {
-    return false;
-  }
-
-  const bool allowPng = true;
-  std::vector<std::string> files;
+  std::string openedDir;
+  if (!tryOpenSleepDirectory(dir, openedDir, sleepDir)) return false;
+  files.clear();
   files.reserve(16);
-  char name[500];
+  char name[256];  // FAT long file names are at most 255 characters
   for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     if (file.isDirectory()) {
       file.close();
@@ -430,7 +419,7 @@ bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection)
     }
 
     const bool isBmp = FsHelpers::hasBmpExtension(filename);
-    const bool isPng = allowPng && FsHelpers::hasPngExtension(filename);
+    const bool isPng = FsHelpers::hasPngExtension(filename);
     if (!isBmp && !isPng) {
       file.close();
       continue;
@@ -451,6 +440,25 @@ bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection)
     file.close();
   }
   dir.close();
+  return true;
+}
+
+bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection) {
+  (void)mode;
+  std::string sleepDir;
+  std::vector<std::string> files;
+  for (const auto& candidate : sleepDirectoryCandidates()) {
+    if (!collectSleepFiles(candidate, files)) {
+      if (candidate == APP_STATE.preferredSleepFolderPath) {
+        LOG_INF("SLP", "Preferred sleep folder missing, falling back: %s", candidate.c_str());
+      }
+      continue;
+    }
+    if (!files.empty()) {
+      sleepDir = candidate;
+      break;
+    }
+  }
 
   if (files.empty()) {
     return false;
@@ -536,6 +544,7 @@ void SleepActivity::onEnter() {
     case (InkMODSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       return renderCoverSleepScreen();
     case (InkMODSettings::SLEEP_SCREEN_MODE::OVERLAY):
+    case (InkMODSettings::SLEEP_SCREEN_MODE::COVER_OVERLAY):
       return renderOverlaySleepScreen();
     case (InkMODSettings::SLEEP_SCREEN_MODE::READING_STATS_SLEEP):
       return renderReadingStatsSleepScreen();
@@ -1366,13 +1375,71 @@ void SleepActivity::renderBlankSleepScreen() const {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
+// Paints the last book's cover into the frame buffer (black and white, fitted or cropped like the cover sleep
+// screen) without refreshing the display. False when the book has no usable cover.
+bool SleepActivity::drawCoverBackground() const {
+  const std::string& bookPath = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  if (bookPath.empty()) return false;
+
+  const bool cropped = SETTINGS.sleepScreenCoverMode == InkMODSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  auto tryDraw = [&](const std::string& coverPath) -> bool {
+    if (coverPath.empty() || !Storage.exists(coverPath.c_str())) return false;
+    FsFile file;
+    if (!Storage.openFileForRead("SLP", coverPath, file)) return false;
+    Bitmap bitmap(file);
+    if (bitmap.parseHeaders() != BmpReaderError::Ok) return false;
+
+    int x = (pageWidth - bitmap.getWidth()) / 2;
+    int y = (pageHeight - bitmap.getHeight()) / 2;
+    float cropX = 0, cropY = 0;
+    if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
+      float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+      const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
+      if (ratio > screenRatio) {
+        if (cropped) {
+          cropX = 1.0f - (screenRatio / ratio);
+          ratio = (1.0f - cropX) * static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
+        }
+        x = 0;
+        y = std::round((static_cast<float>(pageHeight) - static_cast<float>(pageWidth) / ratio) / 2);
+      } else {
+        if (cropped) {
+          cropY = 1.0f - (ratio / screenRatio);
+          ratio = static_cast<float>(bitmap.getWidth()) / ((1.0f - cropY) * static_cast<float>(bitmap.getHeight()));
+        }
+        x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
+        y = 0;
+      }
+    }
+    renderer.clearScreen(0xFF);
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    if (SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+      renderer.invertScreen();
+    }
+    return true;
+  };
+
+  if (tryDraw(SleepCoverAssets::cachedCoverPathFor(bookPath, cropped))) return true;
+  if (SleepCoverAssets::prepareFullCoverForPath(bookPath, cropped) &&
+      tryDraw(SleepCoverAssets::cachedCoverPathFor(bookPath, cropped))) {
+    return true;
+  }
+  return tryDraw(SleepCoverAssets::cachedCoverPathFor(bookPath, !cropped)) ||
+         tryDraw(SleepCoverAssets::reusableCoverPathFor(bookPath));
+}
+
 void SleepActivity::renderOverlaySleepScreen() const {
   // Overlay pictures always use portrait orientation regardless of the reader's orientation preference.
   const auto savedOrientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Portrait);
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  const bool shouldUseReaderPageBackground = canSnapshotOverlayBackground;
+  // "Cover + Overlay" puts the overlay picture over the book cover instead of the page that was on screen.
+  const bool coverBackground = SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER_OVERLAY;
+  const bool shouldUseReaderPageBackground = canSnapshotOverlayBackground && !coverBackground;
   const std::string path = shouldUseReaderPageBackground
                                ? (currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath)
                                : std::string{};
@@ -1400,7 +1467,10 @@ void SleepActivity::renderOverlaySleepScreen() const {
 
   // Step 1: Restore the screen that was visible before the sleep popup. When
   // that snapshot is unavailable in the reader, rebuild from the saved position.
-  if (overlayBackgroundBufferStored) {
+  if (coverBackground) {
+    backgroundAvailable = drawCoverBackground();
+    if (!backgroundAvailable) renderer.clearScreen();
+  } else if (overlayBackgroundBufferStored) {
     renderer.restoreBwBuffer();
     backgroundAvailable = true;
   } else if (shouldUseReaderPageBackground && !path.empty()) {

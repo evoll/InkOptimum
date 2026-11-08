@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "VectorFontSupport.h"
+
 struct SdCardFontFileInfo {
   std::string path;   // v4 on-disk naming: "/<root>/<Family>/<Family>_<size>.cpfont"
                       // where <root> is "/.fonts" (preferred, hidden) or "/fonts" (visible).
@@ -17,6 +19,13 @@ struct SdCardFontFamilyInfo {
   std::string name;  // directory name, e.g. "NotoSansCJK"
   std::vector<SdCardFontFileInfo> files;
 
+  // TrueType/OpenType family (.ttf/.otf/.ttc in the family folder; PSRAM boards only). It renders at
+  // any size, so `files` holds one synthetic entry per selectable point size (all pointing at the
+  // regular file) and the size UI / selectFile() work unchanged. `vectorPaths` is indexed by style
+  // role: 0=regular 1=bold 2=italic 3=bold-italic (empty = not supplied; regular is always set).
+  bool vector = false;
+  std::string vectorPaths[4];
+
   const SdCardFontFileInfo* findFile(uint8_t size, uint8_t style = 0) const;
   const SdCardFontFileInfo* findClosestFile(uint8_t targetSize, uint8_t style = 0) const;
   const SdCardFontFileInfo* selectFile(uint8_t targetSize, uint8_t sizeStep, uint8_t style = 0) const;
@@ -26,6 +35,9 @@ struct SdCardFontFamilyInfo {
 
 class SdCardFontRegistry {
  public:
+  // Selectable reader sizes for vector families (points at 150 DPI, like the .cpfont files).
+  static constexpr uint8_t VECTOR_POINT_SIZES[] = {10, 12, 14, 16, 18, 20, 22, 24};
+
   static constexpr int MAX_SD_FAMILIES = 128;
   // Two top-level roots are scanned at discovery time. Hidden is preferred
   // when creating new installs; both are read from if present.
@@ -52,6 +64,9 @@ class SdCardFontRegistry {
 
  private:
   std::vector<SdCardFontFamilyInfo> families_;  // sorted alphabetically
+
+  static bool parseVectorFontName(const char* filename, size_t& baseLen);
+  static uint8_t parseVectorStyle(const char* baseName, size_t baseLen);
 
   static bool parseFilename(const char* filename, uint8_t& size, uint8_t& style);
   static void scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family);

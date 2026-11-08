@@ -6,8 +6,11 @@
 class OtaUpdater {
   bool updateAvailable = false;
   std::string latestVersion;
+  std::string releaseName;
+  std::string releaseNotes;
   std::string otaUrl;
   std::string otaDigest;
+  std::string otaSigUrl;  // "<asset>.sig" of the release, when it has one
   size_t otaSize = 0;
   size_t processedSize = 0;
   size_t totalSize = 0;
@@ -24,6 +27,7 @@ class OtaUpdater {
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
     CANCELLED_ERROR,
+    SIGNATURE_ERROR,  // a signing key is configured and the image has no valid signature
   };
 
   size_t getOtaSize() const { return otaSize; }
@@ -35,6 +39,9 @@ class OtaUpdater {
   OtaUpdater() = default;
   bool isUpdateNewer() const;
   const std::string& getLatestVersion() const;
+  // Title and the beginning of the release notes of the latest release (may be empty).
+  const std::string& getReleaseName() const { return releaseName; }
+  const std::string& getReleaseNotes() const { return releaseNotes; }
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr,
                                 std::atomic<bool>* cancelRequested = nullptr);

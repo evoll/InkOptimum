@@ -21,6 +21,10 @@ class TocNcxParser final : public Print {
   // TOC entry in books with large navigation maps.
   std::string currentTarget;
   std::string currentAnchor;
+  // Scratch for the decode and normalise steps, kept across entries: a large NCX is one entry after another
+  // and each used to allocate a few strings.
+  std::string decodedTarget;
+  std::string normalisedHref;
   uint8_t currentDepth = 0;
 
   static void startElement(void* userData, const XML_Char* name, const XML_Char** atts);

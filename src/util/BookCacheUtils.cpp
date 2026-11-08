@@ -46,6 +46,11 @@ bool hasFb2LikeExtension(const std::string& path) {
   }
   return (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".fb2") == 0) ||
          (lower.size() >= 8 && lower.compare(lower.size() - 8, 8, ".fb2.zip") == 0) ||
+         (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".fb3") == 0) ||
+         (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, ".docx") == 0) ||
+         FsHelpers::hasConvertedBookExtension(lower) ||
+         (lower.size() >= 3 && lower.compare(lower.size() - 3, 3, ".md") == 0) ||
+         (lower.size() >= 9 && lower.compare(lower.size() - 9, 9, ".markdown") == 0) ||
          (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".zip") == 0);
 }
 

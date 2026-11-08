@@ -23,7 +23,10 @@ const LgfxEpdPowerHooks* g_hooks = nullptr;
 
 // Bus subclass that defers the board's power topology to injected hooks. Matches
 // the two override points LovyanGFX exposes: init() (pin setup) and
-// powerControl() (rail up/down), guarding the _pwr_on state itself.
+// powerControl() (rail up/down), guarding the _pwr_on state itself. A board
+// whose rails are plain GPIOs (pinOe/pinPwr/pinSpv, e.g. M5Stack PaperS3) leaves
+// the corresponding hook null and gets Bus_EPD's stock power sequence instead;
+// a board with external power silicon (LilyGo's TPS65185 + PCA9535) hooks it.
 class FreeInkBusEPD : public lgfx::Bus_EPD {
  public:
   bool init() override {
@@ -33,13 +36,15 @@ class FreeInkBusEPD : public lgfx::Bus_EPD {
 
   bool powerControl(const bool powerOn) override {
     if (_pwr_on == powerOn) return true;
+    const bool hooked = g_hooks && (powerOn ? g_hooks->powerOn != nullptr : g_hooks->powerOff != nullptr);
+    if (!hooked) return lgfx::Bus_EPD::powerControl(powerOn);
     wait();
     if (powerOn) {
-      if (g_hooks && g_hooks->powerOn && !g_hooks->powerOn()) return false;
+      if (!g_hooks->powerOn()) return false;
       _pwr_on = true;
       return true;
     }
-    if (g_hooks && g_hooks->powerOff) g_hooks->powerOff();
+    g_hooks->powerOff();
     _pwr_on = false;
     return true;
   }
@@ -102,9 +107,32 @@ class FreeInkLgfxEpd : public lgfx::LGFX_Device {
 
 FreeInkLgfxEpd g_dev;
 
+// Set from the active config in begin(); see
+// LgfxEpdConfig::cleanBankNeedsFreshBackground for the panel property it names.
+bool g_cleanBankNeedsFreshBackground = false;
+
+// Whether the fastest slot holds a bank that drives nothing: a single 0u word.
+//
+// Derived from the config rather than declared by the board, because it IS the
+// config -- a board that parks a real waveform there simply does not qualify and
+// pays for the fallback in normalizeForCleanBank(). Set in begin().
+bool g_noDriveBankAvailable = false;
+
+// Whether the refresh this driver queued last went out through the clean bank.
+// g_lastBaseEpdMode is that history already, so this reads it rather than keeping
+// a second flag that could disagree with it.
+bool lastPushUsedCleanBank();
+
+// Which LovyanGFX bank each of our three refresh modes goes out under.
+//
+// Half and Full both take the clean bank, and neither is ever downgraded: they
+// are the modes whose purpose is to scrub, and a host spends them on exactly the
+// transitions where a differential refresh is the wrong answer. Where the panel
+// needs the background made fresh first, normalizeForCleanBank() does that
+// without changing which bank the refresh itself uses.
 lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   switch (m) {
-    case RefreshMode::Full: return lgfx::epd_mode::epd_text;
+    case RefreshMode::Full:
     case RefreshMode::Half: return lgfx::epd_mode::epd_text;
     default: return lgfx::epd_mode::epd_fast;
   }
@@ -118,17 +146,6 @@ uint8_t* g_msb = nullptr;
 uint16_t g_w = 0, g_h = 0, g_wb = 0;
 
 constexpr uint8_t kGrayBlack = 0x00, kGrayDark = 0x55, kGrayLight = 0xAA, kGrayWhite = 0xFF;
-
-// (base, lsb, msb) per pixel -> 4 gray levels, matching the reference port: a set
-// base bit is white; otherwise msb/lsb pick light/dark; clear is black.
-inline uint8_t grayValue(uint8_t base, uint8_t lsb, uint8_t msb, uint8_t mask) {
-  if (base & mask) return kGrayWhite;
-  const bool l = lsb & mask, m = msb & mask;
-  if (m && l) return kGrayDark;
-  if (m) return kGrayLight;
-  if (l) return kGrayDark;
-  return kGrayBlack;
-}
 
 void allocCanvas(uint16_t w, uint16_t h) {
   g_w = w;
@@ -160,24 +177,50 @@ void fillCanvasBW(const uint8_t* fb) {
   }
 }
 
-// Combine the B/W base + buffered LSB/MSB planes into the 8-bit gray canvas.
-void fillCanvasGray(const uint8_t* base) {
+// Overlay the buffered LSB/MSB planes onto the B/W canvas the base push left
+// behind, darkening only the pixels a plane actually selects.
+//
+// This used to take the base frame as an argument and rebuild every pixel from
+// it. That looked reasonable but could not work: displayGray() is handed
+// FreeInkDisplay::frameBuffer, and the host's plane dance (clear to 0x00, render
+// text-only, copy the plane out, call displayGray) leaves the LAST PLANE there,
+// not the page. Ssd1677Driver::displayGray() opens with `(void)fb` -- its planes
+// are already in controller RAM and the panel retains the B/W image -- so nothing
+// ever noticed that the buffer held a plane. Here it painted the whole background
+// black and left only the anti-aliased marks standing.
+//
+// The canvas already holds the B/W frame from the base push and is not cleared by
+// pushSprite(), so it IS the base. Reading it instead of a caller-supplied pointer
+// removes the ambiguity rather than relying on the caller to resolve it.
+void overlayCanvasGray() {
   if (!g_canvas || !g_lsb || !g_msb) return;
   auto* dst = static_cast<uint8_t*>(g_canvas->getBuffer());
   if (!dst) return;
   for (uint16_t y = 0; y < g_h; ++y) {
-    const uint8_t* brow = base + static_cast<uint32_t>(y) * g_wb;
     const uint8_t* lrow = g_lsb + static_cast<uint32_t>(y) * g_wb;
     const uint8_t* mrow = g_msb + static_cast<uint32_t>(y) * g_wb;
     uint8_t* drow = dst + static_cast<uint32_t>(y) * g_w;
     for (uint16_t bx = 0; bx < g_wb; ++bx) {
+      const uint8_t l = lrow[bx], m = mrow[bx];
+      if ((l | m) == 0) continue;  // no selector bits in this byte — leave the B/W run alone
       for (uint8_t bit = 0; bit < 8; ++bit) {
         const uint8_t mask = 0x80 >> bit;
-        drow[bx * 8 + bit] = grayValue(brow[bx], lrow[bx], mrow[bx], mask);
+        const bool lb = (l & mask) != 0, mb = (m & mask) != 0;
+        if (!lb && !mb) continue;
+        drow[bx * 8 + bit] = mb && !lb ? kGrayLight : kGrayDark;
       }
     }
   }
 }
+
+// The epd_mode of the last base push. Panel_EPD's per-pixel diff keys on the
+// epd_mode LUT offset, so the grayscale overlay must be pushed with the SAME mode
+// the base used or every pixel is re-driven (a full-screen flash). displayGray()
+// used to hardcode epd_fast while display() maps HALF/FULL to epd_text, so any
+// page refreshed with those modes flashed when its AA pass ran.
+lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
+
+bool lastPushUsedCleanBank() { return g_lastBaseEpdMode == lgfx::epd_mode::epd_text; }
 
 void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   if (!g_canvas) return;
@@ -185,6 +228,48 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
   g_dev.waitDisplay();
+}
+
+// Re-tag every pixel so the clean-bank refresh that follows scrubs the whole
+// screen rather than only the ink.
+//
+// Panel_EPD's epd_text branch skips a pixel that is already requested white under
+// that same bank, and `white` embeds the bank's LUT offset -- so the condition is
+// cleared for every pixel at once by one full-screen write through ANY OTHER
+// bank. Nothing has to reach the glass; only the offset stored in the reserved
+// half of _step_framebuf has to change.
+//
+// That is what makes a no-drive bank the right instrument. blit_dmabuf treats a
+// zero LUT entry as "this pixel is finished" -- it loads the reserved request and
+// marks the pixel idle instead of driving it -- so a bank that is a single 0u
+// word is a complete refresh that takes ONE frame and never touches the ink,
+// while still leaving its own offset behind. Measured at 187 ms on an ED047TC2
+// against 1239 ms for a full differential refresh, and invisible on the glass.
+//
+// It has to be epd_fastest rather than epd_quality, even though both slots tend
+// to be spare. The fast modes take the flg_fast branch, which writes
+// d[0] = s0 - 0x8000 and goes straight to the bank; the others prepend
+// lut_eraser, so the pixel would run the eraser's two-frame nudge and then stop
+// with nothing driving it home -- a half-inverted screen that never resolves.
+//
+// A board with no such slot drives the white rail through the differential bank
+// instead: a real refresh, so a real cost, but known-good (it is the drive every
+// page turn makes) and on the glass it reads as the white flash a scrub is
+// expected to open with.
+//
+// Either way this writes the panel's own buffer and not the canvas, so the frame
+// the caller is about to push survives untouched.
+void normalizeForCleanBank() {
+  if (!g_cleanBankNeedsFreshBackground || !lastPushUsedCleanBank()) return;
+  const auto bank = g_noDriveBankAvailable ? lgfx::epd_mode::epd_fastest : lgfx::epd_mode::epd_fast;
+  g_dev.waitDisplay();
+  g_dev.setEpdMode(bank);
+  g_dev.setAutoDisplay(false);
+  g_dev.fillScreen(g_dev.color888(255, 255, 255));
+  g_dev.setAutoDisplay(true);
+  g_dev.display();  // covers the rect fillScreen accumulated
+  g_dev.waitDisplay();
+  g_lastBaseEpdMode = bank;
 }
 
 }  // namespace
@@ -207,6 +292,8 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_dev.init();
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  g_cleanBankNeedsFreshBackground = _cfg.cleanBankNeedsFreshBackground;
+  g_noDriveBankAvailable = _cfg.lutFastest != nullptr && _cfg.lutFastestStep == 1 && _cfg.lutFastest[0] == 0u;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 #endif
 }
@@ -215,8 +302,11 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)bus;
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
-  fillCanvasBW(fb);          // expand the 1-bpp frame into the gray canvas
-  pushCanvas(epdModeFor(mode));
+  fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
+  const auto epdMode = epdModeFor(mode);
+  if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
+  g_lastBaseEpdMode = epdMode;
+  pushCanvas(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
@@ -265,12 +355,14 @@ void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   (void)lut;
   (void)factoryMode;
 #if FREEINK_DRIVER_LGFX_EPD
-  fillCanvasGray(fb);  // combine base + LSB/MSB planes -> 4-level gray
-  // Same mode as the B/W base push: Panel_EPD's per-pixel diff keys on the
-  // epd_mode LUT offset, so switching modes here would re-drive every pixel
-  // (full-screen inversion flash). The board's fast LUT carries both the B/W
-  // drive and the AA gray-nudge columns, so one mode serves both pushes.
-  pushCanvas(lgfx::epd_mode::epd_fast);
+  (void)fb;             // the canvas from the base push IS the base; see overlayCanvasGray()
+  overlayCanvasGray();  // darken only the pixels the planes select
+  // Same mode as the B/W base push, and now actually the same: Panel_EPD's
+  // per-pixel diff keys on the epd_mode LUT offset, so switching modes here
+  // re-drives every pixel (full-screen flash). This was hardcoded to epd_fast
+  // while display() maps HALF/FULL to epd_text, so a page refreshed with either
+  // of those flashed when its AA pass ran.
+  pushCanvas(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
@@ -298,12 +390,19 @@ void LgfxEpdDriver::deepSleep(EpdBus& bus) {
 // Per-board config injection. This driver has NO universal default — the bus pins
 // and power hooks are entirely board-specific — so a LilyGo-class board defines
 // `const LgfxEpdConfig& yourConfig();` in namespace freeink and builds with
-// -DFREEINK_LGFX_EPD_CONFIG=yourConfig. The SDK's LilyGo board-support library
-// provides the default config for FREEINK_DEVICE_LILYGO builds.
+// -DFREEINK_LGFX_EPD_CONFIG=yourConfig. The SDK's board-support libraries provide
+// the default configs for FREEINK_DEVICE_LILYGO (BoardT5S3) and
+// FREEINK_DEVICE_PAPERS3 (BoardPaperS3) builds.
 #if FREEINK_DEVICE_LILYGO
 const LgfxEpdConfig& lilygoT5S3LgfxConfig();
 PanelDriver& lgfxEpdDriver() {
   static LgfxEpdDriver instance(lilygoT5S3LgfxConfig());
+  return instance;
+}
+#elif FREEINK_DEVICE_PAPERS3 && !defined(FREEINK_LGFX_EPD_CONFIG)
+const LgfxEpdConfig& m5PaperS3LgfxConfig();
+PanelDriver& lgfxEpdDriver() {
+  static LgfxEpdDriver instance(m5PaperS3LgfxConfig());
   return instance;
 }
 #elif defined(FREEINK_LGFX_EPD_CONFIG)

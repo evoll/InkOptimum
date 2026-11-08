@@ -29,7 +29,6 @@ constexpr uint16_t PANEL_HEIGHT = 600;
 constexpr uint16_t REFRESH_CUTOFF_MS = 340;
 constexpr uint16_t BUSY_SETTLE_MS = 20;
 constexpr uint8_t DARK_DISPLAY_CTRL = 0x0F;
-constexpr uint32_t PANEL_AREA = static_cast<uint32_t>(PANEL_WIDTH) * PANEL_HEIGHT;
 
 }  // namespace
 
@@ -93,23 +92,23 @@ void Ed2208M5Driver::initController(EpdBus& bus) {
       0x84, 1, 0x01,
   };
 
-  bus.beginTxn();
   for (size_t i = 0; i < sizeof(initCommands);) {
     const uint8_t command = initCommands[i++];
     const uint8_t length = initCommands[i++];
     waitBusy(bus);
-    bus.rawCmd(command);
+    auto txn = bus.beginTxn();
+    txn.cmd(command);
     for (uint8_t j = 0; j < length; ++j) {
-      bus.rawData(initCommands[i++]);
+      txn.data(initCommands[i++]);
     }
   }
   waitBusy(bus);
-  bus.rawCmd(0x61);
-  bus.rawData(static_cast<uint8_t>((PANEL_WIDTH >> 8) & 0xFF));
-  bus.rawData(static_cast<uint8_t>(PANEL_WIDTH & 0xFF));
-  bus.rawData(static_cast<uint8_t>((PANEL_HEIGHT >> 8) & 0xFF));
-  bus.rawData(static_cast<uint8_t>(PANEL_HEIGHT & 0xFF));
-  bus.endTxn();
+  auto txn = bus.beginTxn();
+  txn.cmd(0x61);
+  txn.data(static_cast<uint8_t>((PANEL_WIDTH >> 8) & 0xFF));
+  txn.data(static_cast<uint8_t>(PANEL_WIDTH & 0xFF));
+  txn.data(static_cast<uint8_t>((PANEL_HEIGHT >> 8) & 0xFF));
+  txn.data(static_cast<uint8_t>(PANEL_HEIGHT & 0xFF));
 }
 
 void Ed2208M5Driver::begin(EpdBus& bus) {
@@ -139,8 +138,24 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
 #endif
   uint8_t packedRow[PANEL_WIDTH / 2];
 
-  bus.beginTxn();
-  bus.rawCmd(0x10);
+  // Accent recoloring rides complete waveforms only: an interrupted refresh
+  // cuts long before the color pigments settle, so there accented pixels stay
+  // plain ink and the accents show up when the standing image is rendered.
+  // Compact the active slots so the per-pixel loop only touches real planes.
+  const uint8_t* accents[MAX_ACCENT_PLANES];
+  uint8_t accentCodes[MAX_ACCENT_PLANES];
+  uint8_t accentCount = 0;
+  if (_completeNextRefresh) {
+    for (uint8_t s = 0; s < MAX_ACCENT_PLANES; ++s) {
+      if (_accentPlanes[s] == nullptr) continue;
+      accents[accentCount] = _accentPlanes[s];
+      accentCodes[accentCount] = _accentColors[s];
+      ++accentCount;
+    }
+  }
+
+  auto txn = bus.beginTxn();
+  txn.cmd(0x10);
   for (uint16_t panelY = 0; panelY < PANEL_HEIGHT; ++panelY) {
     for (uint16_t panelX = 0; panelX < PANEL_WIDTH; panelX += 2) {
       const uint16_t leftLogicalX = panelY;
@@ -154,15 +169,31 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
       const uint32_t rightOffset = static_cast<uint32_t>(rightLogicalY) * LOGICAL_WB;
       const bool rightWhite = (fb[rightOffset + (rightLogicalX >> 3)] >> (7 - (rightLogicalX & 7))) & 0x01;
 
-      packedRow[panelX >> 1] = static_cast<uint8_t>(((leftWhite ? EPD_WHITE : EPD_BLACK) << 4) |
-                                                    (rightWhite ? EPD_WHITE : EPD_BLACK));
+      uint8_t leftCode = leftWhite ? EPD_WHITE : EPD_BLACK;
+      uint8_t rightCode = rightWhite ? EPD_WHITE : EPD_BLACK;
+      if (!leftWhite) {
+        for (uint8_t s = 0; s < accentCount; ++s) {
+          if ((accents[s][leftOffset + (leftLogicalX >> 3)] >> (7 - (leftLogicalX & 7))) & 0x01) {
+            leftCode = accentCodes[s];
+            break;
+          }
+        }
+      }
+      if (!rightWhite) {
+        for (uint8_t s = 0; s < accentCount; ++s) {
+          if ((accents[s][rightOffset + (rightLogicalX >> 3)] >> (7 - (rightLogicalX & 7))) & 0x01) {
+            rightCode = accentCodes[s];
+            break;
+          }
+        }
+      }
+      packedRow[panelX >> 1] = static_cast<uint8_t>((leftCode << 4) | rightCode);
     }
-    bus.rawWriteBytes(packedRow, sizeof(packedRow));
+    txn.writeBytes(packedRow, sizeof(packedRow));
   }
-  bus.endTxn();
 }
 
-void Ed2208M5Driver::setPartialWindow(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+void Ed2208M5Driver::setPartialWindow(EpdBus::Transaction& txn, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
   if (w == 0 || h == 0) return;
   const uint16_t xEnd = static_cast<uint16_t>(x + w - 1);
   const uint16_t yEnd = static_cast<uint16_t>(y + h - 1);  // inclusive, matching xEnd
@@ -173,26 +204,26 @@ void Ed2208M5Driver::setPartialWindow(EpdBus& bus, uint16_t x, uint16_t y, uint1
       static_cast<uint8_t>(yEnd >> 8), static_cast<uint8_t>(yEnd & 0xFF),
       0x01,
   };
-  bus.rawCmd(0x83);
-  for (uint8_t v : window) bus.rawData(v);
+  txn.cmd(0x83);
+  for (uint8_t v : window) txn.data(v);
 }
 
 void Ed2208M5Driver::powerOn(EpdBus& bus) {
   if (_panelPowerOn) return;
-  bus.beginTxn();
-  bus.rawCmd(0x04);
+  auto txn = bus.beginTxn();
+  txn.cmd(0x04);
+  txn.end();
   waitBusy(bus);
-  bus.endTxn();
   _panelPowerOn = true;
 }
 
 void Ed2208M5Driver::powerOff(EpdBus& bus) {
   if (!_panelPowerOn) return;
-  bus.beginTxn();
-  bus.rawCmd(0x02);
-  bus.rawData(0x00);
+  auto txn = bus.beginTxn();
+  txn.cmd(0x02);
+  txn.data(0x00);
+  txn.end();
   waitBusy(bus);
-  bus.endTxn();
   _panelPowerOn = false;
 }
 
@@ -275,20 +306,20 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
   _completeNextRefresh = false;
   powerOn(bus);
 
-  bus.beginTxn();
-  bus.rawCmd(0x06);
-  bus.rawData(0x6F);
-  bus.rawData(0x1F);
-  bus.rawData(0x17);
-  bus.rawData(0x27);
-  setPartialWindow(bus, dirtyX, dirtyY, dirtyW, dirtyH);
-  bus.rawCmd(0x50);
+  auto txn = bus.beginTxn();
+  txn.cmd(0x06);
+  txn.data(0x6F);
+  txn.data(0x1F);
+  txn.data(0x17);
+  txn.data(0x27);
+  setPartialWindow(txn, dirtyX, dirtyY, dirtyW, dirtyH);
+  txn.cmd(0x50);
   // Complete refresh uses the vendor VCOM/CDI for full contrast; the fast
   // interrupt path keeps the dark-hack value.
-  bus.rawData(completeWaveform ? 0x3F : DARK_DISPLAY_CTRL);
-  bus.rawCmd(0x12);
-  bus.rawData(0x00);
-  bus.endTxn();
+  txn.data(completeWaveform ? 0x3F : DARK_DISPLAY_CTRL);
+  txn.cmd(0x12);
+  txn.data(0x00);
+  txn.end();
 
   if (completeWaveform) {
     // Run the full OTP waveform to completion. waitBusy()'s generic 100 ms
@@ -308,11 +339,11 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
       delay(10);
     }
     delay(BUSY_SETTLE_MS);
-    bus.beginTxn();
-    bus.rawCmd(0x02);  // POWER_OFF
-    bus.rawData(0x00);
+    auto powerOffTxn = bus.beginTxn();
+    powerOffTxn.cmd(0x02);  // POWER_OFF
+    powerOffTxn.data(0x00);
+    powerOffTxn.end();
     waitBusy(bus);
-    bus.endTxn();
     _panelPowerOn = false;
   } else {
     interruptRefresh(bus);
@@ -321,6 +352,11 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
 
 void Ed2208M5Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   if (!fb) return;
+
+  // Standing-image policy: promote Full to the complete OTP waveform. Set
+  // before writeFrame so the per-frame polarity pick (dark hack) and the
+  // accent plane both see it; refresh() consumes the flag as usual.
+  if (_fullCompletes && mode == RefreshMode::Full) _completeNextRefresh = true;
 
   uint16_t dirtyX = 0, dirtyY = 0, dirtyW = PANEL_WIDTH, dirtyH = PANEL_HEIGHT;
   const bool forceFullPanelRefresh = (mode == RefreshMode::Full);

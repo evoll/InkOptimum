@@ -21,6 +21,13 @@ class ImageBlock final : public Block {
   bool isEmpty() override { return false; }
 
   void render(GfxRenderer& renderer, const int x, const int y);
+  // Draws the image with its width and height traded: on a vertical page the block's size is the turned frame's, and
+  // the picture itself is drawn in the reader's frame.
+  void renderSwapped(GfxRenderer& renderer, const int x, const int y) {
+    std::swap(width, height);
+    render(renderer, x, y);
+    std::swap(width, height);
+  }
   bool serialize(HalFile& file);
   static std::unique_ptr<ImageBlock> deserialize(HalFile& file);
 

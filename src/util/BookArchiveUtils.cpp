@@ -72,16 +72,24 @@ BookArchiveType detectBookArchiveType(const std::string& path) {
     return BookArchiveType::Epub;
   }
 
+  // FB2 family: a zipped .fb2, a zipped .fb3 ("book.fb3.zip"), or an FB3 OPC
+  // package that was simply renamed to .zip. The last shape has no .fb3 entry,
+  // so recognise it by its OPC marker plus the conventional "fb3/" part folder;
+  // fb3::prepareSource() then verifies the real package structure.
   bool containsFb2 = false;
+  bool hasOpcContentTypes = false;
+  bool hasFb3Folder = false;
   unsigned epubEntries = 0;
   if (!zip.enumerateFilePaths([&](std::string_view entryPath) {
-        if (hasExtensionIgnoreCase(entryPath, ".fb2")) containsFb2 = true;
+        if (hasExtensionIgnoreCase(entryPath, ".fb2") || hasExtensionIgnoreCase(entryPath, ".fb3")) containsFb2 = true;
         if (hasExtensionIgnoreCase(entryPath, ".epub")) ++epubEntries;
+        if (hasExtensionIgnoreCase(entryPath, "[Content_Types].xml")) hasOpcContentTypes = true;
+        if (entryPath.size() > 4 && hasExtensionIgnoreCase(entryPath.substr(0, 4), "fb3/")) hasFb3Folder = true;
       })) {
     return BookArchiveType::None;
   }
 
-  if (containsFb2) return BookArchiveType::Fb2;
+  if (containsFb2 || (hasOpcContentTypes && hasFb3Folder)) return BookArchiveType::Fb2;
   if (epubEntries == 1) return BookArchiveType::WrappedEpub;
   return BookArchiveType::None;
 }

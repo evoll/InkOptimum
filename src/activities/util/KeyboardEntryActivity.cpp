@@ -48,16 +48,6 @@ constexpr const char* kRussianUpper[3][11] = {
     {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
     {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Ё", "Ъ"},
 };
-constexpr const char* kUkrainianLower[3][11] = {
-    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х"},
-    {"ф", "і", "в", "а", "п", "р", "о", "л", "д", "ж", "є"},
-    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "ґ", "ї"},
-};
-constexpr const char* kUkrainianUpper[3][11] = {
-    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х"},
-    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Є"},
-    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Ґ", "Ї"},
-};
 
 }  // namespace
 
@@ -72,15 +62,12 @@ void KeyboardEntryActivity::onEnter() {
   shiftState = 0;
   if (inputType == InputType::Url) {
     // URLs are ASCII-only in this keyboard. Do not inherit the UI language:
-    // that made an English QWERTY URL layout display the misleading "RU #"/"UK #" badge.
+    // that made an English QWERTY URL layout display the misleading "RU #" badge.
     language = Language::English;
   } else {
     switch (I18N.getLanguage()) {
       case ::Language::RU:
         language = Language::Russian;
-        break;
-      case ::Language::UK:
-        language = Language::Ukrainian;
         break;
       default:
         language = Language::English;
@@ -120,7 +107,6 @@ const char* KeyboardEntryActivity::keyLabel(const int row, const int col, const 
   if (!symMode && inputType != InputType::Url && row >= 1 && row <= 3 && col >= 0 && col < COLS) {
     const int languageRow = row - 1;
     if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
-    if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
   }
 
   const KeyDef& key = (symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout))[row][col];
@@ -146,17 +132,13 @@ const char* KeyboardEntryActivity::languageModeLabel() const {
   switch (language) {
     case Language::Russian:
       return "RU #";
-    case Language::Ukrainian:
-      return "UK #";
     default:
       return "EN #";
   }
 }
 
 void KeyboardEntryActivity::cycleLanguage() {
-  language = language == Language::English ? Language::Russian
-             : language == Language::Russian ? Language::Ukrainian
-                                              : Language::English;
+  language = language == Language::English ? Language::Russian : Language::English;
 }
 
 bool KeyboardEntryActivity::insertChar(char c) {

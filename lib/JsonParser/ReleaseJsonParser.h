@@ -24,6 +24,11 @@ class ReleaseJsonParser {
   const char* getFirmwareUrl() const;
   size_t getFirmwareSize() const;
   const char* getFirmwareDigest() const;
+  // Download URL of "<firmware asset>.sig" (the detached Ed25519 signature), "" when the release has none.
+  const char* getFirmwareSignatureUrl() const;
+  // Release title ("name") and the beginning of the release notes ("body"); empty when absent.
+  const char* getReleaseName() const;
+  const char* getReleaseNotes() const;
 
  private:
   enum class Position : uint8_t {
@@ -35,6 +40,8 @@ class ReleaseJsonParser {
   enum class LastKey : uint8_t {
     NONE,
     TAG_NAME,
+    RELEASE_NAME,
+    RELEASE_BODY,
     ASSETS,
     ASSET_NAME,
     ASSET_URL,
@@ -44,6 +51,7 @@ class ReleaseJsonParser {
 
   static void sOnKey(void* ctx, const char* key, size_t len);
   static void sOnString(void* ctx, const char* value, size_t len);
+  static void sOnStringPrefix(void* ctx, const char* value, size_t len);
   static void sOnNumber(void* ctx, const char* value, size_t len);
   static void sOnBool(void* ctx, bool value);
   static void sOnNull(void* ctx);
@@ -63,8 +71,11 @@ class ReleaseJsonParser {
   uint8_t assetDepth;
 
   char tagName[32];
+  char releaseName[64];
+  char releaseNotes[480];
   char firmwareUrl[512];
   char firmwareDigest[80];
+  char firmwareSigUrl[512];
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;

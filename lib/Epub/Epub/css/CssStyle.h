@@ -6,6 +6,8 @@
 enum class CssTextAlign : uint8_t { Justify = 0, Left = 1, Center = 2, Right = 3, None = 4 };
 enum class CssUnit : uint8_t { Pixels = 0, Em = 1, Rem = 2, Points = 3, Percent = 4 };
 enum class CssTextDirection : uint8_t { Ltr = 0, Rtl = 1 };
+// Only vertical-rl has a turned frame; vertical-lr is read as horizontal (the section stays horizontal-tb).
+enum class CssWritingMode : uint8_t { Unset = 0, HorizontalTb = 1, VerticalRl = 2, VerticalLr = 3 };
 
 // Represents a CSS length value with its unit, allowing deferred resolution to pixels
 struct CssLength {
@@ -68,6 +70,8 @@ struct CssPropertyFlags {
   uint32_t verticalAlign : 1;
   uint32_t direction : 1;
   uint32_t smallCaps : 1;
+  uint32_t hiddenText : 1;
+  uint32_t writingMode : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -90,19 +94,22 @@ struct CssPropertyFlags {
         backgroundBlack(0),
         verticalAlign(0),
         direction(0),
-        smallCaps(0) {}
+        smallCaps(0),
+        hiddenText(0),
+        writingMode(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || imageMaxWidth || display || backgroundBlack || verticalAlign || direction || smallCaps;
+           imageWidth || imageMaxWidth || display || backgroundBlack || verticalAlign || direction || smallCaps ||
+           hiddenText || writingMode;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = imageMaxWidth = display = backgroundBlack = verticalAlign = direction = smallCaps = 0;
+    imageHeight = imageWidth = imageMaxWidth = display = backgroundBlack = verticalAlign = direction = smallCaps = hiddenText = writingMode = 0;
   }
 };
 
@@ -115,6 +122,9 @@ struct CssStyle {
   CssFontWeight fontWeight = CssFontWeight::Normal;
   CssTextDecoration textDecoration = CssTextDecoration::None;
   CssTextDirection direction = CssTextDirection::Ltr;
+  CssWritingMode writingMode = CssWritingMode::Unset;
+  // unicode-bidi: 0 not set, 1 embed, 2 isolate, 3 bidi-override, 4 isolate-override, 5 plaintext, 7 normal.
+  uint8_t unicodeBidi = 0;
 
   CssLength textIndent;
   CssLength marginTop;
@@ -132,6 +142,9 @@ struct CssStyle {
   bool backgroundBlack = false;
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;
   bool smallCaps = false;
+  // Text declared at a font size too small to read (font-size:1px watermark spans). Only the text
+  // is dropped; structure, spacing and images of the element stay.
+  bool hiddenText = false;
 
   // Runtime-only reader override. It is intentionally not serialized in the
   // CSS cache. When set for a <p>, publisher vertical margins/padding (including
@@ -229,6 +242,11 @@ struct CssStyle {
       direction = base.direction;
       defined.direction = 1;
     }
+    if (base.hasWritingMode()) {
+      writingMode = base.writingMode;
+      defined.writingMode = 1;
+    }
+    if (base.unicodeBidi != 0) unicodeBidi = base.unicodeBidi;
     if (base.hasVerticalAlign()) {
       verticalAlign = base.verticalAlign;
       defined.verticalAlign = 1;
@@ -236,6 +254,10 @@ struct CssStyle {
     if (base.hasSmallCaps()) {
       smallCaps = base.smallCaps;
       defined.smallCaps = 1;
+    }
+    if (base.hasHiddenText()) {
+      hiddenText = base.hiddenText;
+      defined.hiddenText = 1;
     }
   }
 
@@ -259,7 +281,9 @@ struct CssStyle {
   [[nodiscard]] bool hasBackgroundBlack() const { return defined.backgroundBlack; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
+  [[nodiscard]] bool hasWritingMode() const { return defined.writingMode; }
   [[nodiscard]] bool hasSmallCaps() const { return defined.smallCaps; }
+  [[nodiscard]] bool hasHiddenText() const { return defined.hiddenText; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -267,6 +291,8 @@ struct CssStyle {
     fontWeight = CssFontWeight::Normal;
     textDecoration = CssTextDecoration::None;
     direction = CssTextDirection::Ltr;
+    writingMode = CssWritingMode::Unset;
+    unicodeBidi = 0;
     textIndent = CssLength{};
     marginTop = marginBottom = marginLeft = marginRight = CssLength{};
     paddingTop = paddingBottom = paddingLeft = paddingRight = CssLength{};
@@ -275,6 +301,7 @@ struct CssStyle {
     backgroundBlack = false;
     verticalAlign = CssVerticalAlign::Baseline;
     smallCaps = false;
+    hiddenText = false;
     lockVerticalSpacing = false;
     defined.clearAll();
   }

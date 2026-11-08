@@ -210,7 +210,7 @@ void SystemDiagnosticsActivity::loop() {
         startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_BOOT_OTHER_SLOT), body),
           [this, alternate](const ActivityResult& result) {
             if (result.isCancelled) { requestUpdate(true); return; }
-            if (!ota_boot::switchTo(alternate)) {
+            if (!ota_boot::switchToInstalled(alternate)) {
               GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE)); renderer.displayBuffer(); delay(900); requestUpdate(true); return;
             }
             GUI.drawPopup(renderer, tr(STR_RESTARTING_HINT)); renderer.displayBuffer(); delay(400); ESP.restart();

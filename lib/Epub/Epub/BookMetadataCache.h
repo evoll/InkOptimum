@@ -60,6 +60,14 @@ class BookMetadataCache {
   // files to avoid taking the SD/storage lock for every 1-4 byte write.
   std::vector<uint8_t> spineWriteBuffer;
   std::vector<uint8_t> tocWriteBuffer;
+  uint16_t tocMappedCount_ = 0;
+  // Filename-only TOC matching (see findSpineByFilename): the folder the last match sat in, and how
+  // many spine records the remaining full scans may still read in this pass.
+  static constexpr uint32_t TOC_FILENAME_SCAN_BUDGET = 32768;
+  std::string tocFolderHint_;
+  uint32_t tocFilenameScanBudget_ = TOC_FILENAME_SCAN_BUDGET;
+  int16_t findSpineExact(const std::string& href);
+  int16_t findSpineByFilename(const std::string& href);
   bool tempWriteFailed = false;
 
   // Index for fast href→spineIndex lookup. It is compact and only lives while
@@ -106,6 +114,9 @@ class BookMetadataCache {
   void createSpineEntry(const std::string& href);
   bool endContentOpfPass();
   bool beginTocPass();
+  // Discards the TOC entries written so far in this pass, so a second parse can start from an
+  // empty TOC (a sparse nav replaced by an NCX, or the nav parsed again).
+  bool resetTocPassOutput();
   void createTocEntry(const std::string& title, const std::string& href, const std::string& anchor, uint8_t level);
   bool endTocPass();
   bool endWrite();
@@ -127,5 +138,8 @@ class BookMetadataCache {
   TocEntry getTocEntry(int index);
   int getSpineCount() const { return spineCount; }
   int getTocCount() const { return tocCount; }
+  // Entries of this TOC pass whose href matched a spine item. Build-pass only, never written to
+  // book.bin: Epub::load compares it between the nav and the NCX.
+  int getTocMappedCount() const { return tocMappedCount_; }
   bool isLoaded() const { return loaded; }
 };

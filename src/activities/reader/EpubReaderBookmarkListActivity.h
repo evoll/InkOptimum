@@ -27,5 +27,8 @@ class EpubReaderBookmarkListActivity final : public Activity {
 
   void deleteSelectedBookmark();
   void showBookmarkActionMenu(bool ignoreInitialConfirmRelease = false);
+  void confirmDeleteBookmark(const Bookmark& selectedBookmark, bool ignoreInitialConfirmRelease);
+  void renameBookmark(const Bookmark& selectedBookmark);
+  int findBookmarkIndex(const Bookmark& target) const;
   int getPageItems() const;
 };

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <strings.h>
 
 namespace {
 constexpr size_t INITIAL_FONT_FAMILY_RESERVE = 8;
@@ -113,6 +114,37 @@ bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint
   return true;
 }
 
+bool SdCardFontRegistry::parseVectorFontName(const char* filename, size_t& baseLen) {
+#if INKMOD_VECTOR_FONTS
+  static constexpr const char* kExts[] = {".ttf", ".otf", ".ttc"};
+  const size_t nameLen = strlen(filename);
+  for (const char* ext : kExts) {
+    const size_t extLen = strlen(ext);
+    if (nameLen <= extLen) continue;
+    if (strcasecmp(filename + nameLen - extLen, ext) == 0) {
+      baseLen = nameLen - extLen;
+      return baseLen > 0 && baseLen <= 127;
+    }
+  }
+#else
+  (void)filename;
+  (void)baseLen;
+#endif
+  return false;
+}
+
+// "bold"/"italic"/"oblique" tokens in the base name pick the style role (bit0 bold, bit1 italic).
+uint8_t SdCardFontRegistry::parseVectorStyle(const char* baseName, size_t n) {
+  bool bold = false;
+  bool ital = false;
+  for (size_t i = 0; i < n; ++i) {
+    if ((n - i) >= 4 && strncasecmp(baseName + i, "bold", 4) == 0) bold = true;
+    if ((n - i) >= 6 && strncasecmp(baseName + i, "italic", 6) == 0) ital = true;
+    if ((n - i) >= 7 && strncasecmp(baseName + i, "oblique", 7) == 0) ital = true;
+  }
+  return static_cast<uint8_t>((bold ? 1 : 0) | (ital ? 2 : 0));
+}
+
 void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family) {
   HalFile dir = Storage.open(dirPath);
   if (!dir || !dir.isDirectory()) return;
@@ -128,6 +160,17 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
     entry.getName(nameBuffer, sizeof(nameBuffer));
     entry.close();
     if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+
+    size_t vectorBaseLen = 0;
+    if (parseVectorFontName(nameBuffer, vectorBaseLen)) {
+      const uint8_t role = parseVectorStyle(nameBuffer, vectorBaseLen);
+      // Several files may claim one role (e.g. Light + Regular): keep the shortest name, which is
+      // normally the plain "Family-Regular.ttf".
+      std::string& slot = family.vectorPaths[role];
+      const std::string candidate = std::string(dirPath) + "/" + nameBuffer;
+      if (slot.empty() || candidate.size() < slot.size()) slot = candidate;
+      continue;
+    }
 
     uint8_t size, style;
     if (!parseFilename(nameBuffer, size, style)) continue;
@@ -185,6 +228,29 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
       family.name = nameBuffer;
       std::string subDirPath = std::string(rootPath) + "/" + nameBuffer;
       SdCardFontRegistry::scanDirectory(subDirPath.c_str(), family);
+      // A folder with .cpfont files stays a bitmap family. Otherwise a regular (or any single)
+      // TTF/OTF/TTC makes it a vector family.
+      if (family.files.empty()) {
+        std::string& reg = family.vectorPaths[0];
+        if (reg.empty()) {
+          for (const auto& path : family.vectorPaths) {
+            if (!path.empty()) {
+              reg = path;
+              break;
+            }
+          }
+        }
+        if (!reg.empty()) {
+          family.vector = true;
+          for (const uint8_t size : VECTOR_POINT_SIZES) {
+            SdCardFontFileInfo info;
+            info.path = reg;
+            info.pointSize = size;
+            info.style = 0;
+            family.files.push_back(std::move(info));
+          }
+        }
+      }
       if (!family.files.empty()) {
         out.push_back(std::move(family));
         LOG_DBG("SDREG", "Found family: %s (%d files) in %s", out.back().name.c_str(),

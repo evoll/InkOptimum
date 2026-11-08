@@ -8,10 +8,13 @@
 #include <algorithm>
 #include <cstring>
 
+#include "../VerticalDraw.h"
+
 namespace {
 
 constexpr uint16_t MAX_WORDS_PER_TEXT_BLOCK = 512;
 constexpr uint32_t MAX_SERIALIZED_WORD_BYTES = 4096;
+// Ruby adds one flag byte to every block (and one length-prefixed string per word when set).
 constexpr uint32_t SERIALIZED_TEXT_BLOCK_TAIL_BYTES =
     sizeof(EpdFontFamily::Style) + sizeof(bool) + sizeof(int16_t) * 7 + sizeof(bool) + sizeof(bool) + sizeof(bool);
 constexpr uint32_t SERIALIZED_MIN_WORD_METADATA_BYTES =
@@ -86,6 +89,31 @@ bool readBoundedString(FsFile& file, std::string& s) {
 
 }  // namespace
 
+int TextBlock::drawRuby(const GfxRenderer& renderer, const int fontId, const size_t index, const int x, const int y,
+                       const int ascender, const bool foregroundBlack) const {
+  // The group is this word plus the RUBY_CONTINUE words after it. Layout widened the group to the
+  // annotation when it is wider than the base, so the base is shifted by half the difference and the
+  // annotation starts at the group's left edge; a narrower annotation is centred over the base.
+  int baseWidth = 0;
+  for (size_t k = index; k < words.size() && (k == index || (wordStyles[k] & EpdFontFamily::RUBY_CONTINUE) != 0);
+       ++k) {
+    const auto style = static_cast<EpdFontFamily::Style>(wordStyles[k] & ~EpdFontFamily::RUBY_CONTINUE);
+    baseWidth += renderer.getTextAdvanceX(fontId, words[k].c_str(), style);
+  }
+  const int rubyWidth = renderer.getTextAdvanceX(fontId, wordRuby[index].c_str(), EpdFontFamily::SUP);
+  const int groupLeft = x + wordXpos[index];
+  const int pad = rubyWidth > baseWidth ? (rubyWidth - baseWidth) / 2 : 0;
+  const int rubyX = rubyWidth > baseWidth ? groupLeft : groupLeft + (baseWidth - rubyWidth) / 2;
+  // The annotation sits in the extra height the page layout reserved above a ruby line.
+  if (vertical_) {
+    drawTextVertical(renderer, fontId, rubyX, y - ascender / 2, wordRuby[index].c_str(), EpdFontFamily::SUP,
+                     foregroundBlack);
+  } else {
+    renderer.drawText(fontId, rubyX, y - ascender / 2, wordRuby[index].c_str(), foregroundBlack, EpdFontFamily::SUP);
+  }
+  return pad;
+}
+
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y,
                        const bool foregroundBlack) const {
   // Validate iterator bounds before rendering
@@ -94,7 +122,9 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
       words.size() != wordBackgroundBlack.size() ||
       (hasBionic && (words.size() != wordBionicBoundary.size() || words.size() != wordBionicSuffixX.size())) ||
-      (!hasBionic && !wordBionicSuffixX.empty()) || (hasGuideDots && words.size() != wordGuideDotXOffset.size())) {
+      (!hasBionic && !wordBionicSuffixX.empty()) || (hasGuideDots && words.size() != wordGuideDotXOffset.size()) ||
+      (!wordRuby.empty() && words.size() != wordRuby.size()) ||
+      (!wordDisplay.empty() && words.size() != wordDisplay.size())) {
     LOG_ERR("TXB",
             "Render skipped: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, dotX=%u, bg=%u)\n",
             (uint32_t)words.size(), (uint32_t)wordXpos.size(), (uint32_t)wordStyles.size(),
@@ -105,12 +135,32 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
 
   const bool scanning = renderer.isFontCacheScanning();
   const int ascender = renderer.getFontAscenderSize(fontId);
+  const bool hasRubyText = !wordRuby.empty();
+  // A vertical line draws every word down its column at the position the horizontal code computes.
+  const bool vertical = vertical_;
+  const auto drawWord = [&](const int px, const int py, const char* text, const EpdFontFamily::Style style,
+                            const BidiUtils::BidiBaseDir dir) {
+    if (vertical) {
+      drawTextVertical(renderer, fontId, px, py, text, style, foregroundBlack);
+    } else {
+      renderer.drawText(fontId, px, py, text, foregroundBlack, style, dir);
+    }
+  };
+  const int blockEm = vertical ? columnEm(renderer, fontId, EpdFontFamily::REGULAR) : 0;
   for (size_t i = 0; i < words.size(); i++) {
-    const int wordX = wordXpos[i] + x;
-    const EpdFontFamily::Style currentStyle = wordStyles[i];
+    int wordX = wordXpos[i] + x;
+    // RUBY_CONTINUE only marks layout groups; it must never reach the font code.
+    const auto currentStyle = static_cast<EpdFontFamily::Style>(wordStyles[i] & ~EpdFontFamily::RUBY_CONTINUE);
+    if (hasRubyText && !wordRuby[i].empty()) {
+      wordX += drawRuby(renderer, fontId, i, x, y, ascender, foregroundBlack);
+    }
     const uint8_t boundary = hasBionic ? wordBionicBoundary[i] : 0;
-    const auto baseDir = static_cast<BidiUtils::BidiBaseDir>(
-        BidiUtils::detectParagraphLevel(words[i].c_str(), blockStyle.isRtl ? 1 : 0));
+    // A bidi line's word draws its display form, already in visual order: no bidi pass at draw time.
+    const bool hasDisplay = !wordDisplay.empty() && !wordDisplay[i].empty();
+    const std::string& shown = hasDisplay ? wordDisplay[i] : words[i];
+    const auto baseDir = hasDisplay ? BidiUtils::BidiBaseDir::VISUAL
+                                    : static_cast<BidiUtils::BidiBaseDir>(
+                                          BidiUtils::detectParagraphLevel(words[i].c_str(), blockStyle.isRtl ? 1 : 0));
 
     if (wordBackgroundBlack[i] != 0 && isWhitespaceOnlyBackgroundToken(words[i])) {
       const uint16_t backgroundWidth = measureBackgroundWidth(renderer, fontId, words[i], currentStyle);
@@ -136,11 +186,11 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const size_t boldLen = std::min<size_t>({static_cast<size_t>(boundary), words[i].size(), sizeof(boldBuf) - 1});
       memcpy(boldBuf, words[i].c_str(), boldLen);
       boldBuf[boldLen] = '\0';
-      renderer.drawText(fontId, wordX, wordY, boldBuf, foregroundBlack, boldStyle, baseDir);
+      drawWord(wordX, wordY, boldBuf, boldStyle, baseDir);
       const int suffixX = wordX + wordBionicSuffixX[i];
-      renderer.drawText(fontId, suffixX, wordY, words[i].c_str() + boldLen, foregroundBlack, currentStyle, baseDir);
+      drawWord(suffixX, wordY, words[i].c_str() + boldLen, currentStyle, baseDir);
     } else {
-      renderer.drawText(fontId, wordX, wordY, words[i].c_str(), foregroundBlack, currentStyle, baseDir);
+      drawWord(wordX, wordY, shown.c_str(), currentStyle, baseDir);
     }
 
     if (hasGuideDots && wordGuideDotXOffset[i] > 0) {
@@ -148,10 +198,11 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     }
 
     if (!scanning && (currentStyle & EpdFontFamily::UNDERLINE) != 0) {
-      const std::string& w = words[i];
+      const std::string& w = shown;
       int startX = wordX;
       int underlineWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle, baseDir);
-      const int underlineY = wordY + ascender + 2;
+      // Vertical: the side line lies on the over side of the column, off the em box's edge.
+      const int underlineY = vertical ? columnOverEdge(y + ascender, blockEm) - 2 : wordY + ascender + 2;
 
       // Skip em-space prefix so the underline starts under visible glyphs.
       if (w.size() >= 3 && static_cast<uint8_t>(w[0]) == 0xE2 && static_cast<uint8_t>(w[1]) == 0x80 &&
@@ -177,7 +228,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       // point to align with the visual centre of lowercase letters.
       // Added a 6 pixel offset after testing on various fonts to improve the visual alignment of the strike-through
       // line.
-      const int strikeY = y + renderer.getFontAscenderSize(fontId) / 2 + 6;
+      const int strikeY = vertical ? columnAxis(y + ascender, blockEm) : y + renderer.getFontAscenderSize(fontId) / 2 + 6;
 
       int startX = wordX;
       int strikeWidth = fullWordWidth;
@@ -207,7 +258,9 @@ bool TextBlock::serialize(FsFile& file) const {
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
       words.size() != wordBackgroundBlack.size() ||
       (hasBionic && (words.size() != wordBionicBoundary.size() || words.size() != wordBionicSuffixX.size())) ||
-      (!hasBionic && !wordBionicSuffixX.empty()) || (hasGuideDots && words.size() != wordGuideDotXOffset.size())) {
+      (!hasBionic && !wordBionicSuffixX.empty()) || (hasGuideDots && words.size() != wordGuideDotXOffset.size()) ||
+      (!wordRuby.empty() && words.size() != wordRuby.size()) ||
+      (!wordDisplay.empty() && words.size() != wordDisplay.size())) {
     LOG_ERR(
         "TXB",
         "Serialization failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, dotX=%u, bg=%u)\n",
@@ -254,8 +307,20 @@ bool TextBlock::serialize(FsFile& file) const {
       if (!serialization::tryWritePod(file, dx)) return false;
     }
   }
+  if (!serialization::tryWritePod(file, static_cast<uint8_t>(wordRuby.empty() ? 0 : 1))) {
+    return false;
+  }
+  for (const auto& r : wordRuby) {
+    if (!serialization::tryWriteString(file, r)) return false;
+  }
   for (auto bg : wordBackgroundBlack) {
     if (!serialization::tryWritePod(file, bg)) return false;
+  }
+  if (!serialization::tryWritePod(file, static_cast<uint8_t>(wordDisplay.empty() ? 0 : 1))) {
+    return false;
+  }
+  for (const auto& d : wordDisplay) {
+    if (!serialization::tryWriteString(file, d)) return false;
   }
 
   // Style (alignment + margins/padding/indent)
@@ -272,7 +337,8 @@ bool TextBlock::serialize(FsFile& file) const {
          serialization::tryWritePod(file, blockStyle.textIndent) &&
          serialization::tryWritePod(file, blockStyle.textIndentDefined) &&
          serialization::tryWritePod(file, blockStyle.isRtl) &&
-         serialization::tryWritePod(file, blockStyle.directionDefined);
+         serialization::tryWritePod(file, blockStyle.directionDefined) &&
+         serialization::tryWritePod(file, static_cast<uint8_t>(vertical_ ? 1 : 0));
 }
 
 std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
@@ -284,6 +350,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   std::vector<uint16_t> wordBionicSuffixX;
   std::vector<uint16_t> wordGuideDotXOffset;
   std::vector<uint8_t> wordBackgroundBlack;
+  std::vector<std::string> wordRuby;
   BlockStyle blockStyle;
 
   // Word count
@@ -300,7 +367,8 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   }
 
   const uint32_t minimumRemainingBytes = static_cast<uint32_t>(wc) * SERIALIZED_MIN_WORD_METADATA_BYTES +
-                                         sizeof(uint8_t) + sizeof(uint8_t) + SERIALIZED_TEXT_BLOCK_TAIL_BYTES;
+                                         sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) +
+                                         SERIALIZED_TEXT_BLOCK_TAIL_BYTES;
   const int remainingBeforeWords = file.available();
   if (remainingBeforeWords < 0 || static_cast<uint32_t>(remainingBeforeWords) < minimumRemainingBytes) {
     LOG_ERR("TXB", "Deserialization failed: truncated block metadata (%u words need at least %lu bytes, %d available)",
@@ -320,7 +388,8 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   }
 
   const uint32_t remainingMetadataBytes = static_cast<uint32_t>(wc) * SERIALIZED_POST_WORD_MIN_METADATA_BYTES +
-                                          sizeof(uint8_t) + sizeof(uint8_t) + SERIALIZED_TEXT_BLOCK_TAIL_BYTES;
+                                          sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) +
+                                          SERIALIZED_TEXT_BLOCK_TAIL_BYTES;
   const int remainingAfterWords = file.available();
   if (remainingAfterWords < 0 || static_cast<uint32_t>(remainingAfterWords) < remainingMetadataBytes) {
     LOG_ERR("TXB", "Deserialization failed: truncated post-word metadata (%lu bytes needed, %d available)",
@@ -360,8 +429,31 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
       if (!serialization::tryReadPod(file, dx)) return nullptr;
     }
   }
+  uint8_t hasRuby = 0;
+  if (!serialization::tryReadPod(file, hasRuby) || hasRuby > 1) {
+    LOG_ERR("TXB", "Deserialization failed: invalid ruby metadata flag");
+    return nullptr;
+  }
+  if (hasRuby) {
+    wordRuby.resize(wc);
+    for (auto& r : wordRuby) {
+      if (!readBoundedString(file, r)) return nullptr;
+    }
+  }
   for (auto& bg : wordBackgroundBlack) {
     if (!serialization::tryReadPod(file, bg)) return nullptr;
+  }
+  std::vector<std::string> wordDisplay;
+  uint8_t hasDisplay = 0;
+  if (!serialization::tryReadPod(file, hasDisplay) || hasDisplay > 1) {
+    LOG_ERR("TXB", "Deserialization failed: invalid display-form flag");
+    return nullptr;
+  }
+  if (hasDisplay) {
+    wordDisplay.resize(wc);
+    for (auto& d : wordDisplay) {
+      if (!readBoundedString(file, d)) return nullptr;
+    }
   }
 
   // Style (alignment + margins/padding/indent)
@@ -382,14 +474,21 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     LOG_ERR("TXB", "Deserialization failed: truncated block style metadata");
     return nullptr;
   }
+  uint8_t verticalFlag = 0;
+  if (!serialization::tryReadPod(file, verticalFlag) || verticalFlag > 1) {
+    LOG_ERR("TXB", "Deserialization failed: invalid vertical flag");
+    return nullptr;
+  }
 
   auto* textBlock = new (std::nothrow) TextBlock(
       std::move(words), std::move(wordXpos), std::move(wordStyles), std::move(wordBionicBoundary),
-      std::move(wordBionicSuffixX), std::move(wordGuideDotXOffset), std::move(wordBackgroundBlack), blockStyle);
+      std::move(wordBionicSuffixX), std::move(wordGuideDotXOffset), std::move(wordBackgroundBlack), blockStyle,
+      std::move(wordRuby), std::move(wordDisplay));
   if (!textBlock) {
     LOG_ERR("TXB", "Deserialization failed: could not allocate TextBlock");
     return nullptr;
   }
 
+  textBlock->vertical_ = verticalFlag != 0;
   return std::unique_ptr<TextBlock>(textBlock);
 }

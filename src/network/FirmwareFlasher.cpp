@@ -12,6 +12,8 @@
 #include <cstring>
 #include <memory>
 
+#include "BoardTag.h"
+#include "BootHealth.h"
 #include "OtaBootSwitch.h"
 
 namespace firmware_flash {
@@ -44,6 +46,10 @@ const char* resultName(Result r) {
       return "BAD_MAGIC";
     case Result::INCOMPATIBLE_CHIP:
       return "INCOMPATIBLE_CHIP";
+    case Result::INCOMPATIBLE_BOARD:
+      return "INCOMPATIBLE_BOARD";
+    case Result::UNTAGGED_IMAGE:
+      return "UNTAGGED_IMAGE";
     case Result::BAD_SEGMENTS:
       return "BAD_SEGMENTS";
     case Result::BAD_CHECKSUM:
@@ -100,13 +106,15 @@ Result validateChipCompatibility(const uint8_t* candidateHeader) {
 // Stream `length` bytes from `file` starting at the current read offset, feeding them through
 // both the XOR-checksum and SHA256 accumulators. Used by validateImageFile so the whole image
 // is verified end-to-end without holding it in RAM (ESP32-C3 only has ~380 KB).
-Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbedtls_sha256_context* sha, uint8_t* buf) {
+Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbedtls_sha256_context* sha, uint8_t* buf,
+                           board_tag::Scanner* tagScanner = nullptr) {
   size_t remaining = length;
   while (remaining > 0) {
     const size_t want = std::min<size_t>(CHUNK, remaining);
     const int got = file.read(buf, want);
     if (got <= 0 || static_cast<size_t>(got) != want) return Result::READ_FAIL;
     if (sha) mbedtls_sha256_update(sha, buf, want);
+    if (tagScanner) tagScanner->feed(buf, want);
     if (xorAccum) {
       uint8_t acc = *xorAccum;
       for (size_t i = 0; i < want; i++) acc ^= buf[i];
@@ -116,9 +124,28 @@ Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbed
   }
   return Result::OK;
 }
+
+// Decide whether the scanned image targets this board. `strict` (file images about to be flashed)
+// also rejects untagged images on chips shared by several boards; the already-installed alternate
+// slot (rollback) only fails on an explicit mismatch so older builds stay switchable.
+Result checkBoardTag(const board_tag::Scanner& scanner, bool strict, bool userAcceptedUntagged = false) {
+  const char* expected = board_tag::currentVariant();
+  const board_tag::Verdict verdict = board_tag::evaluate(scanner, expected);
+  LOG_INF("FLASH", "board guard: expected=%s candidate=%s", expected, scanner.found() ? scanner.variant() : "(none)");
+  if (verdict == board_tag::Verdict::MISMATCH) {
+    LOG_ERR("FLASH", "board guard: image is for '%s', this device needs '%s'", scanner.variant(), expected);
+    return Result::INCOMPATIBLE_BOARD;
+  }
+  if (strict && !board_tag::allowed(verdict, board_tag::allowUntaggedImages() || userAcceptedUntagged)) {
+    LOG_ERR("FLASH", "board guard: untagged image rejected (expected '%s', marker %s)", expected,
+            board_tag::embeddedTag());
+    return Result::UNTAGGED_IMAGE;
+  }
+  return Result::OK;
+}
 }  // namespace
 
-Result validateImageFile(const char* sdPath, size_t partitionSize) {
+Result validateImageFile(const char* sdPath, size_t partitionSize, bool allowUntagged) {
   HalFile file;
   if (!Storage.openFileForRead("FLASH", sdPath, file) || !file) {
     LOG_ERR("FLASH", "validate: open failed: %s", sdPath);
@@ -174,6 +201,7 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
 
   uint8_t xorAccum = CHECKSUM_SEED;
   size_t pos = HEADER_SIZE;
+  board_tag::Scanner tagScanner;
 
   for (uint8_t i = 0; i < segCount; i++) {
     if (pos + SEG_HEADER_SIZE > fileSize) {
@@ -201,13 +229,21 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
       return Result::BAD_SEGMENTS;
     }
 
-    const Result feedRes = feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get());
+    const Result feedRes = feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get(), &tagScanner);
     if (feedRes != Result::OK) {
       mbedtls_sha256_free(&shaCtx);
       file.close();
       return feedRes;
     }
     pos += dataLen;
+  }
+
+  // Board guard: runs after the segment walk and before anything can be written to flash.
+  const Result boardResult = checkBoardTag(tagScanner, /*strict=*/true, allowUntagged);
+  if (boardResult != Result::OK) {
+    mbedtls_sha256_free(&shaCtx);
+    file.close();
+    return boardResult;
   }
 
   // pad_end is the 16-byte aligned offset at which the checksum byte sits at pad_end - 1.
@@ -289,6 +325,7 @@ Result validateImagePartition(const esp_partition_t* partition, size_t* imageSiz
   mbedtls_sha256_update(&shaCtx, header, sizeof(header));
   uint8_t xorAccum = CHECKSUM_SEED;
   size_t pos = sizeof(header);
+  board_tag::Scanner tagScanner;
 
   for (uint8_t i = 0; i < segCount; ++i) {
     uint8_t segmentHeader[SEG_HEADER_SIZE];
@@ -314,10 +351,17 @@ Result validateImagePartition(const esp_partition_t* partition, size_t* imageSiz
         return Result::READ_FAIL;
       }
       mbedtls_sha256_update(&shaCtx, buffer.get(), chunkSize);
+      tagScanner.feed(buffer.get(), chunkSize);
       for (size_t j = 0; j < chunkSize; ++j) xorAccum ^= buffer[j];
       pos += chunkSize;
       remaining -= chunkSize;
     }
+  }
+
+  const Result boardResult = checkBoardTag(tagScanner, /*strict=*/false);
+  if (boardResult != Result::OK) {
+    mbedtls_sha256_free(&shaCtx);
+    return boardResult;
   }
 
   const size_t padEnd = (pos + 16) & ~static_cast<size_t>(15);
@@ -355,7 +399,7 @@ Result validateImagePartition(const esp_partition_t* partition, size_t* imageSiz
   return Result::OK;
 }
 
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated, bool allowUntagged) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before
   // we touch otadata, so a truncated/corrupted .bin can never become the next boot target.
@@ -370,7 +414,7 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
   // prompt), skip the redundant integrity scan. We still keep the partition
   // lookup so the rest of the flashing path stays unchanged.
   if (!alreadyValidated) {
-    const Result validateRes = validateImageFile(sdPath, dest->size);
+    const Result validateRes = validateImageFile(sdPath, dest->size, allowUntagged);
     if (validateRes != Result::OK) {
       LOG_ERR("FLASH", "image validation failed: %s", resultName(validateRes));
       return validateRes;
@@ -430,6 +474,10 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
   }
   file.close();
 
+  if (!boot_health::stageUpdate(dest)) {
+    LOG_ERR("FLASH", "cannot persist update recovery record");
+    return Result::OTADATA_FAIL;
+  }
   if (!ota_boot::switchTo(dest)) {
     LOG_ERR("FLASH", "otadata switch failed");
     return Result::OTADATA_FAIL;

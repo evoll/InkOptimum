@@ -125,13 +125,14 @@ void XMLCALL TocNavParser::endElement(void* userData, const XML_Char* name) {
       const size_t pos = self->currentTarget.find('#');
       self->currentAnchor.clear();
       if (pos != std::string::npos) {
-        self->currentAnchor = FsHelpers::decodeUriEscapes(std::string_view{self->currentTarget}.substr(pos + 1));
+        FsHelpers::decodeUriEscapes(std::string_view{self->currentTarget}.substr(pos + 1), self->currentAnchor);
         self->currentTarget.resize(pos);
       }
-      std::string href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->currentTarget));
+      FsHelpers::decodeUriEscapes(self->currentTarget, self->decodedTarget);
+      FsHelpers::normalisePath(self->decodedTarget, self->normalisedHref);
 
       if (self->cache) {
-        self->cache->createTocEntry(self->currentLabel, href, self->currentAnchor, self->olDepth);
+        self->cache->createTocEntry(self->currentLabel, self->normalisedHref, self->currentAnchor, self->olDepth);
       }
 
       self->currentLabel.clear();

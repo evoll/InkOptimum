@@ -4,6 +4,14 @@
     </div>
 
     <div class="card">
+      <h2 data-i18n="fonts.catalog_title">Font catalogue</h2>
+      <p class="hint" data-i18n="fonts.catalog_intro">Ready-made fonts for the reader. This browser downloads them and sends them to the reader, so the reader itself needs no internet.</p>
+      <button class="btn btn-primary" id="catalogLoad" data-i18n="fonts.catalog_load">Load catalogue</button>
+      <p id="catalogStatus" class="hint"></p>
+      <div id="catalogList"></div>
+    </div>
+
+    <div class="card">
       <h2><span data-i18n="fonts.convert_title">Convert Font (TTF/OTF, in browser)</span> <span class="badge-experimental" data-i18n="fonts.badge_beta">Beta</span></h2>
       <p class="hint" data-i18n="fonts.convert_intro">
         Runs in this browser tab &mdash; on your phone or computer, not on the

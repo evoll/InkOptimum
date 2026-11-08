@@ -66,17 +66,38 @@ jobs:
       - name: Build X3/X4 release firmware
         env:
           INKMOD_RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: pio run -e x3x4-release
+          # Enrollment gate of the FreeInk LCP service (see docs/LCP.md). Without the secret the build
+          # still works and only loses service-backed LCP.
+          FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
+        run: |
+          if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
+          fi
+          pio run -e x3x4-release
 
       - name: Build X4 Pro release firmware
         env:
           INKMOD_RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: pio run -e x4pro-release
+          # Enrollment gate of the FreeInk LCP service (see docs/LCP.md). Without the secret the build
+          # still works and only loses service-backed LCP.
+          FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
+        run: |
+          if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
+          fi
+          pio run -e x4pro-release
 
       - name: Build X4 Classic release firmware
         env:
           INKMOD_RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: pio run -e x4classic-release
+          # Enrollment gate of the FreeInk LCP service (see docs/LCP.md). Without the secret the build
+          # still works and only loses service-backed LCP.
+          FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
+        run: |
+          if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
+          fi
+          pio run -e x4classic-release
 
       - name: Prepare release assets
         id: artifacts

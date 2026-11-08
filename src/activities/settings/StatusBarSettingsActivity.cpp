@@ -23,9 +23,12 @@ enum MenuItem {
   ITEM_BOOK_PROGRESS_PERCENTAGE,
   ITEM_PROGRESS_BAR,
   ITEM_PROGRESS_BAR_THICKNESS,
+  ITEM_TEXT_SIZE,
   ITEM_TITLE,
   ITEM_TIME_LEFT,
   ITEM_BATTERY,
+  ITEM_CENTERED,
+  ITEM_SEPARATOR,
   ITEM_XTC_STATUS_BAR,
   ITEM_COUNT
 };
@@ -35,9 +38,12 @@ const StrId menuNames[ITEM_COUNT] = {
     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
     StrId::STR_PROGRESS_BAR,
     StrId::STR_PROGRESS_BAR_THICKNESS,
+    StrId::STR_STATUS_BAR_TEXT_SIZE,
     StrId::STR_TITLE,
     StrId::STR_TIME_LEFT,
     StrId::STR_BATTERY,
+    StrId::STR_STATUS_BAR_CENTERED,
+    StrId::STR_STATUS_BAR_SEPARATOR,
     StrId::STR_XTC_STATUS_BAR,
 };
 
@@ -53,6 +59,9 @@ constexpr int PROGRESS_BAR_THICKNESS_ITEMS = 3;
 const StrId progressBarThicknessNames[PROGRESS_BAR_THICKNESS_ITEMS] = {
     StrId::STR_PROGRESS_BAR_THIN, StrId::STR_PROGRESS_BAR_MEDIUM, StrId::STR_PROGRESS_BAR_THICK};
 
+constexpr int TEXT_SIZE_ITEMS = 3;
+const StrId textSizeNames[TEXT_SIZE_ITEMS] = {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE};
+
 constexpr int TITLE_ITEMS = 3;
 const StrId titleNames[TITLE_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER};
 const uint8_t titleRawValues[TITLE_ITEMS] = {
@@ -63,6 +72,10 @@ const uint8_t titleRawValues[TITLE_ITEMS] = {
 
 constexpr int TIME_LEFT_ITEMS = 3;
 const StrId timeLeftNames[TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_CHAPTER, StrId::STR_BOOK};
+
+constexpr int SEPARATOR_ITEMS = 4;
+const StrId separatorNames[SEPARATOR_ITEMS] = {StrId::STR_SEP_BULLET, StrId::STR_SEP_DASH, StrId::STR_SEP_PIPE,
+                                               StrId::STR_SEP_MIDDLE_DOT};
 
 constexpr int XTC_STATUS_BAR_ITEMS = 3;
 const StrId xtcStatusBarNames[XTC_STATUS_BAR_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP};
@@ -79,10 +92,14 @@ int optionCountForItem(const int item) {
       return PROGRESS_BAR_ITEMS;
     case ITEM_PROGRESS_BAR_THICKNESS:
       return PROGRESS_BAR_THICKNESS_ITEMS;
+    case ITEM_TEXT_SIZE:
+      return TEXT_SIZE_ITEMS;
     case ITEM_TITLE:
       return TITLE_ITEMS;
     case ITEM_TIME_LEFT:
       return TIME_LEFT_ITEMS;
+    case ITEM_SEPARATOR:
+      return SEPARATOR_ITEMS;
     case ITEM_XTC_STATUS_BAR:
       return XTC_STATUS_BAR_ITEMS;
     default:
@@ -98,10 +115,14 @@ StrId optionNameForItem(const int item, const int optionIndex) {
       return progressBarNames[optionIndex];
     case ITEM_PROGRESS_BAR_THICKNESS:
       return progressBarThicknessNames[optionIndex];
+    case ITEM_TEXT_SIZE:
+      return textSizeNames[optionIndex];
     case ITEM_TITLE:
       return titleNames[optionIndex];
     case ITEM_TIME_LEFT:
       return timeLeftNames[optionIndex];
+    case ITEM_SEPARATOR:
+      return separatorNames[optionIndex];
     case ITEM_XTC_STATUS_BAR:
       return xtcStatusBarNames[optionIndex];
     default:
@@ -132,11 +153,17 @@ uint8_t currentOptionIndexForItem(const int item) {
     case ITEM_PROGRESS_BAR_THICKNESS:
       rawValue = SETTINGS.statusBarProgressBarThickness;
       break;
+    case ITEM_TEXT_SIZE:
+      rawValue = SETTINGS.statusBarTextSize;
+      break;
     case ITEM_TITLE:
       rawValue = SETTINGS.statusBarTitle;
       break;
     case ITEM_TIME_LEFT:
       rawValue = SETTINGS.statusBarTimeLeft;
+      break;
+    case ITEM_SEPARATOR:
+      rawValue = SETTINGS.statusBarSeparator;
       break;
     case ITEM_XTC_STATUS_BAR:
       rawValue = SETTINGS.xtcStatusBarMode;
@@ -164,11 +191,17 @@ void setOptionIndexForItem(const int item, const uint8_t optionIndex) {
     case ITEM_PROGRESS_BAR_THICKNESS:
       SETTINGS.statusBarProgressBarThickness = rawValue;
       break;
+    case ITEM_TEXT_SIZE:
+      SETTINGS.statusBarTextSize = rawValue;
+      break;
     case ITEM_TITLE:
       SETTINGS.statusBarTitle = rawValue;
       break;
     case ITEM_TIME_LEFT:
       SETTINGS.statusBarTimeLeft = rawValue;
+      break;
+    case ITEM_SEPARATOR:
+      SETTINGS.statusBarSeparator = rawValue;
       break;
     case ITEM_XTC_STATUS_BAR:
       SETTINGS.xtcStatusBarMode = rawValue;
@@ -190,6 +223,8 @@ std::string valueTextForItem(const int item) {
       return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_BATTERY:
       return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_CENTERED:
+      return SETTINGS.statusBarCentered ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     default: {
       const int optionCount = optionCountForItem(item);
       const uint8_t optionIndex = currentOptionIndexForItem(item);
@@ -215,6 +250,8 @@ void StatusBarSettingsActivity::onEnter() {
   if (SETTINGS.statusBarProgressBarThickness >= PROGRESS_BAR_THICKNESS_ITEMS) {
     SETTINGS.statusBarProgressBarThickness = InkMODSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
   }
+
+  if (SETTINGS.statusBarTextSize >= TEXT_SIZE_ITEMS) SETTINGS.statusBarTextSize = 0;
 
   if (SETTINGS.statusBarTitle >= TITLE_ITEMS) {
     SETTINGS.statusBarTitle = InkMODSettings::STATUS_BAR_TITLE::HIDE_TITLE;
@@ -304,6 +341,9 @@ void StatusBarSettingsActivity::handleSelection() {
       break;
     case ITEM_BATTERY:
       SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
+      break;
+    case ITEM_CENTERED:
+      SETTINGS.statusBarCentered = (SETTINGS.statusBarCentered + 1) % 2;
       break;
     default:
       return;

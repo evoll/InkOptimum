@@ -23,7 +23,7 @@
 
 #if FREEINK_SD_SDMMC
 namespace freeink {
-class SdmmcBlockDevice;
+class SdmmcBlockDevice;  // native esp-idf SDMMC block device (src/SdmmcBlockDevice.h)
 }
 #endif
 
@@ -32,15 +32,27 @@ class SDCardManager {
   SDCardManager();
   bool begin();
   bool ready() const;
-  uint64_t sdTotalBytes();
+  // Returns the total card capacity in bytes. Cached at begin(); 0 if not mounted.
+  uint64_t sdTotalBytes() const;
+  // Returns used space in bytes, cached with a 20-second TTL (freeClusterCount
+  // scans the FAT and is too slow to call on every frame). 0 if not mounted or
+  // the cluster count cannot be determined.
   uint64_t sdUsedBytes();
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
+  // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
-  // The implementation already owns a bounded 1 KiB stack buffer, so using
-  // that same size by default cuts SD transactions without increasing memory.
-  bool readFileToStream(const char* path, Print& out, size_t chunkSize = 1024);
+  // Low-memory helpers:
+  // Stream the file contents to a `Print` (e.g. `Serial`, or any `Print`-derived object).
+  // Returns true only when every byte is accepted by `out`. Retries positive
+  // short writes; returns false on a stalled write, read error, or premature EOF.
+  // On failure, `out` may already contain a prefix of the file.
+  bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256);
+  // Read up to `bufferSize-1` bytes into `buffer`, null-terminating it. Returns bytes read.
   size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0);
+  // Write a string to `path` on the SD card, replacing any existing file only
+  // once the new content is fully written. Returns true on success.
   bool writeFile(const char* path, const String& content);
+  // Ensure a directory exists, creating it if necessary. Returns true on success.
   bool ensureDirectoryExists(const char* path);
 
   FsFile open(const char* path, const oflag_t oflag = O_RDONLY) { return vol().open(path, oflag); }
@@ -49,6 +61,11 @@ class SDCardManager {
   bool remove(const char* path) { return vol().remove(path); }
   bool rmdir(const char* path) { return vol().rmdir(path); }
   bool rename(const char* path, const char* newPath) { return vol().rename(path, newPath); }
+  // Move a fully written temp file over `path`. FAT rename does not replace an
+  // existing file, so the old one is removed first.
+  bool replaceFile(const char* tmpPath, const char* path) {
+    return (!vol().exists(path) || vol().remove(path)) && vol().rename(tmpPath, path);
+  }
 
   bool openFileForRead(const char* moduleName, const char* path, FsFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, FsFile& file);
@@ -58,20 +75,35 @@ class SDCardManager {
   bool openFileForWrite(const char* moduleName, const String& path, FsFile& file);
   bool removeDir(const char* path);
 
+  // Optional board hook to bring up SD-card power before the card is mounted, for
+  // boards whose SD rail isn't a plain GPIO (e.g. behind an I2C PMIC). Called once
+  // at the start of begin(). The board registers it from its own board-support
+  // layer; the SD manager itself stays device-agnostic. Default: none.
   using PowerHook = void (*)();
   void setPowerHook(PowerHook hook) { _powerHook = hook; }
 
-#if FREEINK_SD_SDMMC
-  freeink::SdmmcBlockDevice* rawBlockDevice() { return _dev; }
-  // Hand the mounted SDMMC card to a raw owner such as USB-MSC. The
-  // filesystem is unmounted, but the native block device stays alive.
+  // The raw block device (512-byte sector I/O) backing the volume, for exposing
+  // the card over USB-MSC ("USB Transfer" mode). Null until begin() succeeds.
+  // Do NOT touch the filesystem while the card is handed to the USB host.
+  //
+  // Both backends answer this: SDMMC boards hand back their native esp-idf
+  // device, SPI boards hand back SdFat's own SdCard (SdCardInterface derives
+  // from FsBlockDeviceInterface, so the card object IS a block device — no
+  // second driver is needed for the SPI path).
+  FsBlockDeviceInterface* rawBlockDevice();
+  // End the FsVolume mount while keeping the block device alive for a raw
+  // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
+  // owner releases the card. Returns null when nothing is mounted.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
-  // Remount SdFat on the already-initialized SDMMC block device after a raw
-  // owner such as USB-MSC releases it. This must NOT call begin(), because
-  // begin() would try to initialize the SDMMC host/device a second time.
-  bool reattachFilesystemAfterRawAccess();
+#if FREEINK_SD_SDMMC
+  // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
+  // float the bus pads so their pull-ups stop back-feeding the card's VDD net
+  // through sleep. Idempotent; call only after all file users have stopped. A
+  // deep-sleep wake resets the MCU and remounts through begin().
   void shutdown();
 #else
+  // SPI/SdFat boards: sleep either cuts power entirely (C3 Xteink) or gates the
+  // SD rail in powerDownRailsForSleep(); there is no host to stop.
   void shutdown() {}
 #endif
 
@@ -89,9 +121,12 @@ class SDCardManager {
   uint32_t cachedUsedBytesAt = 0;
   bool cachedUsedBytesValid = false;
 
+  // All filesystem ops route through one FsVolume& so the backend is swappable.
+  // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted
+  // on a native esp-idf block device — both hand back ordinary FsFile objects.
 #if FREEINK_SD_SDMMC
   FsVolume _vol;
-  freeink::SdmmcBlockDevice* _dev = nullptr;
+  freeink::SdmmcBlockDevice* _dev = nullptr;  // owned, created in begin()
   FsVolume& vol() { return _vol; }
 #else
   SdFat sd;

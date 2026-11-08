@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "native/Fb2Parser.h"
-#include "native/Fb2Types.h"
-#include "native/IByteReader.h"
+#include <FictionBookTypes.h>
+#include <IByteReader.h>
 
 namespace reader {
 class ReaderCancellationToken;
@@ -185,6 +185,11 @@ class Fb2 {
   bool prepareSource(const ProgressFn& onProgress);
   static bool ensurePreparedSource(const std::string& packageCachePath, std::string& outSourcePath);
   bool isCompressedFb2() const;
+  // ".fb3", ".fb3.zip", ".docx" and Markdown are NOT FB2: they are read by their
+  // own parsers (libraries Fb3, Docx, Markdown) behind the FictionBookParser interface.
+  // This class only decides which source kind a path is and drives the shared
+  // index/cache/render pipeline. A ZIP that contains no .fb2 is probed as FB3.
+  bool zipContainsFb2Entry() const;
   bool cacheIsCurrent();
   bool loadMetadataCache();
   void saveMetadataCache() const;

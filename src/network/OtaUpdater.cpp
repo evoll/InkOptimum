@@ -10,7 +10,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback, void*, s
 #include <SecureHttpClient.h>
 #include <mbedtls/sha256.h>
 
+#include "BootHealth.h"
 #include "FirmwareFlasher.h"
+#include "FirmwareSigning.h"
 #include "HttpDownloader.h"
 #include <ReleaseJsonParser.h>
 
@@ -20,6 +22,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback, void*, s
 #include "OtaUpdater.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_ota_ops.h"
 #include "network/WifiPowerSaveGuard.h"
 
 namespace {
@@ -253,6 +256,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   latestVersion.clear();
   otaUrl.clear();
   otaDigest.clear();
+  otaSigUrl.clear();
+  releaseName.clear();
+  releaseNotes.clear();
   otaSize = 0;
   processedSize = 0;
   totalSize = 0;
@@ -303,7 +309,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       .buffer_size = 4096,
       .buffer_size_tx = 1024,
       .user_data = &releaseParser,
-      .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
@@ -345,6 +350,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   }
 
   latestVersion = releaseParser.getTagName();
+  releaseName = releaseParser.getReleaseName();
+  releaseNotes = releaseParser.getReleaseNotes();
 
   if (!releaseParser.foundFirmware()) {
     LOG_ERR("OTA", "No matching %s asset found for release %s", firmwareAssetStem, latestVersion.c_str());
@@ -353,6 +360,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   otaUrl = releaseParser.getFirmwareUrl();
   otaDigest = releaseParser.getFirmwareDigest();
+  otaSigUrl = releaseParser.getFirmwareSignatureUrl();
   otaSize = releaseParser.getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
@@ -403,7 +411,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       // with the TLS handshake on a tight internal arena, so keep them minimal.
       .buffer_size = 4096,
       .buffer_size_tx = 1024,
-      .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       // Was keep_alive_enable = true. ESP-IDF has a known, open bug
       // (espressif/esp-idf#14463) where esp_http_client's internal
@@ -519,6 +526,27 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     }
     LOG_INF("OTA", "Staged firmware matches authenticated GitHub SHA256");
 
+    // With a signing key configured the digest only proves the download is intact (GitHub publishes it): the
+    // image must also carry a valid signature by that key before it is flashed.
+    if (firmware_signing::required()) {
+      constexpr char kSigPath[] = "/.inkmod/ota.sig";
+      Storage.remove(kSigPath);
+      bool signatureOk = false;
+      if (!otaSigUrl.empty()) {
+        const auto sigDl = HttpDownloader::downloadToFile(otaSigUrl, kSigPath, nullptr, nullptr, "", "");
+        signatureOk = sigDl == HttpDownloader::OK &&
+                      firmware_signing::verifyDigest(expectedDigest, kSigPath) == firmware_signing::Verdict::Valid;
+      } else {
+        LOG_ERR("OTA", "Release has no .sig asset but a signing key is configured");
+      }
+      Storage.remove(kSigPath);
+      if (!signatureOk) {
+        Storage.remove(OTA_STAGING_PATH);
+        return SIGNATURE_ERROR;
+      }
+      LOG_INF("OTA", "Firmware signature verified");
+    }
+
     struct FlashProgressCtx {
       OtaUpdater* self;
       ProgressCallback cb;
@@ -559,6 +587,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   LOG_INF("OTA", "C3: using authenticated wolfSSL staging OTA directly");
   return installViaAuthenticatedStaging();
 #else
+  // Streaming straight into the OTA partition cannot be verified before it is written: with a signing key
+  // configured always take the staged path, which checks the signature first.
+  if (firmware_signing::required()) return installViaAuthenticatedStaging();
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "HTTP OTA Begin Failed: %s; trying authenticated staging fallback", esp_err_to_name(esp_err));
@@ -609,6 +640,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return INTERNAL_UPDATE_ERROR;
   }
 
+  // esp_https_ota_finish selects the new partition, so record the rollback
+  // fallback (previous reader) durably first.
+  if (!boot_health::stageUpdate(esp_ota_get_next_update_partition(nullptr))) {
+    LOG_ERR("OTA", "Cannot persist update recovery record");
+    esp_https_ota_abort(ota_handle);
+    return INTERNAL_UPDATE_ERROR;
+  }
   esp_err = esp_https_ota_finish(ota_handle);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_https_ota_finish Failed: %s", esp_err_to_name(esp_err));

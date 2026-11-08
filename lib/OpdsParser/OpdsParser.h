@@ -7,47 +7,9 @@
 #include <cstdint>
 #include <string>
 
-constexpr size_t MAX_OPDS_FEED_ENTRIES = 32;
+#include <memory>
 
-/**
- * Type of OPDS entry.
- */
-enum class OpdsEntryType {
-  NAVIGATION,  // Link to another catalog
-  BOOK,        // Downloadable book
-  SEARCH,      // Synthetic "Search" row inserted by the browser
-  REFRESH,     // Synthetic "Refresh catalog" row inserted by the browser
-  INFO         // Metadata-only OPDS entry (author/book information)
-};
-
-enum class OpdsBookFormat : uint8_t { EPUB, FB2, FB2_ZIP };
-
-struct OpdsAcquisition {
-  OpdsBookFormat format = OpdsBookFormat::EPUB;
-  std::string href;
-};
-
-constexpr size_t MAX_OPDS_ACQUISITIONS = 3;
-
-enum class OpdsParserError { NONE, NO_ENTRY_BUFFER, INVALID_INPUT, PARSER_MEMORY, BUFFER_MEMORY, XML_PARSE, SINK_ERROR };
-
-/**
- * Represents an entry from an OPDS feed (either a navigation link or a book).
- */
-struct OpdsEntry {
-  OpdsEntryType type = OpdsEntryType::NAVIGATION;
-  std::string title;
-  std::string author;  // Only for books
-  std::string description;  // Short OPDS summary/content text
-  std::string href;    // Primary navigation/download URL (legacy compatibility)
-  std::string id;
-  std::string navigationHref;  // Optional details/navigation link for a publication
-  std::array<OpdsAcquisition, MAX_OPDS_ACQUISITIONS> acquisitions{};
-  uint8_t acquisitionCount = 0;
-};
-
-// Legacy alias for backward compatibility
-using OpdsBook = OpdsEntry;
+#include "OpdsEntry.h"
 
 /**
  * Lightweight read-only view over parsed OPDS entries.
@@ -142,6 +104,8 @@ class OpdsBookView {
  *     }
  *   }
  */
+class Opds2Feed;
+
 class OpdsParser final : public Print {
  public:
   using EntrySink = bool (*)(void* context, OpdsEntry&& entry);
@@ -153,9 +117,9 @@ class OpdsParser final : public Print {
   ~OpdsParser();
 
   // Disable copy
-  const std::string& getSearchTemplate() const { return searchTemplate; }
-  const std::string& getNextPageUrl() const { return nextPageUrl; }
-  const std::string& getPrevPageUrl() const { return prevPageUrl; }
+  const std::string& getSearchTemplate() const;
+  const std::string& getNextPageUrl() const;
+  const std::string& getPrevPageUrl() const;
   OpdsParser(const OpdsParser&) = delete;
   OpdsParser& operator=(const OpdsParser&) = delete;
 
@@ -191,6 +155,11 @@ class OpdsParser final : public Print {
   static void XMLCALL endElement(void* userData, const XML_Char* name);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
   bool resetXmlParser();
+  // Stores or forwards one finished entry (array or sink mode). False once the buffer is full or the sink refuses.
+  bool deliver(OpdsEntry&& entry);
+  static bool jsonSink(void* context, OpdsEntry&& entry);
+  // The first bytes of a feed decide the format: '{' is an OPDS 2.0 JSON feed, anything else Atom XML.
+  bool startJsonFeed();
   bool protectHeap(size_t requested = 0);
 
   std::string searchTemplate;
@@ -216,7 +185,15 @@ class OpdsParser final : public Print {
   bool inId = false;
   bool inSummary = false;
   bool inContent = false;
+  // Extended metadata element currently being read (0 none, 1 identifier, 2 series, 3 series index).
+  uint8_t inMeta = 0;
+  std::string seriesName;
+  std::string seriesIndex;
   bool discardCurrentEntry = false;
+
+  // OPDS 2.0 (JSON) feed, created when the first bytes show one; the Atom state above is unused then.
+  std::unique_ptr<Opds2Feed> jsonFeed;
+  bool formatKnown = false;
 
   bool errorOccured = false;
   OpdsParserError errorReason = OpdsParserError::NONE;

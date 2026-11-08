@@ -1,4 +1,6 @@
 #pragma once
+#include <string>
+
 #include "EpdFont.h"
 
 class EpdFontFamily {
@@ -15,6 +17,7 @@ class EpdFontFamily {
     SUP = 16,
     SUB = 32,
     SMALL_CAPS = 64,
+    RUBY_CONTINUE = 128,  // layout marker: follows the first base word of a ruby group; never drawn
   };
   struct GlyphData {
     const EpdFontData* fontData;
@@ -33,6 +36,10 @@ class EpdFontFamily {
   uint32_t getFallbackCodepoint(uint32_t cp, Style style = REGULAR) const;
   int8_t getKerning(uint32_t leftCp, uint32_t rightCp, Style style = REGULAR) const;
   uint32_t applyLigatures(uint32_t cp, const char*& text, Style style = REGULAR) const;
+
+  /// Runs the style's font's OpenType shaper over one Indic run (see EpdFontData::shapeHandler).
+  bool shapeRun(Style style, const uint32_t* cps, unsigned count, uint8_t script, const char* lang,
+                std::string* out) const;
 
  private:
   const EpdFont* regular;

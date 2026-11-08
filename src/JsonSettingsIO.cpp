@@ -1,6 +1,7 @@
 #include "JsonSettingsIO.h"
 
 #include <ArduinoJson.h>
+#include <BlePageTurnerJson.h>
 #ifdef SIMULATOR
 #include <ArduinoJsonStringCompat.h>
 #endif
@@ -15,6 +16,7 @@
 
 #include "InkMODSettings.h"
 #include "InkMODState.h"
+#include "OpdsProfile.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
@@ -209,6 +211,8 @@ bool JsonSettingsIO::saveSettings(const InkMODSettings& s, const char* path) {
   if (s.clockLastSyncedEpoch != 0) {
     doc["clockLastSyncedEpoch"] = s.clockLastSyncedEpoch;
   }
+
+  bleturner::writeJson(s.ble, doc);
 
   String json;
   serializeJson(doc, json);
@@ -411,6 +415,8 @@ bool JsonSettingsIO::loadSettings(InkMODSettings& s, const char* json, bool* nee
   s.clockDateHasBeenSynced = clamp(doc["clockDateHasBeenSynced"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
   s.clockLastSyncedEpoch = doc["clockLastSyncedEpoch"] | (uint32_t)0;
 
+  if (!bleturner::readJson(s.ble, doc) && needsResave) *needsResave = true;
+
   LOG_DBG("CPS", "Settings loaded from file");
 
   return true;
@@ -534,6 +540,9 @@ bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
     obj["username"] = server.username;
     obj["password_obf"] = obfuscation::obfuscateToBase64(server.password);
     obj["filenameFormat"] = opdsFilenameFormatToJson(server.filenameFormat);
+    if (!server.userAgent.empty()) obj["userAgent"] = server.userAgent;
+    if (!server.customHeader.empty()) obj["customHeader"] = server.customHeader;
+    if (!server.downloadFolder.empty()) obj["downloadFolder"] = server.downloadFolder;
   }
 
   String json;
@@ -559,6 +568,14 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     server.url = obj["url"] | std::string("");
     server.username = obj["username"] | std::string("");
     server.filenameFormat = opdsFilenameFormatFromJson(obj["filenameFormat"] | "");
+    server.userAgent = opds_profile::sanitizeUserAgent(obj["userAgent"] | std::string(""));
+    server.downloadFolder = opds_profile::sanitizeDownloadFolder(obj["downloadFolder"] | std::string(""));
+    {
+      opds_profile::Header header;
+      if (opds_profile::parseHeaderLine(obj["customHeader"] | std::string(""), header)) {
+        server.customHeader = opds_profile::formatHeaderLine(header);
+      }
+    }
     // Try the obfuscated key first; fall back to plaintext "password" for
     // files written before obfuscation was added (or hand-edited JSON).
     obfuscation::DecodeStatus status = obfuscation::DecodeStatus::INVALID;

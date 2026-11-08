@@ -185,9 +185,6 @@ void BookMenuSettingsActivity::render(RenderLock&&) {
     case Language::RU:
       helpText = "Удерживайте Вверх/Вниз для перемещения";
       break;
-    case Language::UK:
-      helpText = "Утримуйте Вгору/Вниз для переміщення";
-      break;
     case Language::EN:
     default:
       helpText = "Hold Up/Down to move item";

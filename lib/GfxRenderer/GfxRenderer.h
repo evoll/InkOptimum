@@ -1,6 +1,7 @@
 #pragma once
 
 #include <EpdFontFamily.h>
+#include <ScreenInsets.h>
 #include <HalDisplay.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -10,7 +11,8 @@ namespace BidiUtils {
 // AUTO: scan text for first strong directional character (P2/P3 rules)
 // LTR:  force left-to-right paragraph embedding level
 // RTL:  force right-to-left paragraph embedding level
-enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
+// VISUAL: the text is already in visual order (a bidi line's display form); draw and measure it as it stands.
+enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1, VISUAL = 2 };
 }  // namespace BidiUtils
 
 class FontCacheManager;
@@ -46,7 +48,10 @@ class GfxRenderer {
   HalDisplay& display;
   RenderMode renderMode;
   bool absoluteGrayscalePlanes_ = false;
-  Orientation orientation;
+  // Mutable: a vertical page switches frames from inside const draw calls (setDrawOrientation).
+  mutable Orientation orientation;
+  // What the reader actually holds; equal to `orientation` except while a vertical page draws in the turned frame.
+  Orientation heldOrientation_ = Portrait;
   bool fadingFix;
   uint8_t* frameBuffer = nullptr;
   uint16_t panelWidth = HalDisplay::DISPLAY_WIDTH;
@@ -107,6 +112,17 @@ class GfxRenderer {
 
   const EpdFontFamily* getMissingGlyphFallbackFamily(int primaryFontId) const;
 
+  // CJK interface fallback (see setUiCjkEnabled).
+  bool uiCjkEnabled_ = false;
+  SdCardFont* uiCjkFont_ = nullptr;
+  mutable EpdFontFamily uiCjkFamily_{nullptr};
+  mutable std::string uiCjkLoaded_;  // unique CJK characters already read from the card
+  mutable uint32_t uiCjkGeneration_ = 0;
+  void setUiCjkFont(SdCardFont* font);
+  // Returns the SD family to use for CJK characters of `text` drawn with built-in font `fontId`, after
+  // making sure their glyphs are loaded; nullptr when the text needs none.
+  const EpdFontFamily* uiCjkFallbackFor(int fontId, const char* text) const;
+
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
@@ -136,6 +152,17 @@ class GfxRenderer {
     freeBitmapScratchBuffers();
   }
 
+  // Viewable-area insets per physical edge (portrait): the factory bezel allowances unless the user calibrated them
+  // (Settings > System > Screen Calibration, stored in NVS and applied at boot).
+  const ScreenInsets& getViewableInsets() const { return viewableInsets; }
+  void setViewableInsets(const ScreenInsets& insets) {
+    if (insets.valid()) viewableInsets = insets;
+  }
+
+ private:
+  ScreenInsets viewableInsets;
+
+ public:
   static constexpr int VIEWABLE_MARGIN_TOP = 9;
   static constexpr int VIEWABLE_MARGIN_RIGHT = 3;
   static constexpr int VIEWABLE_MARGIN_BOTTOM = 3;
@@ -155,7 +182,11 @@ class GfxRenderer {
   // the underlying SdCardFont and forget the SD-side unregister.
   void removeFont(int fontId) {
     fontMap.erase(fontId);
-    sdCardFonts_.erase(fontId);
+    const auto it = sdCardFonts_.find(fontId);
+    if (it != sdCardFonts_.end()) {
+      if (it->second == uiCjkFont_) setUiCjkFont(nullptr);
+      sdCardFonts_.erase(it);
+    }
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   void setMissingGlyphFallbackFonts(int smallFontId, int largeFontId) {
@@ -163,11 +194,23 @@ class GfxRenderer {
     missingGlyphFallbackLargeFontId_ = largeFontId;
   }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
+
+  // Interface text in a CJK language. The built-in UI fonts have no ideographs, so while this is on the
+  // most recently registered SD reading font supplies the missing CJK glyphs of built-in-font text
+  // (glyphs are read from the card on demand and remembered until the font cache is cleared).
+  void setUiCjkEnabled(bool enabled);
+  bool isUiCjkEnabled() const { return uiCjkEnabled_; }
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
-  void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }
+  void registerSdCardFont(int fontId, SdCardFont* font) {
+    sdCardFonts_[fontId] = font;
+    if (uiCjkEnabled_) setUiCjkFont(font);
+  }
   void unregisterSdCardFont(int fontId) { removeFont(fontId); }
-  void clearSdCardFonts() { sdCardFonts_.clear(); }
+  void clearSdCardFonts() {
+    setUiCjkFont(nullptr);
+    sdCardFonts_.clear();
+  }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
   bool isSdCardFont(int fontId) const { return sdCardFonts_.count(fontId) > 0; }
   // Ensure SD card font glyph data is loaded for the given text. Called from layout code
@@ -180,8 +223,25 @@ class GfxRenderer {
   bool releaseSdCardFontForLowMemory(int fontId) const;
 
   // Orientation control (affects logical width/height and coordinate transforms)
-  void setOrientation(const Orientation o) { orientation = o; }
+  void setOrientation(const Orientation o) {
+    orientation = o;
+    heldOrientation_ = o;
+  }
   Orientation getOrientation() const { return orientation; }
+  // Draw in `o` without changing what getHeldOrientation() reports: a vertical page draws in the frame turned one
+  // step from the reader's, and anything that reads the device's orientation (touch, the input layer) must not see it.
+  void setDrawOrientation(const Orientation o) const { orientation = o; }
+  Orientation getHeldOrientation() const { return heldOrientation_; }
+  int getScreenWidth(Orientation o) const;
+  int getScreenHeight(Orientation o) const;
+  // Whether `cp` has a glyph of its own in the font (not a replacement).
+  bool hasGlyph(int fontId, uint32_t cp, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+
+  // OpenType shaping of one run of an Indic script (an ot::Script value) by the font's own shaper: appends a
+  // glyph key per glyph to *out (lib/Utf8/GlyphKey.h). False when the font has none (built-in and SD fonts, or
+  // a TTF the shaper cannot handle), leaving *out alone.
+  bool shapeIndicRun(int fontId, EpdFontFamily::Style style, const uint32_t* cps, unsigned count, uint8_t script,
+                     const char* lang, std::string* out) const;
 
   // Fading fix control
   void setFadingFix(const bool enabled) { fadingFix = enabled; }

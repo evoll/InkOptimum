@@ -229,3 +229,10 @@ int8_t EpdFontFamily::getKerning(const uint32_t leftCp, const uint32_t rightCp, 
 uint32_t EpdFontFamily::applyLigatures(const uint32_t cp, const char*& text, const Style style) const {
   return getFont(style)->applyLigatures(cp, text);
 }
+
+bool EpdFontFamily::shapeRun(const Style style, const uint32_t* cps, const unsigned count, const uint8_t script,
+                             const char* lang, std::string* out) const {
+  const EpdFont* font = getFont(style);
+  if (!font || !font->data || !font->data->shapeHandler) return false;
+  return font->data->shapeHandler(font->data->glyphMissCtx, cps, count, script, lang, out);
+}

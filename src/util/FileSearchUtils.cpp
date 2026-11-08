@@ -77,11 +77,13 @@ bool isSearchableBookFile(std::string_view filename) {
   // /My Clippings.txt is an exported notes file, not a book result.
   if (equalsIgnoreCase(filename, "My Clippings.txt")) return false;
 
-  bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2");
+  bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2") || FsHelpers::checkFileExtension(filename, ".fb3") ||
+              (FsHelpers::checkFileExtension(filename, ".docx") || FsHelpers::hasConvertedBookExtension(filename));
   bool isZip = FsHelpers::checkFileExtension(filename, ".zip");
   return FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
          FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
-         FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) || isFb2 || isZip;
+         FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) ||
+         FsHelpers::hasJpgExtension(filename) || isFb2 || isZip;
 }
 
 // Books = an opened file (a leaf result); Folder = a directory whose name

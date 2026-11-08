@@ -7,6 +7,11 @@
 uint32_t utf8NextCodepoint(const unsigned char** string);
 // Appends a Unicode codepoint to a std::string in UTF-8 encoding.
 void utf8AppendCodepoint(uint32_t cp, std::string& out);
+// The argument order of the witchhunt-derived code (BidiLine).
+inline void utf8AppendCodepoint(std::string& out, uint32_t cp) { utf8AppendCodepoint(cp, out); }
+
+// Byte length of the UTF-8 sequence lead byte `c` starts (1 for ASCII and for a byte that starts none).
+int utf8CodepointLen(unsigned char c);
 // Remove the last UTF-8 codepoint from a std::string and return the new size.
 size_t utf8RemoveLastChar(std::string& str);
 // Truncate string by removing N UTF-8 codepoints from the end.
@@ -16,6 +21,16 @@ void utf8TruncateChars(std::string& str, size_t numChars);
 // Returns the new length (<= len). If the buffer ends mid-sequence, the
 // incomplete trailing bytes are excluded.
 int utf8SafeTruncateBuffer(const char* buf, int len);
+
+// Unicode Default_Ignorable_Code_Point (BMP) formatting controls that carry no text: they must never occupy a cell,
+// draw, or join a word. U+00AD is excluded on purpose (lines break on it and draw a hyphen).
+inline bool utf8IsDefaultIgnorable(const uint32_t cp) {
+  if (cp < 0x034F) return false;
+  return (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x2065) ||
+         (cp >= 0x206A && cp <= 0x206F) || cp == 0xFEFF || (cp >= 0xFE00 && cp <= 0xFE0F) || cp == 0x034F ||
+         cp == 0x061C || (cp >= 0x115F && cp <= 0x1160) || (cp >= 0x17B4 && cp <= 0x17B5) ||
+         (cp >= 0x180B && cp <= 0x180F) || cp == 0x3164 || cp == 0xFFA0 || (cp >= 0xFFF0 && cp <= 0xFFF8);
+}
 
 // Returns true for CJK characters that allow line breaks on either side without hyphenation.
 // Covers CJK Unified Ideographs, Hiragana, Katakana, Hangul Syllables, CJK punctuation,

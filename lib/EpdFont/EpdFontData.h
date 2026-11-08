@@ -3,6 +3,7 @@
 
 #pragma once
 #include <cstdint>
+#include <string>
 
 /// Font metrics use "fixed-point 4" (4 fractional bits, i.e. 1/16-pixel
 /// resolution).  Both the 12.4 glyph advances (uint16_t) and the 4.4 kern
@@ -141,6 +142,25 @@ typedef struct {
   /// Context pointer for glyphMissHandler (typically SdCardFont*).  Also used by
   /// GfxRenderer::getGlyphBitmap() to retrieve overflow bitmaps via SdCardFont.
   void* glyphMissCtx;
+
+  /// Full-coverage query for handler-backed fonts (TTF): true when the font can render `cp`
+  /// without storage I/O. nullptr for fonts whose interval table is complete.
+  bool (*coverageHandler)(void* ctx, uint32_t codepoint);
+
+  /// Vector-font bitmap accessor (TtfEpdFont). When non-null, GfxRenderer::getGlyphBitmap()
+  /// returns vectorBitmapHandler(glyphMissCtx, glyph) instead of indexing ->bitmap or using the
+  /// SdCardFont overflow path. nullptr for every other font.
+  const uint8_t* (*vectorBitmapHandler)(void* ctx, const EpdGlyph* glyph);
+
+  /// Dynamic kerning for TTF fonts: 4.4 fixed-point pixel adjustment for the pair, 0 when none.
+  /// Checked by getKerning() before the static class tables. nullptr for built-in and SD fonts.
+  int8_t (*kernHandler)(void* ctx, uint32_t leftCp, uint32_t rightCp);
+
+  /// OpenType shaping for TTF fonts: shapes one word of an Indic script (`script` is an
+  /// ot::Script) and appends one glyph key (lib/Utf8/GlyphKey.h) per glyph to *out. False
+  /// leaves the word as it is. nullptr for built-in and SD fonts, which hold no glyph IDs.
+  bool (*shapeHandler)(void* ctx, const uint32_t* cps, unsigned count, uint8_t script, const char* lang,
+                       std::string* out);
 } EpdFontData;
 
 namespace syntheticGlyph {

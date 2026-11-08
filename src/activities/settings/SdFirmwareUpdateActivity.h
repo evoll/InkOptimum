@@ -46,10 +46,13 @@ class SdFirmwareUpdateActivity : public Activity {
   size_t writtenBytes = 0;
   unsigned int lastRenderedPercent = 101;
   std::string errorMessage;
+  bool untaggedAccepted = false;      // user acknowledged flashing an unmarked (stock/third-party) image
+  bool needsUntaggedConsent = false;  // last validation stopped only because the image has no board marker
 
   void launchPicker();
   void onPickerResult(const ActivityResult& result);
   bool validateFirmware();
+  void promptUntaggedWarning();
   void promptConfirmation();
   void onConfirmationResult(const ActivityResult& result);
   void performUpdate();

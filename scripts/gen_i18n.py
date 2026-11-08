@@ -553,8 +553,9 @@ def generate_keys_header(
     # Maps the old uint8_t index stored on disk to the current Language enum.
     # If a Language enum value listed here is ever removed, this will fail to
     # compile, signalling that the migration table needs updating.
+    # Index 2 was Ukrainian (support dropped); stored values fall back to EN.
     v1_codes = [
-        "EN", "RU", "UK",
+        "EN", "RU", "EN",
     ]
     lines.append("// V1 language.bin migration table (frozen enum order from 2f969a9)")
     lines.append("constexpr Language V1_LANGUAGES[] = {")

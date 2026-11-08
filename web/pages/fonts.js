@@ -759,7 +759,7 @@ function formatSize(bytes) {
     // Derive family name from a .cpfont filename: take everything before the
     // last '-' or '_' (that separator precedes the size suffix, e.g. Bookerly_12.cpfont).
     function familyFromFilename(name) {
-      const stem = name.replace(/\.cpfont$/i, '');
+      const stem = name.replace(/\.(cpfont|ttf|otf|ttc)$/i, '');
       const cut = Math.max(stem.lastIndexOf('-'), stem.lastIndexOf('_'));
       return cut > 0 ? stem.slice(0, cut) : stem;
     }
@@ -770,7 +770,8 @@ function formatSize(bytes) {
     }
 
     function cpfontFilesOnly(fileList) {
-      return Array.from(fileList).filter(f => /\.cpfont$/i.test(f.name));
+      // .cpfont bitmap fonts, plus TrueType/OpenType (accepted by boards with PSRAM; others answer with an error)
+      return Array.from(fileList).filter(f => /\.(cpfont|ttf|otf|ttc)$/i.test(f.name));
     }
 
     document.getElementById('fontFiles').addEventListener('change', function() {
@@ -844,3 +845,95 @@ function formatSize(bytes) {
     });
 
     loadFonts();
+
+
+// ---- Font catalogue (browser downloads, then uploads to the reader) ----
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  let catalog = null;
+
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  // GitHub release assets expose spaces as dots; every other host keeps the file name.
+  function assetUrl(baseUrl, name) {
+    const asset = /github\.com\/.+\/releases\//.test(baseUrl) ? name.replace(/ /g, '.') : name;
+    return baseUrl + encodeURIComponent(asset);
+  }
+  function setStatus(text, err) { const s = $('catalogStatus'); s.textContent = text || ''; s.className = err ? 'hint status-err' : 'hint'; }
+
+  async function installFamily(family, bar, button) {
+    button.disabled = true;
+    const total = family.files.length;
+    let done = 0;
+    try {
+      for (const file of family.files) {
+        setStatus(t('fonts.catalog_downloading', {name: file.name, current: done + 1, total}));
+        const res = await fetch(assetUrl(catalog.baseUrl, file.name));
+        if (!res.ok) throw new Error(file.name + ': HTTP ' + res.status);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (file.crc32 != null && crc32(bytes) !== file.crc32) throw new Error(file.name + ': ' + t('fonts.catalog_crc'));
+        const form = new FormData();
+        form.append('family', family.name);
+        form.append('file', new Blob([bytes]), file.name);
+        const up = await fetch('/api/fonts/upload', {method: 'POST', body: form});
+        const data = await up.json();
+        if (!data.ok) throw new Error(file.name + ': ' + (data.error || 'upload failed'));
+        done++;
+        bar.style.width = (done / total * 100) + '%';
+      }
+      setStatus(t('fonts.catalog_done', {family: family.name}));
+      if (typeof loadFonts === 'function') await loadFonts();
+    } catch (e) {
+      setStatus(t('fonts.catalog_failed', {msg: e.message}), true);
+    }
+    button.disabled = false;
+  }
+
+  function render() {
+    const list = $('catalogList'); list.textContent = '';
+    for (const family of catalog.families) {
+      const row = document.createElement('div'); row.className = 'cat-item';
+      const info = document.createElement('div');
+      const name = document.createElement('b'); name.textContent = family.name;
+      const meta = document.createElement('small');
+      meta.textContent = [family.description, family.languages, formatSize(family.totalSize)].filter(Boolean).join(' · ');
+      const bar = document.createElement('div'); bar.className = 'cat-bar'; bar.appendChild(document.createElement('i'));
+      info.append(name, meta, bar);
+      const button = document.createElement('button'); button.className = 'btn btn-primary'; button.textContent = t('fonts.catalog_install');
+      button.onclick = () => installFamily(family, bar.firstChild, button);
+      row.append(info, button); list.appendChild(row);
+    }
+    if (!catalog.families.length) list.textContent = t('fonts.catalog_empty');
+  }
+
+  async function load() {
+    $('catalogLoad').disabled = true;
+    setStatus(t('fonts.catalog_loading'));
+    try {
+      const info = await (await fetch('/api/fonts/catalog')).json();
+      const res = await fetch(info.manifestUrl);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const m = await res.json();
+      if (m.version !== info.manifestVersion) throw new Error(t('fonts.catalog_version'));
+      catalog = {baseUrl: m.baseUrl || '', families: (m.families || []).map(f => ({
+        name: f.name || '', description: f.description || '', languages: f.languages || '',
+        files: (f.files || []).filter(x => x && x.name), totalSize: (f.files || []).reduce((a, x) => a + (x.size || 0), 0)
+      })).filter(f => f.name && f.files.length)};
+      setStatus('');
+      render();
+    } catch (e) {
+      setStatus(t('fonts.catalog_unreachable', {msg: e.message}), true);
+    }
+    $('catalogLoad').disabled = false;
+  }
+  document.addEventListener('i18n:ready', () => { $('catalogLoad').addEventListener('click', load); });
+})();

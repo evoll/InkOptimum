@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -53,8 +54,13 @@ class ActivityManager {
 
   // Pending activity to be launched on next loop iteration
   std::unique_ptr<Activity> pendingActivity;
-  enum class PendingAction { None, Push, Pop, Replace };
+  enum class PendingAction { None, Push, Pop, Replace, ReplaceForSleep };
   PendingAction pendingAction = PendingAction::None;
+  // Counts screen changes, so the Bluetooth page turner can tell one visit of a book from the next.
+  // Written by the main loop under RenderLock; the render task captures it under that lock.
+  uint32_t screenVisit = 0;
+  // The screen visit whose frame the render task painted last.
+  std::atomic<uint32_t> paintedVisit{0};
   // See hasPendingActivityTransition() - covers the window between
   // releaseCurrentActivityHeavyResources() and the actual push/pop/replace
   // call, which pendingAction alone does not cover.
@@ -69,6 +75,10 @@ class ActivityManager {
   // Note: only one waiting task is supported at a time
   TaskHandle_t waitingTaskHandle = nullptr;
   portMUX_TYPE renderStateMux = portMUX_INITIALIZER_UNLOCKED;
+
+  // True while the render task is inside Activity::render(). BootHealth uses it so
+  // that a stuck renderer can never confirm a boot as healthy.
+  std::atomic<bool> renderPassActive{false};
 
   // Mutex to protect rendering operations from race conditions
   // Must only be used via RenderLock
@@ -103,6 +113,8 @@ class ActivityManager {
   }
 
  public:
+  bool isRenderActive() const { return renderPassActive.load(std::memory_order_acquire); }
+
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : renderer(renderer), mappedInput(mappedInput), renderingMutex(xSemaphoreCreateMutex()) {
     assert(renderingMutex != nullptr && "Failed to create rendering mutex");
@@ -149,6 +161,17 @@ class ActivityManager {
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
+  // Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
+  // a page or chapter turn from a remote. False when no book in front took the turn.
+  bool isForegroundReader() const;
+  bool isRemoteReaderContext() const;
+  bool remoteClick(RemoteButton button);
+  // Home is in front and has painted a frame of its own (not one left from the screen before).
+  bool isForegroundHomeShown() const;
+  uint32_t visit() const { return screenVisit; }
+  bool remoteTurn(bool forward, bool chapter);
+  // A remote button mapped to the reader menu (true) or to a new clipping (false).
+  bool remoteShortcut(bool readerMenu);
   // Unlike isReaderActivity(), this checks only the activity currently on
   // screen and ignores a reader parked underneath a modal/menu activity.
   bool isCurrentReaderActivity() const;

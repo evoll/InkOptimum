@@ -1,11 +1,12 @@
 add_executable(NativeFb2ZipTest
   NativeFb2ZipTest.cpp
   InflateOptimizationTest.cpp
-  ${REPO_ROOT}/lib/Fb2/native/ZipReader.cpp
-  ${REPO_ROOT}/lib/Fb2/native/Inflate.cpp
+  ${REPO_ROOT}/lib/FictionBookCore/ZipReader.cpp
+  ${REPO_ROOT}/lib/FictionBookCore/Inflate.cpp
 )
 
 target_include_directories(NativeFb2ZipTest PRIVATE
+  ${REPO_ROOT}/lib/FictionBookCore
   ${REPO_ROOT}/lib/Fb2/native
   ${REPO_ROOT}/src/reader/core/io
 )

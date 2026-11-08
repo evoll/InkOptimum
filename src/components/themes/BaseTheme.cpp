@@ -12,12 +12,14 @@
 #include <cstdint>
 #include <numeric>
 #include <string>
+#include <vector>
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/BookReadingStats.h"
 #include "components/UITheme.h"
 #include "UiTextSize.h"
+#include "util/StatusBarSeparator.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -839,6 +841,10 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   const auto screenHeight = renderer.getScreenHeight();
   auto textY = screenHeight - UITheme::getInstance().getStatusBarHeight() - orientedMarginBottom - paddingBottom - 4;
   int progressTextWidth = 0;
+  // Centered mode: every text item is merged into one separator-joined line
+  // (battery icon and bookmark stay on the left).
+  const bool centered = SETTINGS.statusBarCentered != 0;
+  std::vector<std::string> centerParts;
 
   if (SETTINGS.statusBarBookProgressPercentage || SETTINGS.statusBarChapterPageCount) {
     // Right aligned text for progress counter
@@ -863,11 +869,15 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
       snprintf(progressStr, sizeof(progressStr), "%d/%d", displayCurrentPage, displayPageCount);
     }
 
-    progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);
-    renderer.drawText(
-        SMALL_FONT_ID,
-        renderer.getScreenWidth() - metrics.statusBarHorizontalMargin - orientedMarginRight - progressTextWidth, textY,
-        progressStr, foregroundBlack);
+    if (centered) {
+      centerParts.emplace_back(progressStr);
+    } else {
+      progressTextWidth = renderer.getTextWidth(UITheme::getStatusBarFontId(), progressStr);
+      renderer.drawText(
+          UITheme::getStatusBarFontId(),
+          renderer.getScreenWidth() - metrics.statusBarHorizontalMargin - orientedMarginRight - progressTextWidth,
+          textY, progressStr, foregroundBlack);
+    }
   }
 
   // Draw Progress Bar
@@ -926,11 +936,13 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   }
 
   const bool hasTimeLeftLabel = timeLeftLabel != nullptr && timeLeftLabel[0] != '\0';
-  if (hasTimeLeftLabel) {
+  if (hasTimeLeftLabel && centered) {
+    centerParts.emplace_back(timeLeftLabel);
+  } else if (hasTimeLeftLabel) {
     const bool hasLeftItem = leftClusterWidth > 0;
     const int timeLeftX = leftClusterX + leftClusterWidth + (hasLeftItem ? statusItemGap : 0);
-    renderer.drawText(SMALL_FONT_ID, timeLeftX, textY, timeLeftLabel, foregroundBlack);
-    const int timeLeftWidth = renderer.getTextWidth(SMALL_FONT_ID, timeLeftLabel);
+    renderer.drawText(UITheme::getStatusBarFontId(), timeLeftX, textY, timeLeftLabel, foregroundBlack);
+    const int timeLeftWidth = renderer.getTextWidth(UITheme::getStatusBarFontId(), timeLeftLabel);
     leftClusterWidth += (hasLeftItem ? statusItemGap : 0) + timeLeftWidth;
   }
 
@@ -946,13 +958,46 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   // drawTopStatusBarClock(), same as before this setting existed.
   if (SETTINGS.readerClockAtBottom && SETTINGS.shouldShowClockInReader() && halClock.isAvailable()) {
     char clockBuf[9];
-    if (halClock.formatTime(clockBuf, sizeof(clockBuf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+    if (!halClock.formatTime(clockBuf, sizeof(clockBuf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+      // clock unavailable: nothing to draw
+    } else if (centered) {
+      centerParts.emplace_back(clockBuf);
+    } else {
       const bool hasLeftItem = leftClusterWidth > 0;
       const int clockX = leftClusterX + leftClusterWidth + (hasLeftItem ? statusItemGap : 0);
-      renderer.drawText(SMALL_FONT_ID, clockX, textY, clockBuf, foregroundBlack);
-      const int clockWidth = renderer.getTextWidth(SMALL_FONT_ID, clockBuf);
+      renderer.drawText(UITheme::getStatusBarFontId(), clockX, textY, clockBuf, foregroundBlack);
+      const int clockWidth = renderer.getTextWidth(UITheme::getStatusBarFontId(), clockBuf);
       leftClusterWidth += (hasLeftItem ? statusItemGap : 0) + clockWidth;
     }
+  }
+
+  if (centered) {
+    // Title goes last in the line; textYOffset keeps the same baseline shift
+    // the non-centered title uses.
+    centerParts.push_back(title);
+    const std::string line = StatusBarSeparator::join(centerParts, SETTINGS.statusBarSeparator);
+    if (!line.empty()) {
+      const int margin = leftClusterWidth + 30;
+      const int usable = renderer.getScreenWidth() - 2 * metrics.statusBarHorizontalMargin - orientedMarginLeft -
+                         orientedMarginRight;
+      // Prefer true screen centre; fall back to the space right of the left cluster.
+      int avail = usable - 2 * margin;
+      const int left = margin;
+      std::string drawn = line;
+      int w = renderer.getTextWidth(UITheme::getStatusBarFontId(), drawn.c_str());
+      if (w > avail) {
+        // Not enough room around the centre: use all space right of the left cluster.
+        avail = usable - margin - 30;
+        if (w > avail) {
+          drawn = renderer.truncatedText(UITheme::getStatusBarFontId(), drawn.c_str(), avail);
+          w = renderer.getTextWidth(UITheme::getStatusBarFontId(), drawn.c_str());
+        }
+      }
+      renderer.drawText(UITheme::getStatusBarFontId(),
+                        left + metrics.statusBarHorizontalMargin + orientedMarginLeft + (avail - w) / 2,
+                        textY - textYOffset, drawn.c_str(), foregroundBlack);
+    }
+    return;
   }
 
   // Draw Title
@@ -972,18 +1017,18 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     int availableTitleSpace = rendererableScreenWidth - 2 * titleMarginLeftAdjusted;
 
     int titleWidth;
-    titleWidth = renderer.getTextWidth(SMALL_FONT_ID, title.c_str());
+    titleWidth = renderer.getTextWidth(UITheme::getStatusBarFontId(), title.c_str());
     if (titleWidth > availableTitleSpace) {
       // Not enough space to center on the screen, center it within the remaining space instead
       availableTitleSpace = rendererableScreenWidth - titleMarginLeft - titleMarginRight;
       titleMarginLeftAdjusted = titleMarginLeft;
     }
     if (titleWidth > availableTitleSpace) {
-      title = renderer.truncatedText(SMALL_FONT_ID, title.c_str(), availableTitleSpace);
-      titleWidth = renderer.getTextWidth(SMALL_FONT_ID, title.c_str());
+      title = renderer.truncatedText(UITheme::getStatusBarFontId(), title.c_str(), availableTitleSpace);
+      titleWidth = renderer.getTextWidth(UITheme::getStatusBarFontId(), title.c_str());
     }
 
-    renderer.drawText(SMALL_FONT_ID,
+    renderer.drawText(UITheme::getStatusBarFontId(),
                       titleMarginLeftAdjusted + metrics.statusBarHorizontalMargin + orientedMarginLeft +
                           (availableTitleSpace - titleWidth) / 2,
                       textY, title.c_str(), foregroundBlack);

@@ -7,6 +7,8 @@
 // This size is part of the on-disk format — do not change without incrementing the file version.
 inline constexpr size_t BOOKMARK_CHAPTER_TITLE_MAX = 48;
 inline constexpr size_t BOOKMARK_SNIPPET_MAX = 64;
+// Optional user-given name ("favourite page"). Empty string means unnamed. Stored since file version 6.
+inline constexpr size_t BOOKMARK_NAME_MAX = 40;
 
 struct Bookmark {
   uint16_t spineIndex;
@@ -16,6 +18,7 @@ struct Bookmark {
   // Optional 1-based paragraph anchor from the section cache. UINT16_MAX means unavailable.
   uint16_t paragraphIndex = UINT16_MAX;
   char snippet[BOOKMARK_SNIPPET_MAX] = {};
+  char name[BOOKMARK_NAME_MAX] = {};
 };
 
 struct BookmarkedBookEntry {
@@ -45,6 +48,8 @@ class BookmarkStore {
                         uint16_t paragraphIndex = UINT16_MAX, const char* snippet = nullptr);
   void removeBookmarkForPage(uint16_t spineIndex, float pageProgress, int pageCount);
   bool removeBookmarkAt(size_t index);
+  // Sets (or clears, when `name` is empty after normalisation) the user name of a bookmark.
+  bool renameBookmarkAt(size_t index, const std::string& name);
   bool hasBookmarkForPage(uint16_t spineIndex, float pageProgress, int pageCount);
   const std::vector<Bookmark>& getBookmarks() const { return bookmarks; }
 

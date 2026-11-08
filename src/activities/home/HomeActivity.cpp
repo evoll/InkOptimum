@@ -28,6 +28,12 @@
 #include "BookActions.h"
 #include "BookmarkStore.h"
 #include "BookmarksHomeActivity.h"
+#include "activities/apps/AppsActivity.h"
+#include "activities/library/LibraryActivity.h"
+#include "activities/plugins/PluginsActivity.h"
+#include "activities/weather/WeatherActivity.h"
+#include "activities/weather/WeatherSettingsActivity.h"
+#include "weather/WeatherService.h"
 #include "InkMODSettings.h"
 #include "activities/reader/ReaderUtils.h"
 #include "InkMODState.h"
@@ -38,6 +44,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
+#include "components/themes/grid/GridTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/minimal/MinimalTheme.h"
@@ -63,6 +70,10 @@ enum class HomeMenuAction {
   OpdsBrowser,
   ReadingStats,
   Bookmarks,
+  Weather,
+  LibraryScreen,
+  Plugins,
+  Apps,
   FileTransfer,
   Settings,
 };
@@ -233,7 +244,30 @@ bool ensureReusableCoverPath(RecentBook& book) {
   return true;
 }
 
+// The Weather entry is opt-in (Settings > Weather on home screen).
+bool weatherEntryVisible() { return SETTINGS.weatherOnHome != 0; }
+// The Library entry is opt-in too (Settings > Library on home screen).
+bool libraryEntryVisible() { return SETTINGS.libraryOnHome != 0; }
+// The Plugins entry follows the global Plugins setting (Settings > System).
+bool pluginsEntryVisible() { return SETTINGS.pluginsEnabled != 0; }
+
+bool isGridTheme() { return static_cast<InkMODSettings::UI_THEME>(SETTINGS.uiTheme) == InkMODSettings::UI_THEME::GRID; }
+
+// Grid home: a fixed 2x3 set of entries. Everything that is installed (built-in apps and plugins) lives under Apps.
+void appendGridMenuItems(HomeMenuEntries& items) {
+  items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
+  items.push({tr(STR_SEARCH_FILES), Search, HomeMenuAction::SearchFiles});
+  items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
+  items.push({tr(STR_LIBRARY), Book, HomeMenuAction::LibraryScreen});
+  items.push({tr(STR_APPS), Library, HomeMenuAction::Apps});
+  items.push({tr(STR_SETTINGS_TITLE), Settings, HomeMenuAction::Settings});
+}
+
 void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks) {
+  if (isGridTheme()) {
+    appendGridMenuItems(items);
+    return;
+  }
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
   if (SETTINGS.showHomeSearch) {
     items.push({tr(STR_SEARCH_FILES), Search, HomeMenuAction::SearchFiles});
@@ -248,6 +282,15 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
   }
   if (hasBookmarks) {
     items.push({tr(STR_BOOKMARKS), BookmarkIcon, HomeMenuAction::Bookmarks});
+  }
+  if (weatherEntryVisible()) {
+    items.push({tr(STR_WEATHER), Weather, HomeMenuAction::Weather});
+  }
+  if (libraryEntryVisible()) {
+    items.push({tr(STR_LIBRARY), Book, HomeMenuAction::LibraryScreen});
+  }
+  if (pluginsEntryVisible()) {
+    items.push({tr(STR_PLUGINS), Folder, HomeMenuAction::Plugins});
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
@@ -275,6 +318,15 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
   }
   if (hasReadingStats) {
     items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
+  }
+  if (weatherEntryVisible()) {
+    items.push({tr(STR_WEATHER), Weather, HomeMenuAction::Weather});
+  }
+  if (libraryEntryVisible()) {
+    items.push({tr(STR_LIBRARY), Book, HomeMenuAction::LibraryScreen});
+  }
+  if (pluginsEntryVisible()) {
+    items.push({tr(STR_PLUGINS), Folder, HomeMenuAction::Plugins});
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
@@ -427,6 +479,10 @@ void appendCarouselMenuStateToKey(std::string& key, const bool hasOpdsServers, c
   key += hasReadingStats ? "stats:1" : "stats:0";
   key += '\0';
   key += hasBookmarks ? "bookmarks:1" : "bookmarks:0";
+  key += '\0';
+  key += weatherEntryVisible() ? "weather:1" : "weather:0";
+  key += libraryEntryVisible() ? "library:1" : "library:0";
+  key += pluginsEntryVisible() ? "plugins:1" : "plugins:0";
   key += '\0';
 }
 
@@ -1348,6 +1404,18 @@ void HomeActivity::loop() {
               case HomeMenuAction::Bookmarks:
                 onBookmarksOpen();
                 break;
+              case HomeMenuAction::Weather:
+                onWeatherOpen();
+                break;
+              case HomeMenuAction::LibraryScreen:
+                onLibraryOpen();
+                break;
+              case HomeMenuAction::Plugins:
+                onPluginsOpen();
+                break;
+              case HomeMenuAction::Apps:
+                onAppsOpen();
+                break;
               case HomeMenuAction::FileTransfer:
                 onFileTransferOpen();
                 break;
@@ -1389,6 +1457,18 @@ void HomeActivity::loop() {
             break;
           case HomeMenuAction::Bookmarks:
             onBookmarksOpen();
+            break;
+          case HomeMenuAction::Weather:
+            onWeatherOpen();
+            break;
+          case HomeMenuAction::LibraryScreen:
+            onLibraryOpen();
+            break;
+          case HomeMenuAction::Plugins:
+            onPluginsOpen();
+            break;
+          case HomeMenuAction::Apps:
+            onAppsOpen();
             break;
           case HomeMenuAction::FileTransfer:
             onFileTransferOpen();
@@ -1660,6 +1740,10 @@ void HomeActivity::loop() {
       case HomeMenuAction::OpdsBrowser: onOpdsBrowserOpen(); break;
       case HomeMenuAction::ReadingStats: onReadingStatsOpen(); break;
       case HomeMenuAction::Bookmarks: onBookmarksOpen(); break;
+      case HomeMenuAction::Weather: onWeatherOpen(); break;
+      case HomeMenuAction::LibraryScreen: onLibraryOpen(); break;
+      case HomeMenuAction::Plugins: onPluginsOpen(); break;
+      case HomeMenuAction::Apps: onAppsOpen(); break;
       case HomeMenuAction::FileTransfer: onFileTransferOpen(); break;
       case HomeMenuAction::Settings: onSettingsOpen(); break;
     }
@@ -1824,7 +1908,18 @@ void HomeActivity::loop() {
           }
         }
 
-        if (menuCount > 0) {
+        if (menuCount > 0 && theme == InkMODSettings::UI_THEME::GRID) {
+          // Two-column grid: hit-test with the exact geometry the theme draws.
+          const int menuRectTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+          const int menuHeight = std::max(0, pageHeight - metrics.buttonHintsHeight - menuRectTop);
+          const int cell = GridTheme::hitTest(Rect{0, menuRectTop, pageWidth, menuHeight}, menuCount, tx, ty);
+          if (cell >= 0) {
+            mappedInput.suppressTouchContact();
+            selectorIndex = getHomeMenuSelectionOffset(recentBooks) + cell;
+            activateSelection();
+            return;
+          }
+        } else if (menuCount > 0) {
           const bool lyra3 = theme == InkMODSettings::UI_THEME::LYRA_3_COVERS;
           const int coverTileHeight =
               lyra3 ? Lyra3CoversTheme::computeCoverTileHeight(renderer, pageWidth, recentBooks)
@@ -2133,7 +2228,8 @@ void HomeActivity::openSearchResultPath(const std::string& fullPath) {
   // with, and errored out trying to parse it as one instead.
   const bool isZip = FsHelpers::checkFileExtension(fullPath, ".zip");
   const BookArchiveType archiveType = isZip ? detectBookArchiveType(fullPath) : BookArchiveType::None;
-  const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || archiveType == BookArchiveType::Fb2;
+  const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || FsHelpers::checkFileExtension(fullPath, ".fb3") ||
+                     (FsHelpers::checkFileExtension(fullPath, ".docx") || FsHelpers::hasConvertedBookExtension(fullPath)) || FsHelpers::hasMarkdownExtension(fullPath) || archiveType == BookArchiveType::Fb2;
 
   if (isFb2) {
     const std::string cacheBasePath = "/.inkmod";
@@ -2294,4 +2390,44 @@ void HomeActivity::onReadingStatsOpen() {
 void HomeActivity::onBookmarksOpen() {
   startActivityForResult(std::make_unique<BookmarksHomeActivity>(renderer, mappedInput),
                          [this](const ActivityResult&) { requestUpdate(); });
+}
+
+void HomeActivity::onLibraryOpen() {
+  startActivityForResult(std::make_unique<LibraryActivity>(renderer, mappedInput),
+                         [this](const ActivityResult&) { requestUpdate(); });
+}
+
+void HomeActivity::onAppsOpen() {
+  startActivityForResult(std::make_unique<AppsActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
+    // Built-in apps are opened here so Home keeps owning its state (stats, covers, navigation).
+    if (!result.isCancelled) {
+      if (const auto* menu = std::get_if<MenuResult>(&result.data)) {
+        switch (menu->action) {
+          case AppsActivity::ACTION_WEATHER: onWeatherOpen(); return;
+          case AppsActivity::ACTION_READING_STATS: onReadingStatsOpen(); return;
+          case AppsActivity::ACTION_BOOKMARKS: onBookmarksOpen(); return;
+          case AppsActivity::ACTION_OPDS: onOpdsBrowserOpen(); return;
+          case AppsActivity::ACTION_FILE_TRANSFER: onFileTransferOpen(); return;
+          default: break;
+        }
+      }
+    }
+    requestUpdate();
+  });
+}
+
+void HomeActivity::onPluginsOpen() {
+  startActivityForResult(std::make_unique<PluginsActivity>(renderer, mappedInput),
+                         [this](const ActivityResult&) { requestUpdate(); });
+}
+
+void HomeActivity::onWeatherOpen() {
+  // Without a city there is nothing to show: go straight to the settings so it can be chosen.
+  if (WEATHER.settings().hasLocation) {
+    startActivityForResult(std::make_unique<WeatherActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
+  } else {
+    startActivityForResult(std::make_unique<WeatherSettingsActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
+  }
 }

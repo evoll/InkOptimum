@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <Arduino.h>
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
@@ -16,6 +17,7 @@
 #include "ClippingStore.h"
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
+#include "LinkNoteTitle.h"
 #include "ReaderUtils.h"
 #include "activities/Activity.h"
 
@@ -72,6 +74,13 @@ class EpubReaderActivity final : public Activity {
   uint32_t sessionPaceSampleSeconds = 0;
   uint16_t sessionPaceSampleCount = 0;
   uint32_t sessionReadingSeconds = 0;
+  // Plugin events: wall-clock start of this reading session and whole-book progress then (basis points).
+  // reader.session accounting (CrossPoint rules): a dwell counts when 2..1800 s; the dwell on a page reached by
+  // a reverse turn or a jump (chapter/percent/bookmark...) is excluded.
+  uint32_t pluginSessionSeconds = 0;
+  bool pluginDwellExcluded = false;
+  long pluginSessionStartEpoch = 0;
+  int pluginSessionStartBp = 0;
   uint16_t lastAutoPageTurnIntervalSeconds = 0;
   BookReadingStats stats;
   GlobalReadingStats globalStats;
@@ -104,6 +113,12 @@ class EpubReaderActivity final : public Activity {
   // One synchronous reader operation at a time. Navigation only invalidates
   // its generation; no background parser or second SD reader is created.
   reader::ReaderWorkController readerWork;
+  // Idle-time preparation of the next chapter's page cache. Runs inside the render task after the
+  // current page is on screen, only on the last pages of a chapter, and any button press cancels it.
+  void prefetchNextSection(uint16_t viewportWidth, uint16_t viewportHeight);
+  std::atomic<bool> prefetchActive{false};
+  int prefetchTriedSpine = -1;  // one attempt per spine; reset when the layout changes the cache key
+  static constexpr int PREFETCH_PAGES_BEFORE_END = 2;
   std::atomic<int32_t> coalescedPageDelta{0};
   std::atomic<int32_t> coalescedSpineDelta{0};
   std::atomic<uint32_t> navigationSettleUntilMs{0};
@@ -145,6 +160,7 @@ class EpubReaderActivity final : public Activity {
   static constexpr int MAX_FOOTNOTE_DEPTH = 3;
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
+  void previewOrOpenFootnote(const std::string& href, std::function<void()> onBack);
 
   void renderContents(std::unique_ptr<Page> page, int fontId, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
@@ -192,14 +208,28 @@ class EpubReaderActivity final : public Activity {
   void applyOrientation(uint8_t orientation);
   void executeLongPressMenuAction();
   void pageTurn(bool isForwardTurn, const char* source = "unknown");
+  void skipToChapter(bool nextTriggered);
+
+  // Bluetooth page turner: every chapter build stops the radio until the chapter is built and its
+  // page is shown. False: the radio still holds or is taking the heap, and the build must not run.
+  std::atomic<bool> radioReleasedForBuild{false};
+  // True once render() has put a page on screen; a remote may turn it only then.
+  std::atomic<bool> pageRendered{false};
+  bool makeRoomForChapterBuild();
+  static constexpr uint32_t BUILD_ROOM_WAIT_MS = 5000;
+  static constexpr uint32_t BUILD_ROOM_STEP_MS = 50;
+  // "Connecting Bluetooth…" or "Bluetooth failed" in place of the status bar title.
+  mutable LinkNoteTitle linkNoteTitle;
   bool coalesceNavigationWhileLoading();
   void applyCoalescedNavigationIfReady();
   float getCurrentBookProgressPercent() const;
+  void emitPluginExitEvents();
   void initializeCompletionPromptTrigger();
   bool isAtOrPastCompletionTrigger() const;
   bool shouldQueueCompletionPromptOnChapterExit() const;
   void queueCompletionPromptIfNeeded();
   void setBookCompleted(bool isCompleted);
+  void offerNextBook();
   void showCompletedFeedback(bool isCompleted);
   void showTiltPageTurnFeedback(bool enabled);
 
@@ -251,6 +281,10 @@ class EpubReaderActivity final : public Activity {
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
+  bool acceptsRemoteInput() const override { return pageRendered.load(std::memory_order_acquire); }
+  bool remoteTurn(bool forward, bool chapter) override;
+  bool remoteShortcut(bool readerMenu) override;
+  bool remoteInputBlocked() const override;
   bool handleShortcutAction(uint8_t rawAction) override;
   std::string getCurrentBookPath() const override { return epub ? epub->getPath() : std::string{}; }
   // Same cleanup the in-reader SYNC menu action already does before handing

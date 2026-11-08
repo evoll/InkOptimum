@@ -17,6 +17,8 @@ bool TocNcxParser::setup() {
 
   currentLabel.reserve(96);
   currentSrc.reserve(128);
+  decodedTarget.reserve(128);
+  normalisedHref.reserve(128);
   currentTarget.reserve(baseContentPath.size() + 128);
   currentAnchor.reserve(48);
 
@@ -132,13 +134,14 @@ void XMLCALL TocNcxParser::endElement(void* userData, const XML_Char* name) {
       const size_t pos = self->currentTarget.find('#');
       self->currentAnchor.clear();
       if (pos != std::string::npos) {
-        self->currentAnchor = FsHelpers::decodeUriEscapes(std::string_view{self->currentTarget}.substr(pos + 1));
+        FsHelpers::decodeUriEscapes(std::string_view{self->currentTarget}.substr(pos + 1), self->currentAnchor);
         self->currentTarget.resize(pos);
       }
-      std::string href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->currentTarget));
+      FsHelpers::decodeUriEscapes(self->currentTarget, self->decodedTarget);
+      FsHelpers::normalisePath(self->decodedTarget, self->normalisedHref);
 
       if (self->cache) {
-        self->cache->createTocEntry(self->currentLabel, href, self->currentAnchor, self->currentDepth);
+        self->cache->createTocEntry(self->currentLabel, self->normalisedHref, self->currentAnchor, self->currentDepth);
       }
 
       self->currentLabel.clear();

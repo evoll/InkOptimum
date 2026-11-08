@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Epub.h>
+#include <FileReplace.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -11,6 +12,8 @@
 #include <cstring>
 #include <memory>
 #include <new>
+
+#include "WebAccessGuard.h"
 
 #include "InkMODSettings.h"
 #include "util/BookCacheUtils.h"
@@ -29,6 +32,21 @@ bool isProtectedPathSegment(const char* name) {
 // ESP32 doesn't have real-time clock set by default, so we use a fixed epoch date
 // as a fallback. The date is not critical for WebDAV Class 1 operations.
 const char* FIXED_DATE = "Thu, 01 Jan 2024 00:00:00 GMT";
+
+// For a MOVE or COPY onto an existing destination: answers it, and returns true, when source and
+// destination are one file under two spellings (/Books/a.epub and /books/A.EPUB on FAT), or when
+// that cannot be told. Comparing the paths misses them, and replacing such a destination means
+// replacing the source with itself: a MOVE that removed the destination first deleted the file.
+// Ported from crosspoint-reader PR #3979 (phuclee, @phucisstupid).
+bool answeredAsSameFile(WebServer& s, const String& srcPath, const String& dstPath) {
+  bool same = false;
+  if (!Storage.areSameFile(srcPath.c_str(), dstPath.c_str(), same)) {
+    s.send(500, "text/plain", "Failed to identify source and destination");
+    return true;
+  }
+  if (same) s.send(204);  // as for an identical path: the file is already there
+  return same;
+}
 }  // namespace
 
 // ── RequestHandler interface ─────────────────────────────────────────────────
@@ -110,14 +128,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     if (_putFile) _putFile.close();
     if (_putOk) {
       String tempPath = _putPath + ".davtmp";
-      if (_putExisted) Storage.remove(_putPath.c_str());
-      HalFile tmp = Storage.open(tempPath.c_str());
-      if (tmp) {
-        _putOk = tmp.rename(_putPath.c_str());
-        tmp.close();
-      } else {
-        _putOk = false;
-      }
+      _putOk = FileReplace::replace(Storage, tempPath.c_str(), _putPath.c_str());
       if (!_putOk) Storage.remove(tempPath.c_str());
     }
     LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);
@@ -241,11 +252,11 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
     while (file) {
       file.getName(name, sizeof(name));
 
-      if (!isProtectedPathSegment(name)) {
-        String childPath = path;
-        if (!childPath.endsWith("/")) childPath += "/";
-        childPath += name;
+      String childPath = path;
+      if (!childPath.endsWith("/")) childPath += "/";
+      childPath += name;
 
+      if (!isProtectedPathSegment(name) && !web_access::isSecretPath(childPath.c_str())) {
         if (file.isDirectory()) {
           sendPropEntry(s, childPath, true, 0, FIXED_DATE);
         } else {
@@ -545,6 +556,7 @@ void WebDAVHandler::handleMove(WebServer& s) {
     s.send(500, "text/plain", "Failed to open source");
     return;
   }
+  if (dstExists && answeredAsSameFile(s, srcPath, dstPath)) return;
 
   clearBookCache(srcPath.c_str());
   bool success = file.rename(dstPath.c_str());
@@ -618,6 +630,10 @@ void WebDAVHandler::handleCopy(WebServer& s) {
 
   if (dstExists) {
     Storage.remove(dstPath.c_str());
+  }
+  if (dstExists && answeredAsSameFile(s, srcPath, dstPath)) {
+    srcFile.close();
+    return;
   }
 
   HalFile dstFile;
@@ -770,6 +786,9 @@ void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
 }
 
 bool WebDAVHandler::isProtectedPath(const String& path) const {
+  // Credential files are refused unconditionally, even with "show hidden files" enabled.
+  if (web_access::isSecretPath(path.c_str())) return true;
+
   // Check every segment of the path, not just the last one.
   // This prevents access to e.g. /.hidden/somefile or /System Volume Information/foo
   int start = 0;

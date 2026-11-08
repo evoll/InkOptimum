@@ -9,11 +9,14 @@
 #include <functional>
 #include <limits>
 
+#include "BookmarkName.h"
+
 namespace {
 constexpr uint8_t LEGACY_VERSION = 2;
 constexpr uint8_t COUNT_U16_VERSION = 3;
 constexpr uint8_t PARAGRAPH_ANCHOR_VERSION = 4;
-constexpr uint8_t VERSION = 5;
+constexpr uint8_t SNIPPET_VERSION = 5;
+constexpr uint8_t VERSION = 6;  // v6 adds the optional user-given bookmark name
 // Stored count is uint16_t in v3+, but we keep an in-memory safety cap for ESP32-C3 RAM.
 constexpr uint16_t MAX_BOOKMARKS = 1024;
 constexpr size_t INITIAL_BOOKMARK_RESERVE = 8;
@@ -38,6 +41,11 @@ std::string legacyStoreFilePathForBook(const std::string& filePath, const std::s
          ".bin";
 }
 
+bool isSupportedVersion(const uint8_t version) {
+  return version == LEGACY_VERSION || version == COUNT_U16_VERSION || version == PARAGRAPH_ANCHOR_VERSION ||
+         version == SNIPPET_VERSION || version == VERSION;
+}
+
 bool readBookmarkCount(FsFile& file, const uint8_t version, uint16_t& count) {
   if (version == LEGACY_VERSION) {
     uint8_t legacyCount = 0;
@@ -46,7 +54,7 @@ bool readBookmarkCount(FsFile& file, const uint8_t version, uint16_t& count) {
     return true;
   }
 
-  if (version == COUNT_U16_VERSION || version == PARAGRAPH_ANCHOR_VERSION || version == VERSION) {
+  if (isSupportedVersion(version)) {
     serialization::readPod(file, count);
     return true;
   }
@@ -171,8 +179,7 @@ bool readBookmarkFileHeader(const std::string& fullPath, const char* name, Bookm
   }
   uint8_t version;
   serialization::readPod(f, version);
-  if (version != LEGACY_VERSION && version != COUNT_U16_VERSION && version != PARAGRAPH_ANCHOR_VERSION &&
-      version != VERSION) {
+  if (!isSupportedVersion(version)) {
     f.close();
     return false;
   }
@@ -326,12 +333,18 @@ void BookmarkStore::unload() {
 BookmarkStore::AddResult BookmarkStore::addBookmark(uint16_t spineIndex, float progress, int pageCount,
                                                     const char* chapterTitle, uint16_t paragraphIndex,
                                                     const char* snippet) {
+  char preservedName[BOOKMARK_NAME_MAX] = {};
   if (pageCount > 0) {
     const float pageSlice = 1.0f / static_cast<float>(pageCount);
     const float pageStart = progress;
     const float pageEnd = progress + pageSlice;
     std::erase_if(bookmarks, [&](const Bookmark& b) {
-      return b.spineIndex == spineIndex && b.progress >= pageStart && b.progress < pageEnd;
+      if (b.spineIndex == spineIndex && b.progress >= pageStart && b.progress < pageEnd) {
+        // Re-bookmarking a page must not lose the name the user gave it.
+        snprintf(preservedName, sizeof(preservedName), "%s", b.name);
+        return true;
+      }
+      return false;
     });
   }
 
@@ -347,6 +360,7 @@ BookmarkStore::AddResult BookmarkStore::addBookmark(uint16_t spineIndex, float p
   snprintf(bm.chapterTitle, sizeof(bm.chapterTitle), "%s", chapterTitle ? chapterTitle : "");
   bm.paragraphIndex = paragraphIndex;
   snprintf(bm.snippet, sizeof(bm.snippet), "%s", snippet ? snippet : "");
+  snprintf(bm.name, sizeof(bm.name), "%s", preservedName);
 
   bookmarks.push_back(bm);
   dirty = true;
@@ -374,6 +388,19 @@ bool BookmarkStore::removeBookmarkAt(size_t index) {
   if (index >= bookmarks.size()) return false;
 
   bookmarks.erase(bookmarks.begin() + index);
+  dirty = true;
+  saveToFile();
+  return true;
+}
+
+bool BookmarkStore::renameBookmarkAt(size_t index, const std::string& name) {
+  if (index >= bookmarks.size()) return false;
+
+  const std::string normalized = bookmark_name::normalize(name, BOOKMARK_NAME_MAX);
+  Bookmark& bm = bookmarks[index];
+  if (normalized == bm.name) return true;
+
+  snprintf(bm.name, sizeof(bm.name), "%s", normalized.c_str());
   dirty = true;
   saveToFile();
   return true;
@@ -437,8 +464,7 @@ bool BookmarkStore::readFromFile(const std::string& path, std::vector<Bookmark>&
 
   uint8_t version;
   serialization::readPod(f, version);
-  if (version != LEGACY_VERSION && version != COUNT_U16_VERSION && version != PARAGRAPH_ANCHOR_VERSION &&
-      version != VERSION) {
+  if (!isSupportedVersion(version)) {
     LOG_ERR("BKS", "Unknown bookmark file version %u: %s", version, path.c_str());
     f.close();
     return false;
@@ -506,7 +532,7 @@ bool BookmarkStore::readFromFile(const std::string& path, std::vector<Bookmark>&
     } else {
       bm.paragraphIndex = UINT16_MAX;
     }
-    if (version >= VERSION) {
+    if (version >= SNIPPET_VERSION) {
       const int snippetRead = f.read(bm.snippet, sizeof(bm.snippet));
       bm.snippet[sizeof(bm.snippet) - 1] = '\0';
       if (snippetRead != static_cast<int>(sizeof(bm.snippet))) {
@@ -516,6 +542,17 @@ bool BookmarkStore::readFromFile(const std::string& path, std::vector<Bookmark>&
       }
     } else {
       bm.snippet[0] = '\0';
+    }
+    if (version >= VERSION) {
+      const int nameRead = f.read(bm.name, sizeof(bm.name));
+      bm.name[sizeof(bm.name) - 1] = '\0';
+      if (nameRead != static_cast<int>(sizeof(bm.name))) {
+        LOG_ERR("BKS", "Bookmark file truncated at name, record %u: %s", i, path.c_str());
+        f.close();
+        return false;
+      }
+    } else {
+      bm.name[0] = '\0';
     }
     loadedBookmarks.push_back(bm);
   }
@@ -549,6 +586,7 @@ bool BookmarkStore::writeToFile() const {
     f.write(reinterpret_cast<const uint8_t*>(bm.chapterTitle), sizeof(bm.chapterTitle));
     serialization::writePod(f, bm.paragraphIndex);
     f.write(reinterpret_cast<const uint8_t*>(bm.snippet), sizeof(bm.snippet));
+    f.write(reinterpret_cast<const uint8_t*>(bm.name), sizeof(bm.name));
   }
 
   f.close();
@@ -709,8 +747,7 @@ bool BookmarkStore::getAllBookmarkedBooks(std::vector<BookmarkedBookEntry>& out)
     }
     uint8_t version;
     serialization::readPod(f, version);
-    if (version != LEGACY_VERSION && version != COUNT_U16_VERSION && version != PARAGRAPH_ANCHOR_VERSION &&
-        version != VERSION) {
+    if (!isSupportedVersion(version)) {
       LOG_DBG("BKS", "Skipping bookmark file with unknown version: %s", name.c_str());
       f.close();
       continue;

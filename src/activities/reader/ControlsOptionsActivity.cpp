@@ -4,15 +4,20 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <iterator>
 
 #include "InkMODSettings.h"
+#include "InkMODState.h"
 #include "MappedInputManager.h"
 #include "SettingsList.h"
+#include "activities/home/AlertActivity.h"
 #include "activities/settings/ButtonRemapActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ButtonSettingsBackup.h"
 #include "util/TouchListNavigation.h"
 
 namespace {
@@ -164,6 +169,14 @@ void ControlsOptionsActivity::openEnumOptionPicker(const SettingInfo& setting) {
       });
 }
 
+void ControlsOptionsActivity::showButtonBackupResult(const char* message) {
+  snprintf(APP_STATE.pendingAlertTitle, sizeof(APP_STATE.pendingAlertTitle), "%s", tr(STR_CAT_CONTROLS));
+  snprintf(APP_STATE.pendingAlertBody, sizeof(APP_STATE.pendingAlertBody), "%s", message);
+  APP_STATE.pendingAlertGoHomeOnBack.store(false, std::memory_order_relaxed);
+  startActivityForResult(std::make_unique<AlertActivity>(renderer, mappedInput),
+                         [this](const ActivityResult&) { requestUpdate(); });
+}
+
 void ControlsOptionsActivity::toggleCurrentSetting() {
   if (selectedIndex < 0 || selectedIndex >= settingsCount) return;
   const auto& setting = (*currentSettings)[selectedIndex];
@@ -197,6 +210,26 @@ void ControlsOptionsActivity::toggleCurrentSetting() {
       startActivityForResult(std::make_unique<ButtonRemapActivity>(renderer, mappedInput, false, true),
                              [this](const ActivityResult&) {
                                SETTINGS.saveToFile();
+                               requestUpdate();
+                             });
+      return;
+    }
+    if (setting.action == SettingAction::BackupButtons) {
+      showButtonBackupResult(button_backup::save() ? tr(STR_BUTTON_SETTINGS_SAVED) : tr(STR_BUTTON_SETTINGS_FAILED));
+      return;
+    }
+    if (setting.action == SettingAction::RestoreButtons) {
+      if (!button_backup::exists()) {
+        showButtonBackupResult(tr(STR_BUTTON_SETTINGS_FILE_MISSING));
+        return;
+      }
+      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput,
+                                                                    tr(STR_BUTTON_SETTINGS_RESTORE), tr(STR_BUTTON_SETTINGS_RESTORE_PROMPT)),
+                             [this](const ActivityResult& result) {
+                               if (!result.isCancelled) {
+                                 showButtonBackupResult(button_backup::restore() > 0 ? tr(STR_BUTTON_SETTINGS_RESTORED)
+                                                                                     : tr(STR_BUTTON_SETTINGS_FAILED));
+                               }
                                requestUpdate();
                              });
       return;

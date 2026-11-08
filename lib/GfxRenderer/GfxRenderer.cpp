@@ -25,6 +25,11 @@ uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style st
 }  // namespace
 
 const uint8_t* GfxRenderer::getGlyphBitmap(const EpdFontData* fontData, const EpdGlyph* glyph) const {
+  // Vector (TTF) fonts keep glyph bitmaps in their own cache; checked first so the
+  // SdCardFont overflow cast below never sees a TtfEpdFont context. nullptr = empty glyph.
+  if (fontData->vectorBitmapHandler != nullptr) {
+    return fontData->vectorBitmapHandler(fontData->glyphMissCtx, glyph);
+  }
   if (fontData->groups != nullptr) {
     auto* fd = fontCacheManager_ ? fontCacheManager_->getDecompressor() : nullptr;
     if (!fd) {
@@ -705,7 +710,7 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
 
 namespace {
 const char* resolveVisualText(const char* text, std::string& visualBuffer, const BidiUtils::BidiBaseDir baseDir) {
-  if (!text || *text == '\0') return text;
+  if (!text || *text == '\0' || baseDir == BidiUtils::BidiBaseDir::VISUAL) return text;
 
   if (baseDir != BidiUtils::BidiBaseDir::RTL) {
     bool hasRtlBytes = false;
@@ -724,6 +729,84 @@ const char* resolveVisualText(const char* text, std::string& visualBuffer, const
   return text;
 }
 }  // namespace
+
+namespace {
+// Writes cp as a NUL-terminated UTF-8 sequence (buf holds at least 5 bytes).
+void encodeUtf8(const uint32_t cp, char* buf) {
+  int n = 0;
+  if (cp < 0x80) {
+    buf[n++] = static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    buf[n++] = static_cast<char>(0xC0 | (cp >> 6));
+    buf[n++] = static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    buf[n++] = static_cast<char>(0xE0 | (cp >> 12));
+    buf[n++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    buf[n++] = static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    buf[n++] = static_cast<char>(0xF0 | (cp >> 18));
+    buf[n++] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    buf[n++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    buf[n++] = static_cast<char>(0x80 | (cp & 0x3F));
+  }
+  buf[n] = ' ';
+}
+
+bool isUiCjkCodepoint(const uint32_t cp) {
+  return utf8IsCjkBreakable(cp) || (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
+         (cp >= 0x3130 && cp <= 0x318F);
+}
+}  // namespace
+
+void GfxRenderer::setUiCjkEnabled(const bool enabled) {
+  uiCjkEnabled_ = enabled;
+  if (!enabled) {
+    setUiCjkFont(nullptr);
+  } else if (!uiCjkFont_ && !sdCardFonts_.empty()) {
+    setUiCjkFont(sdCardFonts_.rbegin()->second);
+  }
+}
+
+void GfxRenderer::setUiCjkFont(SdCardFont* font) {
+  uiCjkFont_ = font;
+  uiCjkLoaded_.clear();
+  uiCjkFamily_ = EpdFontFamily(font ? font->getEpdFont(0) : nullptr);
+}
+
+const EpdFontFamily* GfxRenderer::uiCjkFallbackFor(const int fontId, const char* text) const {
+  if (!uiCjkFont_ || !text || sdCardFonts_.count(fontId) > 0) return nullptr;
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) return nullptr;
+
+  if (uiCjkGeneration_ != uiCjkFont_->cacheGeneration()) {
+    uiCjkGeneration_ = uiCjkFont_->cacheGeneration();
+    uiCjkLoaded_.clear();  // the card cache was dropped: everything must be read again
+  }
+
+  constexpr size_t kMaxLoadedBytes = 900;  // about 300 characters, below the font's 512-glyph page
+  bool needsLoad = false;
+  bool anyCjk = false;
+  std::string added;
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(text);
+  while (const uint32_t cp = utf8NextCodepoint(&p)) {
+    if (!isUiCjkCodepoint(cp)) continue;
+    anyCjk = true;
+    char buf[5] = {};
+    encodeUtf8(cp, buf);
+    if (uiCjkLoaded_.find(buf) == std::string::npos && added.find(buf) == std::string::npos) {
+      added += buf;
+      needsLoad = true;
+    }
+  }
+  if (!anyCjk) return nullptr;
+
+  if (needsLoad) {
+    if (uiCjkLoaded_.size() + added.size() > kMaxLoadedBytes) uiCjkLoaded_.clear();
+    uiCjkLoaded_ += added;
+    uiCjkFont_->prewarm(uiCjkLoaded_.c_str(), 0x01);
+    uiCjkGeneration_ = uiCjkFont_->cacheGeneration();
+  }
+  return &uiCjkFamily_;
+}
 
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style,
                               const BidiUtils::BidiBaseDir baseDir) const {
@@ -755,6 +838,17 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
+  }
+
+  if (const EpdFontFamily* cjk = uiCjkFallbackFor(fontId, textCursor)) {
+    int32_t widthFP = 0;
+    const char* cursor = textCursor;
+    while (const uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor))) {
+      auto glyph = fontIt->second.findGlyphData(cp, style);
+      if (!glyph.glyph) glyph = cjk->findGlyphData(cp, style);
+      if (glyph.glyph) widthFP += glyph.glyph->advanceX;
+    }
+    return fp4::toPixel(widthFP);
   }
 
   int w = 0, h = 0;
@@ -801,6 +895,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   uint32_t prevCp = 0;
   const EpdFontFamily* prevGlyphFont = nullptr;
   const EpdFontFamily* glyphFallback = getMissingGlyphFallbackFamily(fontId);
+  if (!glyphFallback) glyphFallback = uiCjkFallbackFor(fontId, textCursor);
 
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&textCursor)))) {
     if (utf8IsCombiningMark(cp)) {
@@ -2006,8 +2101,26 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
 }
 
 // Note: Internal driver treats screen in command orientation; this library exposes a logical orientation
-int GfxRenderer::getScreenWidth() const {
-  switch (orientation) {
+int GfxRenderer::getScreenWidth() const { return getScreenWidth(orientation); }
+int GfxRenderer::getScreenHeight() const { return getScreenHeight(orientation); }
+
+bool GfxRenderer::hasGlyph(const int fontId, const uint32_t cp, const EpdFontFamily::Style style) const {
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) return false;
+  if (fontIt->second.findGlyphData(cp, style).glyph) return true;
+  const EpdFontFamily* fallback = getMissingGlyphFallbackFamily(fontId);
+  return fallback && fallback->findGlyphData(cp, style).glyph;
+}
+
+bool GfxRenderer::shapeIndicRun(const int fontId, const EpdFontFamily::Style style, const uint32_t* cps, const unsigned count,
+                                const uint8_t script, const char* lang, std::string* out) const {
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) return false;
+  return fontIt->second.shapeRun(style, cps, count, script, lang, out);
+}
+
+int GfxRenderer::getScreenWidth(const Orientation o) const {
+  switch (o) {
     case Portrait:
     case PortraitInverted:
       // 480px wide in portrait logical coordinates
@@ -2020,8 +2133,8 @@ int GfxRenderer::getScreenWidth() const {
   return panelHeight;
 }
 
-int GfxRenderer::getScreenHeight() const {
-  switch (orientation) {
+int GfxRenderer::getScreenHeight(const Orientation o) const {
+  switch (o) {
     case Portrait:
     case PortraitInverted:
       // 800px tall in portrait logical coordinates
@@ -2035,6 +2148,8 @@ int GfxRenderer::getScreenHeight() const {
 }
 
 void GfxRenderer::tapToLogical(float nx, float ny, int& outX, int& outY) const {
+  // Touch is read in the held frame: a vertical page keeps the turned frame as the live one while it draws.
+  const Orientation orientation = heldOrientation_;
   int phyX = static_cast<int>(nx * panelWidth);
   int phyY = static_cast<int>(ny * panelHeight);
   if (phyX < 0) phyX = 0;
@@ -2201,19 +2316,24 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   // where kern/lig data was not loaded.
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
-    int32_t widthFP = 0;
+    // Snap each advance to a pixel like drawText does (kerned pairs can still differ: kern data is not
+    // resident during layout). Combining marks are zero-advance overlays when drawn.
+    int widthPx = 0;
+    int32_t prevAdvanceFP = 0;
     const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
     const EpdFontFamily* glyphFallback = getMissingGlyphFallbackFamily(fontId);
     while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+      if (utf8IsCombiningMark(cp)) continue;
       int32_t advFP = sdIt->second->getAdvance(cp, styleIdx);
-      if (advFP == 0 && !utf8IsCombiningMark(cp) && glyphFallback) {
+      if (advFP == 0 && glyphFallback) {
         const auto fallbackGlyph = glyphFallback->findGlyphData(cp, style);
         if (fallbackGlyph.glyph) advFP = fallbackGlyph.glyph->advanceX;
       }
-      widthFP += isSupSub ? (advFP + 1) / 2 : advFP;
+      widthPx += fp4::toPixel(prevAdvanceFP);
+      prevAdvanceFP = isSupSub ? (advFP + 1) / 2 : advFP;
     }
-    return fp4::toPixel(widthFP);
+    return widthPx + fp4::toPixel(prevAdvanceFP);
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -2530,30 +2650,9 @@ void GfxRenderer::cleanupGrayscaleWithFrameBuffer() const {
 }
 
 void GfxRenderer::getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const {
-  switch (orientation) {
-    case Portrait:
-      *outTop = VIEWABLE_MARGIN_TOP;
-      *outRight = VIEWABLE_MARGIN_RIGHT;
-      *outBottom = VIEWABLE_MARGIN_BOTTOM;
-      *outLeft = VIEWABLE_MARGIN_LEFT;
-      break;
-    case LandscapeClockwise:
-      *outTop = VIEWABLE_MARGIN_LEFT;
-      *outRight = VIEWABLE_MARGIN_TOP;
-      *outBottom = VIEWABLE_MARGIN_RIGHT;
-      *outLeft = VIEWABLE_MARGIN_BOTTOM;
-      break;
-    case PortraitInverted:
-      *outTop = VIEWABLE_MARGIN_BOTTOM;
-      *outRight = VIEWABLE_MARGIN_LEFT;
-      *outBottom = VIEWABLE_MARGIN_TOP;
-      *outLeft = VIEWABLE_MARGIN_RIGHT;
-      break;
-    case LandscapeCounterClockwise:
-      *outTop = VIEWABLE_MARGIN_RIGHT;
-      *outRight = VIEWABLE_MARGIN_BOTTOM;
-      *outBottom = VIEWABLE_MARGIN_LEFT;
-      *outLeft = VIEWABLE_MARGIN_TOP;
-      break;
-  }
+  const auto insets = viewableInsets.rotated(static_cast<unsigned>(orientation));
+  *outTop = insets.edges[0];
+  *outRight = insets.edges[1];
+  *outBottom = insets.edges[2];
+  *outLeft = insets.edges[3];
 }

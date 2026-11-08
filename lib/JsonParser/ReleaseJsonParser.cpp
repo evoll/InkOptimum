@@ -15,7 +15,7 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
 
 ReleaseJsonParser::ReleaseJsonParser(AssetMatcher assetMatcher)
     : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
-                           sOnArrayStart, sOnArrayEnd}),
+                           sOnArrayStart, sOnArrayEnd, sOnStringPrefix}),
       assetMatcher(assetMatcher) {
   reset();
 }
@@ -27,8 +27,11 @@ void ReleaseJsonParser::reset() {
   depth = 0;
   assetDepth = 0;
   tagName[0] = '\0';
+  releaseName[0] = '\0';
+  releaseNotes[0] = '\0';
   firmwareUrl[0] = '\0';
   firmwareDigest[0] = '\0';
+  firmwareSigUrl[0] = '\0';
   firmwareSize = 0;
   tagFound = false;
   firmwareFound = false;
@@ -48,8 +51,21 @@ const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 const char* ReleaseJsonParser::getFirmwareDigest() const { return firmwareDigest; }
+const char* ReleaseJsonParser::getFirmwareSignatureUrl() const { return firmwareSigUrl; }
+const char* ReleaseJsonParser::getReleaseName() const { return releaseName; }
+const char* ReleaseJsonParser::getReleaseNotes() const { return releaseNotes; }
 
 void ReleaseJsonParser::commitAsset() {
+  // "<name>.sig" belongs to the firmware asset when "<name>" is what the matcher picks.
+  const size_t nameLen = strlen(currentAssetName);
+  if (nameLen > 4 && strcmp(currentAssetName + nameLen - 4, ".sig") == 0 && firmwareSigUrl[0] == '\0') {
+    char base[sizeof(currentAssetName)];
+    memcpy(base, currentAssetName, nameLen - 4);
+    base[nameLen - 4] = '\0';
+    const bool baseIsFirmware =
+        assetMatcher != nullptr ? assetMatcher(base) : strcmp(base, "firmware.bin") == 0;
+    if (baseIsFirmware) memcpy(firmwareSigUrl, currentAssetUrl, sizeof(firmwareSigUrl));
+  }
   const bool matchesFirmware =
       assetMatcher != nullptr ? assetMatcher(currentAssetName) : strcmp(currentAssetName, "firmware.bin") == 0;
   if (!firmwareFound && matchesFirmware) {
@@ -74,6 +90,10 @@ void ReleaseJsonParser::sOnKey(void* ctx, const char* key, size_t len) {
       if (self->depth == 1) {
         if (len == 8 && memcmp(key, "tag_name", 8) == 0)
           self->lastKey = LastKey::TAG_NAME;
+        else if (len == 4 && memcmp(key, "name", 4) == 0)
+          self->lastKey = LastKey::RELEASE_NAME;
+        else if (len == 4 && memcmp(key, "body", 4) == 0)
+          self->lastKey = LastKey::RELEASE_BODY;
         else if (len == 6 && memcmp(key, "assets", 6) == 0)
           self->lastKey = LastKey::ASSETS;
         else
@@ -99,10 +119,38 @@ void ReleaseJsonParser::sOnKey(void* ctx, const char* key, size_t len) {
   }
 }
 
+// A string cut by the token buffer is only useful for the free-text fields (release notes are routinely
+// longer than the buffer; keep their beginning). For tags, asset names, URLs and digests a truncated value
+// would be wrong, so it is ignored.
+void ReleaseJsonParser::sOnStringPrefix(void* ctx, const char* value, size_t len) {
+  auto* self = static_cast<ReleaseJsonParser*>(ctx);
+  if (self->lastKey == LastKey::RELEASE_NAME || self->lastKey == LastKey::RELEASE_BODY) {
+    sOnString(ctx, value, len);
+  } else {
+    self->lastKey = LastKey::NONE;
+  }
+}
+
 void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
   auto* self = static_cast<ReleaseJsonParser*>(ctx);
 
+  // Tags, asset names, URLs and digests of 512 bytes or more were always ignored (the old token buffer);
+  // the SDK buffer is larger now, so keep that limit here. Only the free-text fields may be cut.
+  const bool freeText = self->lastKey == LastKey::RELEASE_NAME || self->lastKey == LastKey::RELEASE_BODY;
+  if (len >= 512 && !freeText) {
+    self->lastKey = LastKey::NONE;
+    return;
+  }
+
   switch (self->lastKey) {
+    case LastKey::RELEASE_NAME:
+      if (self->position == Position::TOP_LEVEL && self->depth == 1)
+        safeCopy(self->releaseName, sizeof(self->releaseName), value, len);
+      break;
+    case LastKey::RELEASE_BODY:
+      if (self->position == Position::TOP_LEVEL && self->depth == 1)
+        safeCopy(self->releaseNotes, sizeof(self->releaseNotes), value, len);
+      break;
     case LastKey::TAG_NAME:
       if (self->position == Position::TOP_LEVEL && self->depth == 1) {
         safeCopy(self->tagName, sizeof(self->tagName), value, len);

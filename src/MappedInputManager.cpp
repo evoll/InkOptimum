@@ -247,6 +247,11 @@ bool MappedInputManager::decodeSwipe(int& sx,int& sy,int& ex,int& ey) const {
 }
 
 MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
+  int sx = 0, sy = 0;
+  return wasSwipeFrom(sx, sy);
+}
+
+MappedInputManager::SwipeDir MappedInputManager::wasSwipeFrom(int& startX, int& startY) const {
   int sx = 0, sy = 0, ex = 0, ey = 0;
   if (!decodeSwipe(sx, sy, ex, ey)) return SwipeDir::None;
 
@@ -259,6 +264,8 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
     return SwipeDir::None;
   }
 
+  startX = sx;
+  startY = sy;
   switch (fui::swipeDirection(sx, sy, ex, ey)) {
     case fui::SwipeDir::Left: return SwipeDir::Left;
     case fui::SwipeDir::Right: return SwipeDir::Right;
@@ -457,7 +464,29 @@ bool MappedInputManager::shouldMirrorPowerAsConfirmHold() const {
          !isPowerButtonActionAvailableOutsideReader(static_cast<InkMODSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn));
 }
 
+bool MappedInputManager::remoteMatches(const Button button) const {
+  switch (remoteInput.button) {
+    case RemoteButton::Confirm:
+      return button == Button::Confirm;
+    case RemoteButton::Back:
+      return button == Button::Back;
+    case RemoteButton::Next:
+      return button == Button::Right || button == Button::Down || button == Button::PageForward;
+    case RemoteButton::Previous:
+      return button == Button::Left || button == Button::Up || button == Button::PageBack;
+    case RemoteButton::None:
+      break;
+  }
+  return false;
+}
+
+bool MappedInputManager::injectRemoteClick(const RemoteButton button) {
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased()) return false;
+  return remoteInput.click(button);
+}
+
 bool MappedInputManager::wasPressed(const Button button) const {
+  if (remoteMatches(button)) return true;
 #ifdef SIMULATOR
   if (simulatorPressed[buttonIndex(button)]) {
     return true;
@@ -495,6 +524,7 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
+  if (remoteMatches(button)) return true;
 #ifdef SIMULATOR
   if (simulatorReleased[buttonIndex(button)]) {
     return true;
@@ -602,6 +632,7 @@ bool MappedInputManager::wasAnyReleased() const {
 }
 
 unsigned long MappedInputManager::getHeldTime() const {
+  if (hasRemoteClick()) return 0;  // a remote click is a short tap
   unsigned long heldTime = gpio.getHeldTime();
 #ifdef SIMULATOR
   const unsigned long now = millis();

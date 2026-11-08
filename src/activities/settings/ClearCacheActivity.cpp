@@ -125,7 +125,10 @@ void ClearCacheActivity::clearCache() {
                           std::strcmp(name, "koreader.json") == 0 ||
                           std::strcmp(name, "koreader.bin") == 0 ||
                           std::strcmp(name, "koreader.bin.bak") == 0 ||
-                          std::strcmp(name, "opds.json") == 0;
+                          std::strcmp(name, "opds.json") == 0 ||
+                          std::strcmp(name, "lcp_device.json") == 0 ||
+                          std::strcmp(name, "lcp_passphrases.json") == 0 ||
+                          std::strcmp(name, "lcp_loans.json") == 0;
     const bool isDirectory = file.isDirectory();
     if (preserve) {
       file.close();

@@ -2,6 +2,7 @@
 
 #include <Txt.h>
 
+#include <atomic>
 #include <vector>
 
 #include "InkMODSettings.h"
@@ -24,6 +25,7 @@ class TxtReaderActivity final : public Activity {
   int linesPerPage = 0;
   int viewportWidth = 0;
   bool initialized = false;
+  std::atomic<bool> pageShown{false};  // set once render() has put a page on screen
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
@@ -60,6 +62,8 @@ class TxtReaderActivity final : public Activity {
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
   bool handleShortcutAction(uint8_t rawAction) override;
+  bool acceptsRemoteInput() const override { return pageShown.load(std::memory_order_acquire); }
+  bool remoteTurn(bool forward, bool chapter) override;
   std::string getCurrentBookPath() const override { return txt ? txt->getPath() : std::string{}; }
 
   // Renders the last saved page to the frame buffer without flushing to display.

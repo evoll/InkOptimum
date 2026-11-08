@@ -283,6 +283,21 @@ void TxtReaderActivity::loop() {
   }
 }
 
+// A page turn from the Bluetooth remote. TXT has no chapters, so a chapter turn is a page turn. The last
+// page does not leave the book on a remote turn (the buttons do): an accidental press must not close it.
+bool TxtReaderActivity::remoteTurn(const bool forward, const bool /*chapter*/) {
+  if (!txt || pageOffsets.empty()) return false;
+  if (forward) {
+    if (currentPage >= totalPages - 1) return false;
+    currentPage++;
+  } else {
+    if (currentPage <= 0) return false;
+    currentPage--;
+  }
+  requestUpdate();
+  return true;
+}
+
 void TxtReaderActivity::toggleDarkMode() {
   if (BoardConfig::isX4Pro()) {
     SETTINGS.screenInverted = !SETTINGS.screenInverted;
@@ -422,6 +437,19 @@ bool TxtReaderActivity::executeLongPressBackAction() {
     case InkMODSettings::LONG_PRESS_MENU_ACTION::LONG_MENU_TOGGLE_DARK_MODE:
       toggleDarkMode();
       return true;
+    case InkMODSettings::LONG_PRESS_MENU_ACTION::LONG_MENU_ROTATE_FLIP: {
+      SETTINGS.orientation = ReaderUtils::flippedOrientation(SETTINGS.orientation);
+      SETTINGS.saveToFile();
+      {
+        RenderLock lock(*this);
+        ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+        pageOffsets.clear();
+        currentPageLines.clear();
+        initialized = false;
+      }
+      requestUpdate();
+      return true;
+    }
     case InkMODSettings::LONG_PRESS_MENU_ACTION::LONG_MENU_FILE_BROWSER:
       activityManager.goToFileBrowser(txt ? txt->getPath() : "");
       return true;
@@ -566,6 +594,11 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
 }
 
 void TxtReaderActivity::render(RenderLock&&) {
+  // A Bluetooth remote may turn the page once render() has run (see acceptsRemoteInput).
+  struct ShownGuard {
+    std::atomic<bool>& flag;
+    ~ShownGuard() { flag.store(true, std::memory_order_release); }
+  } shownGuard{pageShown};
   if (!txt) {
     return;
   }
@@ -1049,5 +1082,7 @@ ScreenshotInfo TxtReaderActivity::getScreenshotInfo() const {
   info.totalPages = totalPages;
   info.progressPercent = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
   if (info.progressPercent > 100) info.progressPercent = 100;
+  // Bottom of the visible page, rounded down: 100 only on the last page.
+  info.endProgressPercent = totalPages > 0 ? std::min(100, (currentPage + 1) * 100 / totalPages) : 0;
   return info;
 }

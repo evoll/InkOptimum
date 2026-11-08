@@ -4,6 +4,8 @@
 #include <I18n.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "AppVersion.h"
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
@@ -12,6 +14,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
+#include "ReleaseNotesPreview.h"
 
 namespace {
 struct TouchActionRects { Rect left; Rect right; };
@@ -144,6 +147,33 @@ void OtaUpdateActivity::render(RenderLock&&) {
                       (std::string(tr(STR_CURRENT_VERSION)) + INKMOD_VERSION).c_str());
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height * 2 + metrics.verticalSpacing * 2,
                       (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
+
+    // What the release brings: its title and the first lines of its notes, as far as they fit above
+    // the buttons. Skipped silently when the release has no text.
+    {
+      int y = top + height * 3 + metrics.verticalSpacing * 4;
+      const int textWidth = pageWidth - metrics.contentSidePadding * 2;
+      const int bottomLimit = pageHeight - (mappedInput.hasTouch() ? 48 + 24 : metrics.buttonHintsHeight) - 8;
+      int linesLeft = (bottomLimit - y) / height;
+      if (!updater.getReleaseName().empty() && linesLeft > 0) {
+        renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y,
+                          renderer.truncatedText(UI_10_FONT_ID, updater.getReleaseName().c_str(), textWidth,
+                                                 EpdFontFamily::BOLD)
+                              .c_str(),
+                          true, EpdFontFamily::BOLD);
+        y += height;
+        --linesLeft;
+      }
+      for (const auto& line : release_notes::previewLines(updater.getReleaseNotes(), 6)) {
+        if (linesLeft <= 0) break;
+        const auto wrapped = renderer.wrappedText(UI_10_FONT_ID, line.c_str(), textWidth, std::min(linesLeft, 2));
+        for (const auto& part : wrapped) {
+          renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, part.c_str());
+          y += height;
+          --linesLeft;
+        }
+      }
+    }
 
     if (mappedInput.hasTouch()) {
       const auto buttons = otaTouchRects(renderer);

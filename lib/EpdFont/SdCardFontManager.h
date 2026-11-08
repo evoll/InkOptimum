@@ -44,6 +44,13 @@ class SdCardFontManager {
   };
   static int computeFontId(uint32_t contentHash, const char* familyName, uint8_t pointSize);
 
+  // TrueType/OpenType family (PSRAM boards): state lives in the .cpp so this header stays light.
+  struct VectorState;
+  bool loadVectorFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize);
+  void unloadVector(GfxRenderer& renderer);
+  VectorState* vector_ = nullptr;
+  int vectorFontId_ = 0;
+
   std::string loadedFamilyName_;
   uint8_t loadedPointSize_ = 0;
   std::vector<LoadedFont> loaded_;

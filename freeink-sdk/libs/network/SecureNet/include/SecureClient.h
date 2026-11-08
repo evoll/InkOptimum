@@ -22,20 +22,68 @@
 #include <Client.h>
 #include <WiFiClient.h>
 
+#include <functional>
+#include <utility>
+
 namespace freeink {
+
+// True when `host` (a name or an IP literal) resolves; logs a failure.
+// Arduino-ESP32 3.3.x NetworkClient::connect(host) treats a failed lookup as
+// success and waits out the connect timeout on 0.0.0.0, so check this first.
+bool hostResolves(const char* host);
 
 class SecureClient : public Client {
  public:
   SecureClient() = default;
   ~SecureClient() override;
 
+  // Return true to abandon an in-progress connect.
+  using AbortCallback = std::function<bool()>;
+
   // Certificate / verification configuration (applied before connect()).
   void setCACert(const char* rootCA);
   void setInsecure();  // skip peer verification (testing only)
-  // Prefer TLS 1.2 first on very memory-constrained transfers. TLS 1.3 can
-  // require a larger record/handshake working set on ESP32-C3. If TLS 1.2 is
-  // unavailable, connect() automatically retries with normal auto-negotiation.
+
+  // Polled during connect(): between the TCP connect and the handshake, on
+  // every handshake round-trip, and between the two handshake attempts. A
+  // caller that drives its own input loop can use this both to cancel and to
+  // keep that loop running, the same way the read paths already do.
+  //
+  // It cannot interrupt the blocking TCP connect itself, so the longest
+  // uninterruptible stretch is one setConnectionTimeout() window rather than
+  // the four that a failing connect() can otherwise spend.
+  void setAbortCallback(AbortCallback cb) { _shouldAbort = std::move(cb); }
+  // InkOptimum patch: try TLS 1.2 first on very memory-constrained transfers (ESP32-C3 without PSRAM:
+  // TLS 1.3 can finish its handshake and then fail allocating the first record buffer). Falls back to
+  // auto-negotiation, so TLS-1.3-only servers still work.
   void setPreferTls12(bool prefer) { _preferTls12 = prefer; }
+
+  // InkOptimum patch. Called right after the handshake, before any application byte is written, with the
+  // SHA-256 of the server's leaf certificate (DER). Returning false closes the connection and makes
+  // connect() fail. `fingerprint` is nullptr when this build cannot read the peer certificate (wolfSSL
+  // without KEEP_PEER_CERT); the callback decides whether that is acceptable. Used for trust-on-first-use
+  // pinning of servers that have no publicly trusted certificate.
+  using PeerCheck = bool (*)(void* ctx, const char* host, uint16_t port, const uint8_t* fingerprint);
+  void setPeerCheck(PeerCheck check, void* ctx) {
+    _peerCheck = check;
+    _peerCheckCtx = ctx;
+  }
+
+  // Bulk downloads: pre-grow this connection's wolfSSL input buffer after
+  // request text has been sent/freed, before reading response headers. Requires
+  // the consumer's verified FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER patch; otherwise
+  // a no-op. Skips negotiated small records, pending data, and a concurrent
+  // reservation. OOM falls back to ordinary record growth. wolfSSL owns/frees
+  // the buffer, including on cancellation/error. Client calls must be serialized.
+#if defined(FREEINK_NET_WOLFSSL)
+  void reserveFullRecord();
+#else
+  void reserveFullRecord() {}
+#endif
+
+  // True when the last connect() returned because the abort callback fired
+  // rather than because the connection failed.
+  bool aborted() const { return _aborted; }
 
   // Connect and perform a TLS 1.3 handshake to host:port (uses the SNI host).
   int connect(IPAddress ip, uint16_t port) override;
@@ -58,10 +106,19 @@ class SecureClient : public Client {
  private:
   int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
 
+  // Polls _shouldAbort and latches _aborted so callers can tell a cancel from
+  // a failure after connect() returns 0.
+  bool abortRequested();
+
   WiFiClient _transport;
+  AbortCallback _shouldAbort;
+  PeerCheck _peerCheck = nullptr;
+  bool _preferTls12 = false;
+  void* _peerCheckCtx = nullptr;
+  bool _aborted = false;
+  bool _tcpConnected = false;  // the last connectWithMethod() reached the handshake
   const char* _rootCA = nullptr;
   bool _insecure = false;
-  bool _preferTls12 = false;
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;

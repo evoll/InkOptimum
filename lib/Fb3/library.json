@@ -1,0 +1,7 @@
+{
+  "name": "Fb3",
+  "version": "1.0.0",
+  "build": {
+    "srcDir": "."
+  }
+}

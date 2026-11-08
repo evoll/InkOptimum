@@ -97,3 +97,5 @@
   .epubkit-presets small { font-size:.72em; }
   .epubkit-result-stats { grid-template-columns:1fr; }
 }
+.epubkit-options-grid label.epubkit-select { cursor:default; justify-content:space-between; align-items:center; }
+.epubkit-options-grid select { width:auto; height:auto; padding:5px 8px; margin:0; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--card-bg); color:var(--font-color); flex:none; }

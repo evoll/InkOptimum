@@ -247,3 +247,9 @@ h3 {
           min-width: 0;
         }
       }
+
+.cat-item { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--border-color); }
+.cat-item b { color: var(--title-color); }
+.cat-item small { display:block; color: var(--label-color); }
+.cat-bar { height:4px; background: var(--border-color); border-radius:2px; margin-top:6px; overflow:hidden; }
+.cat-bar i { display:block; height:100%; width:0; background: var(--accent-color); }
