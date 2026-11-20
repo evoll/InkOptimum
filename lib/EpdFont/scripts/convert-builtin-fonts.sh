@@ -237,6 +237,13 @@ for size in ${UI_FONT_SIZES[@]}; do
   done
 done
 
+# Medium UI size - Inter 11 (Latin + Cyrillic from Inter itself; no Hebrew fallback face)
+for style in Regular Bold; do
+  font_name="inter_11_$(echo $style | tr '[:upper:]' '[:lower:]')"
+  python fontconvert.py $font_name 11 ../builtinFonts/source/Inter/Inter-${style}.ttf > ../builtinFonts/${font_name}.h
+  echo "Generated ../builtinFonts/${font_name}.h"
+done
+
 # Small UI Font - Inter
 
 python fontconvert.py inter_8_regular 8 \

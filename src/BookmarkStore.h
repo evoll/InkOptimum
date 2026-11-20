@@ -50,6 +50,8 @@ class BookmarkStore {
   bool removeBookmarkAt(size_t index);
   // Sets (or clears, when `name` is empty after normalisation) the user name of a bookmark.
   bool renameBookmarkAt(size_t index, const std::string& name);
+  // Gives a legacy bookmark (no paragraph anchor) the anchor of the page it was opened on; see BookmarkAnchor.h.
+  bool anchorBookmark(uint16_t spineIndex, float progress, uint16_t paragraphIndex, const char* snippet);
   bool hasBookmarkForPage(uint16_t spineIndex, float pageProgress, int pageCount);
   const std::vector<Bookmark>& getBookmarks() const { return bookmarks; }
 

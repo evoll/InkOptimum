@@ -97,9 +97,44 @@ inline void drawWordHighlight(GfxRenderer& renderer, const Page& page, const Wor
   renderer.drawText(fontId, x, y, word.c_str(), !foregroundBlack, style);
 }
 
+// Saved highlight in the user's chosen style (InkMODSettings::HIGHLIGHT_STYLE).
+//  Marker: light-grey band under unchanged black text. Underline: 2 px line under the word.
+//  Inverse: the original solid box with the word cut out in the background colour.
+inline void drawSavedWordHighlight(GfxRenderer& renderer, const Page& page, const WordRef& ref, int fontId,
+                                   int marginLeft, int marginTop, bool foregroundBlack, uint8_t highlightStyle) {
+  if (highlightStyle == 0) {
+    drawWordHighlight(renderer, page, ref, fontId, marginLeft, marginTop, foregroundBlack);
+    return;
+  }
+  if (ref.elementIndex < 0 || ref.elementIndex >= static_cast<int>(page.elements.size())) return;
+  const auto& element = page.elements[ref.elementIndex];
+  if (!element || element->getTag() != TAG_PageLine) return;
+  const auto& line = static_cast<const PageLine&>(*element);
+  const auto& block = line.getBlock();
+  if (!block || ref.wordIndex >= block->getWords().size() || ref.wordIndex >= block->getWordXPositions().size() ||
+      ref.wordIndex >= block->getWordStyles().size()) {
+    return;
+  }
+  const auto& word = block->getWords()[ref.wordIndex];
+  const auto style = block->getWordStyles()[ref.wordIndex];
+  const int x = marginLeft + line.xPos + block->getWordXPositions()[ref.wordIndex];
+  const int y = marginTop + line.yPos;
+  const int width = std::max(4, renderer.getTextAdvanceX(fontId, word.c_str(), style));
+  const int height = std::max(4, renderer.getLineHeight(fontId));
+
+  if (highlightStyle == 1) {
+    // Dark mode: a dark-grey band keeps the (white) text readable.
+    renderer.fillRectDither(x - 1, y, width + 2, height, foregroundBlack ? Color::LightGray : Color::DarkGray);
+    renderer.drawText(fontId, x, y, word.c_str(), foregroundBlack, style);
+  } else {
+    const int underlineY = y + renderer.getFontAscenderSize(fontId) + 3;
+    renderer.drawLine(x, underlineY, x + width, underlineY, 2, foregroundBlack);
+  }
+}
+
 inline void drawSavedHighlights(GfxRenderer& renderer, const Page& page, const std::vector<Clipping>& clippings,
                                 uint16_t spineIndex, uint16_t pageNumber, int fontId, int marginLeft, int marginTop,
-                                bool foregroundBlack) {
+                                bool foregroundBlack, uint8_t highlightStyle = 0) {
   if (clippings.empty()) return;
   const auto words = collectWords(page);
   if (words.empty()) return;
@@ -124,7 +159,7 @@ inline void drawSavedHighlights(GfxRenderer& renderer, const Page& page, const s
     if (firstPage == lastPage && startWord > endWord) std::swap(startWord, endWord);
 
     for (size_t i = startWord; i <= endWord; ++i) {
-      drawWordHighlight(renderer, page, words[i], fontId, marginLeft, marginTop, foregroundBlack);
+      drawSavedWordHighlight(renderer, page, words[i], fontId, marginLeft, marginTop, foregroundBlack, highlightStyle);
     }
   }
 }

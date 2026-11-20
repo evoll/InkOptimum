@@ -107,7 +107,7 @@ DiagnosticRows buildDiagnosticRows() {
   const auto heap = MemoryBudget::snapshot();
   const bool crashReport = Storage.exists("/crash_report.txt");
   DiagnosticRows rows;
-  rows.reserve(12);
+  rows.reserve(13);
   rows.push_back({tr(STR_DIAG_FIRMWARE), std::string(INKMOD_VERSION) + " (" + INKMOD_FIRMWARE_VARIANT + ")"});
   const char* deviceName = BoardConfig::isX4Pro() ? "X4 Pro"
                            : BoardConfig::isX4Classic() ? "X4 Classic"
@@ -120,6 +120,13 @@ DiagnosticRows buildDiagnosticRows() {
   rows.push_back({tr(STR_DIAG_FREE_HEAP), bytesHuman(heap.freeHeap)});
   rows.push_back({tr(STR_DIAG_MAX_ALLOC), bytesHuman(heap.maxAllocHeap)});
   rows.push_back({tr(STR_INTERNAL_STORAGE), StorageUsageCalc::display()});
+  if (Storage.ready()) {
+    const uint64_t sdTotal = Storage.getCardTotalBytes();
+    const uint64_t sdUsed = Storage.getCardUsedBytes();
+    if (sdTotal > 0) {
+      rows.push_back({tr(STR_DIAG_SD_CARD), bytesHuman(sdUsed) + " / " + bytesHuman(sdTotal)});
+    }
+  }
   rows.push_back({tr(STR_BATTERY), std::to_string(powerManager.getBatteryPercentage()) + "%"});
   if (!SETTINGS.clockDisabled) rows.push_back({tr(STR_SINCE_LAST_CHARGE), sinceLastChargeDisplay()});
   rows.push_back({tr(STR_DIAG_RESET_REASON), resetReasonDisplay()});

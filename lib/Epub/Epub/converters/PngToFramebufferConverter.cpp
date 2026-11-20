@@ -182,6 +182,39 @@ void convertLineToGray(uint8_t* pPixels, uint8_t* grayLine, int width, int pixel
   }
 }
 
+// Applies the adaptive tone points to a gray row in place (no-op when inactive).
+inline void applyToneToRow(const adaptive_tone::Points& points, uint8_t* row, int width) {
+  if (!points.active) return;
+  for (int x = 0; x < width; x++) row[x] = adaptive_tone::apply(points, row[x]);
+}
+
+// Native quantizer for tone-mapped images (see Gray4QuantizationMode::Native). The X4 Pro keeps its own
+// stable monochrome path, so it is left alone.
+inline uint8_t quantizeToned(uint8_t gray, int x, int y, const RenderConfig& config) {
+  if (config.tonePoints.active && !BoardConfig::isX4Pro() && !config.useDithering) {
+    return quantizeNative(gray);
+  }
+  return quantizeImagePixel(gray, x, y, config.useDithering, BoardConfig::isX4Pro());
+}
+
+// --- adaptive tone analysis (PNGdec): histogram over every ROW_STEP-th row ---
+struct ToneAnalysis {
+  uint32_t histogram[256];
+  uint64_t samples{0};
+  uint8_t* grayLine{nullptr};
+  int width{0};
+};
+
+int pngToneCallback(PNGDRAW* pDraw) {
+  ToneAnalysis* a = reinterpret_cast<ToneAnalysis*>(pDraw->pUser);
+  if (!a || !a->grayLine) return 0;
+  if (pDraw->y % adaptive_tone::ROW_STEP != 0) return 1;
+  convertLineToGray(pDraw->pPixels, a->grayLine, a->width, pDraw->iPixelType, pDraw->pPalette, pDraw->iHasAlpha);
+  for (int x = 0; x < a->width; x++) a->histogram[a->grayLine[x]]++;
+  a->samples += static_cast<uint64_t>(a->width);
+  return 1;
+}
+
 int pngDrawCallback(PNGDRAW* pDraw) {
   PngContext* ctx = reinterpret_cast<PngContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer || !ctx->grayLineBuffer) return 0;
@@ -198,6 +231,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
   convertLineToGray(pDraw->pPixels, ctx->grayLineBuffer, srcWidth, pDraw->iPixelType, pDraw->pPalette,
                     pDraw->iHasAlpha);
+  applyToneToRow(ctx->config->tonePoints, ctx->grayLineBuffer, srcWidth);
 
   const int dstWidth = ctx->dstWidth;
   const int outXBase = ctx->config->x;
@@ -230,7 +264,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
       if (ctx->ditherer && !BoardConfig::isX4Pro()) {
         ditheredGray = ctx->ditherer->processPixel(gray, dstX);
       } else {
-        ditheredGray = quantizeImagePixel(gray, outX, outY, useDithering, BoardConfig::isX4Pro());
+        ditheredGray = quantizeToned(gray, outX, outY, *ctx->config);
       }
       pw.writePixel(outX, ditheredGray);
       if (caching) cw.writePixel(outX, ditheredGray);
@@ -304,7 +338,8 @@ bool decodeToFramebufferWithPngDec(const std::string& imagePath, GfxRenderer& re
   // Allocation failure is not fatal: the draw callback falls back to ordered
   // (Bayer) dithering whenever ctx.ditherer is null.
   if (config.useDithering && !BoardConfig::isX4Pro()) {
-    ctx.ditherer = new (std::nothrow) AtkinsonDitherer(ctx.dstWidth);
+    ctx.ditherer = new (std::nothrow) AtkinsonDitherer(
+        ctx.dstWidth, config.tonePoints.active ? Gray4QuantizationMode::Native : Gray4QuantizationMode::DisplayTuned);
   }
 
   const int pixelType = png->getPixelType();
@@ -698,7 +733,7 @@ bool emitRenderedRow(GfxRenderer& renderer, const RenderConfig& config, const in
     if (ditherer && !BoardConfig::isX4Pro()) {
       level = ditherer->processPixel(grayRow[outX], outX);
     } else {
-      level = quantizeImagePixel(grayRow[outX], screenX, screenY, config.useDithering, BoardConfig::isX4Pro());
+      level = quantizeToned(grayRow[outX], screenX, screenY, config);
     }
 
     if (screenX >= 0 && screenX < screenWidth) {
@@ -940,7 +975,9 @@ bool decodeToFramebufferStreaming(const std::string& imagePath, GfxRenderer& ren
   // (Bayer) dithering whenever ditherer is null.
   AtkinsonDitherer* ditherer =
       (config.useDithering && !BoardConfig::isX4Pro())
-          ? new (std::nothrow) AtkinsonDitherer(geometry.outWidth)
+          ? new (std::nothrow) AtkinsonDitherer(geometry.outWidth, config.tonePoints.active
+                                                                       ? Gray4QuantizationMode::Native
+                                                                       : Gray4QuantizationMode::DisplayTuned)
           : nullptr;
 
   bool success = true;
@@ -955,6 +992,7 @@ bool decodeToFramebufferStreaming(const std::string& imagePath, GfxRenderer& ren
     }
 
     convertStreamingScanlineToGray(ctx, grayRow);
+    applyToneToRow(config.tonePoints, grayRow, static_cast<int>(width));
 
     if (!geometry.needsScaling) {
       memcpy(scaledRow, grayRow, geometry.outWidth);
@@ -1047,6 +1085,39 @@ bool decodeToFramebufferStreaming(const std::string& imagePath, GfxRenderer& ren
   return true;
 }
 
+// Best-effort analysis pass: a full extra PNGdec decode that only builds the luminance histogram. Returns
+// inactive points on any failure (low memory, row buffer too small, decode error) so the image renders as before.
+adaptive_tone::Points analyzePngTone(const std::string& imagePath) {
+  adaptive_tone::Points none;
+  constexpr uint32_t PNG_DECODER_HEADROOM = 16U * 1024U;
+  if (!MemoryBudget::hasHeapForImageDecoder("PNG", "PNG", PNG_DECODER_APPROX_SIZE, PNG_DECODER_HEADROOM)) return none;
+  void* pngMem = malloc(sizeof(PNG));
+  if (!pngMem) return none;
+  PNG* png = new (pngMem) PNG();
+  ToneAnalysis* analysis = new (std::nothrow) ToneAnalysis();
+  adaptive_tone::Points result = none;
+  if (analysis) {
+    memset(analysis->histogram, 0, sizeof(analysis->histogram));
+    if (png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle, pngSeekWithHandle,
+                  pngToneCallback) == PNG_SUCCESS) {
+      analysis->width = png->getWidth();
+      if (validatePngDimensionsLocal(png->getWidth(), png->getHeight()) &&
+          requiredPngInternalBufferBytes(analysis->width, png->getPixelType()) <= PNG_MAX_BUFFERED_PIXELS) {
+        analysis->grayLine = static_cast<uint8_t*>(malloc(std::max<size_t>(static_cast<size_t>(analysis->width), 256U)));
+        if (analysis->grayLine && png->decode(analysis, 0) == PNG_SUCCESS) {
+          result = adaptive_tone::derivePoints(analysis->histogram, analysis->samples);
+        }
+        free(analysis->grayLine);
+      }
+      png->close();
+    }
+    delete analysis;
+  }
+  png->~PNG();
+  free(pngMem);
+  return result;
+}
+
 }  // namespace
 
 bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
@@ -1080,12 +1151,18 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
 
-  if (decodeToFramebufferWithPngDec(imagePath, renderer, config)) {
+  RenderConfig effective = config;
+  if (config.adaptiveTone && !config.tonePoints.active) {
+    effective.tonePoints = analyzePngTone(imagePath);
+    LOG_DBG("PNG", "Adaptive tone %s", effective.tonePoints.active ? "active" : "not needed");
+  }
+
+  if (decodeToFramebufferWithPngDec(imagePath, renderer, effective)) {
     return true;
   }
 
   LOG_INF("PNG", "Falling back to low-memory streaming PNG decoder: %s", imagePath.c_str());
-  return decodeToFramebufferStreaming(imagePath, renderer, config);
+  return decodeToFramebufferStreaming(imagePath, renderer, effective);
 }
 
 bool PngToFramebufferConverter::supportsFormat(const std::string& extension) {

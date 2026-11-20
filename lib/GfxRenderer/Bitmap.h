@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "AdaptiveTone.h"
 #include "BitmapHelpers.h"
 
 #pragma pack(push, 1)
@@ -60,11 +61,17 @@ enum class BmpReaderError : uint8_t {
   ShortReadRow,
 };
 
+// Optional per-image tone correction. Adaptive stretches the levels of a true-colour image between
+// its 1st and 99th luminance percentiles (idea and constants: crosspoint PR #2861 by Totofaki,
+// via Paperio-Reader), so flat, washed-out pictures use the whole grey range of the panel.
+enum class BitmapToneMapping : uint8_t { None = 0, Adaptive = 1 };
+
 class Bitmap {
  public:
   static const char* errorToString(BmpReaderError err);
 
-  explicit Bitmap(HalFile& file, bool dithering = false) : file(file), dithering(dithering) {}
+  explicit Bitmap(HalFile& file, bool dithering = false, BitmapToneMapping toneMapping = BitmapToneMapping::None)
+      : file(file), dithering(dithering), toneMapping(toneMapping) {}
   ~Bitmap();
   BmpReaderError parseHeaders();
   BmpReaderError readNextRow(uint8_t* data, uint8_t* rowBuffer) const;
@@ -83,6 +90,9 @@ class Bitmap {
 
   HalFile& file;
   bool dithering = false;
+  BitmapToneMapping toneMapping = BitmapToneMapping::None;
+  adaptive_tone::Points adaptiveTone;
+  bool analyzeAdaptiveTone();
   int width = 0;
   int height = 0;
   bool topDown = false;

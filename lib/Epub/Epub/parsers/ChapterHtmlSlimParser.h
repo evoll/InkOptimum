@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Epub/FootnotePreviews.h>
 #include <expat.h>
 
 #include <climits>
@@ -58,6 +59,10 @@ class ChapterHtmlSlimParser {
   std::vector<BidiElem> bidiStack_;
   void closeBidiElement();
   int boldUntilDepth = INT_MAX;
+  // Depth of the open h1-h6, INT_MAX outside one. Blocks started inside it are not hyphenated: a title
+  // split mid-word across lines reads badly (crosspoint #4442).
+  int headingDepth = INT_MAX;
+  bool blockHyphenationEnabled() const { return hyphenationEnabled && headingDepth == INT_MAX; }
   int italicUntilDepth = INT_MAX;
   int underlineUntilDepth = INT_MAX;
   int strikethroughUntilDepth = INT_MAX;
@@ -202,10 +207,17 @@ class ChapterHtmlSlimParser {
   int completedPageCount = 0;
   bool suppressChapterTitleForFrontMatter = false;
   std::vector<std::pair<std::string, uint16_t>> anchorData;
+  std::vector<std::string> inlineAnchorIds;  // ids met inside a paragraph, recorded when it is laid out
   std::string pendingAnchorId;          // deferred until after previous text block is flushed
   std::vector<std::string> tocAnchors;  // the list of anchors that are TOC chapter boundaries
   uint16_t xpathParagraphIndex = 0;
   uint16_t xpathListItemIndex = 0;
+
+  // Inline footnote previews (idea: Paperio-Reader): the note text is streamed from the preview cache into
+  // the paragraph right after the reference, in the surrounding font size, italic, in parentheses.
+  FootnotePreviews::Lookup* inlineFootnotePreviews = nullptr;
+  std::string pendingInlineFootnoteHref;
+  bool inlineFootnoteFailed = false;
 
   // Footnote link tracking
   bool insideFootnoteLink = false;
@@ -257,7 +269,11 @@ class ChapterHtmlSlimParser {
   static void XMLCALL defaultHandlerExpand(void* userData, const XML_Char* s, int len);
   static void XMLCALL endElement(void* userData, const XML_Char* name);
 
- public:
+public:
+  // Not owned; must outlive the parse. nullptr (default) = no inline notes.
+  void setInlineFootnotePreviews(FootnotePreviews::Lookup* lookup) { inlineFootnotePreviews = lookup; }
+  // False when an inline note could not be read in full: the caller must not keep the built pages.
+  [[nodiscard]] bool inlineFootnotesSucceeded() const { return !inlineFootnoteFailed; }
   explicit ChapterHtmlSlimParser(std::shared_ptr<Epub> epub, const std::string& filepath, GfxRenderer& renderer,
                                  const int fontId, const float lineCompression, const uint8_t extraParagraphSpacing,
                                  const bool forceParagraphIndents, const uint8_t paragraphAlignment,
@@ -305,5 +321,5 @@ class ChapterHtmlSlimParser {
   bool wasLowMemoryFallbackTriggered() const { return lowMemoryImageFallback; }
   bool isVertical() const { return vertical_; }
   bool wasLowMemoryAbortTriggered() const { return lowMemoryAbort; }
-  bool wasCancellationTriggered() const { return cancelled; }
+  bool wasCancellationTriggered() const { return cancelled && !inlineFootnoteFailed; }
 };

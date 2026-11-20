@@ -42,6 +42,7 @@ class ParsedText {
   // Draw shift per word for CJK marks narrowed by neighbouring punctuation (an opening mark's ink sits on the
   // right of its em); empty when no mark was adjusted. Kept in step with `words` like rubyTexts.
   std::vector<int16_t> wordDrawShift;
+  int letterSpacingPx_ = 0;  // extra pixels after every glyph while this block is measured (0 in vertical text)
   bool extraParagraphSpacing;
   bool forceParagraphIndents;
   bool hyphenationEnabled;
@@ -121,9 +122,11 @@ class ParsedText {
   void setRubyGroupAt(size_t startIndex, size_t count, const std::string& ruby);
   // Bidi markup. bidiOpen: an element with `cp` (U+202A-202E, U+2066-2068) starts; it attaches to the next word added.
   // bidiClose: the element ends (isolate: PDI, else PDF); it attaches to the last word, or cancels an empty element.
+  void setLetterSpacing(const int px) { letterSpacingPx_ = px; }
   void bidiOpen(uint32_t cp);
   void bidiClose(bool isolate);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  void setHyphenationEnabled(const bool enabled) { hyphenationEnabled = enabled; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }

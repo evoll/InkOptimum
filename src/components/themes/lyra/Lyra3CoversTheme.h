@@ -10,7 +10,8 @@ namespace Lyra3CoversMetrics {
 constexpr ThemeMetrics values = [] {
   ThemeMetrics v = LyraMetrics::values;
   v.menuRowHeight = 46;
-  v.homeCoverTileHeight = 300;
+  v.homeCoverHeight = 252;      // was 226: larger covers
+  v.homeCoverTileHeight = 326;
   v.homeRecentBooksCount = 3;
   v.keyboardKeyHeight = 50;
   v.keyboardCenteredText = true;

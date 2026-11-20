@@ -26,6 +26,7 @@
 #include "activities/weather/WeatherActivity.h"
 #include "InkMODSettings.h"
 #include "FontSelectionActivity.h"
+#include "UiFontSelectActivity.h"
 #include "BleSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
@@ -1113,6 +1114,10 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::UiFont:
+        startActivityForResult(
+            std::make_unique<UiFontSelectActivity>(renderer, mappedInput, &sdFontSystem.registry()), resultHandler);
+        break;
       case SettingAction::Weather:
         startActivityForResult(std::make_unique<WeatherActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -1320,6 +1325,8 @@ void SettingsActivity::render(RenderLock&&) {
           }
         } else if (setting.type == SettingType::INFO && setting.stringGetter) {
           valueText = setting.stringGetter();
+        } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::UiFont) {
+          valueText = SETTINGS.uiFontFamily[0] ? std::string(SETTINGS.uiFontFamily) : std::string(tr(STR_UI_FONT_AUTO));
         } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::Language) {
           valueText = I18N.getLanguageName(I18N.getLanguage());
         } else if (setting.type == SettingType::ACTION && setting.stringGetter) {

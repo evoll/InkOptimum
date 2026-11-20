@@ -1,6 +1,9 @@
 #include "BookInfoActivity.h"
 
 #include <Epub.h>
+#include <Fb2.h>
+#include <Epub/BookCover.h>
+#include <Logging.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -15,6 +18,8 @@
 #include <LcpInfo.h>
 
 #include "MappedInputManager.h"
+#include "activities/ActivityResult.h"
+#include "FileBrowserActivity.h"
 #include "util/LcpClient.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -58,10 +63,61 @@ bool isBookLike(const std::string& p) {
 }
 }
 
+// Custom covers: EPUB and converted books (FB2/FB3/DOCX/ZIP); see Epub::generateCoverBmp.
+static bool coverEditable(const std::string& p) { return FsHelpers::hasEpubExtension(p) || FsHelpers::checkFileExtension(p, ".fb2") ||
+         FsHelpers::checkFileExtension(p, ".fb3") || FsHelpers::checkFileExtension(p, ".docx") ||
+         FsHelpers::checkFileExtension(p, ".zip");
+}
+
+void BookInfoActivity::afterCoverChange() {
+  if (FsHelpers::hasEpubExtension(path_)) {
+    Epub(path_, "/.inkmod").invalidateCoverCache();
+  } else {
+    // Converted book: covers are cached inside its package.
+    Epub(Fb2(path_, "/.inkmod").getPackagePath(), "/.inkmod").invalidateCoverCache();
+  }
+  requestUpdate(true);
+}
+
+void BookInfoActivity::pickCover() {
+  const size_t slash = path_.find_last_of('/');
+  const std::string startDir = (slash == std::string::npos || slash == 0) ? "/" : path_.substr(0, slash);
+  startActivityForResult(
+      std::make_unique<FileBrowserActivity>(renderer, mappedInput, startDir, FileBrowserActivity::Mode::PickImage),
+      [this](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const auto* selected = std::get_if<FilePathResult>(&result.data);
+        if (!selected || selected->path.empty()) return;
+        if (!BookCover::install(path_, selected->path)) {
+          LOG_ERR("BookInfo", "Failed to install custom cover %s", selected->path.c_str());
+        }
+        afterCoverChange();
+      });
+}
+
+void BookInfoActivity::resetCover() {
+  BookCover::reset(path_);
+  afterCoverChange();
+}
+
 void BookInfoActivity::onEnter() { Activity::onEnter(); requestUpdate(true); }
 void BookInfoActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
-      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) finish();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return;
+  }
+  if (coverEditable(path_)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      pickCover();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left) && BookCover::hasCustom(path_)) {
+      resetCover();
+      return;
+    }
+  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    finish();
+  }
 }
 void BookInfoActivity::render(RenderLock&&) {
   renderer.clearScreen();
@@ -82,6 +138,9 @@ void BookInfoActivity::render(RenderLock&&) {
   rows.push_back({tr(STR_BOOK_INFO_NAME), filenameOf(path_)});
   rows.push_back({tr(STR_BOOK_INFO_FORMAT), formatOf(path_)});
   rows.push_back({tr(STR_BOOK_INFO_SIZE), fileSize ? humanSize(fileSize) : "-"});
+  if (coverEditable(path_)) {
+    rows.push_back({tr(STR_BOOK_COVER), BookCover::hasCustom(path_) ? tr(STR_YES) : "-"});
+  }
   if (FsHelpers::hasEpubExtension(path_)) {
     rows.push_back({tr(STR_BOOK_INFO_CACHE), Epub::hasCache(path_, "/.inkmod") ? tr(STR_YES) : tr(STR_NO)});
   }
@@ -123,7 +182,9 @@ void BookInfoActivity::render(RenderLock&&) {
     }
     y = std::max(y+lineH+metrics.verticalSpacing, vy+metrics.verticalSpacing);
   }
-  const auto labels=mappedInput.mapLabels(tr(STR_BACK),"","","");
+  const bool editable = coverEditable(path_);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), editable ? tr(STR_BOOK_COVER) : "",
+                                            (editable && BookCover::hasCustom(path_)) ? tr(STR_RESET_BOOK_COVER) : "", "");
   GUI.drawButtonHints(renderer, labels.btn1,labels.btn2,labels.btn3,labels.btn4,true);
   renderer.displayBuffer();
 }

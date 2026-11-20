@@ -18,7 +18,7 @@
 #include "util/TouchListNavigation.h"
 
 namespace {
-constexpr size_t MAX_LIST_RECENT_BOOKS = 10;
+constexpr size_t MAX_LIST_RECENT_BOOKS = 50;
 constexpr unsigned long LONG_PRESS_MS = 1000;
 }  // namespace
 

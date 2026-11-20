@@ -257,3 +257,35 @@ TEST(WeatherIcons, EveryIconHasInk) {
     EXPECT_LT(ink, WEATHER_ICON_SIZE * WEATHER_ICON_SIZE / 2) << "icon " << t;
   }
 }
+
+#include "WeatherGraph.h"
+
+TEST(WeatherGraph, AxisPadsAndKeepsMinimumSpan) {
+  auto a = weather::niceAxis(3.2f, 11.7f);
+  EXPECT_EQ(a.min, 2);
+  EXPECT_EQ(a.max, 13);
+  auto flat = weather::niceAxis(5.0f, 5.0f);
+  EXPECT_GE(flat.max - flat.min, 4);
+  EXPECT_LE(flat.min, 4);
+  EXPECT_GE(flat.max, 6);
+  auto neg = weather::niceAxis(-7.5f, -2.1f);
+  EXPECT_EQ(neg.min, -9);
+  EXPECT_EQ(neg.max, -1);
+}
+
+TEST(WeatherGraph, ScaleYMapsAxisToRows) {
+  const weather::AxisRange ax{0, 10};
+  EXPECT_EQ(weather::scaleY(10.0f, ax, 100, 200), 100);
+  EXPECT_EQ(weather::scaleY(0.0f, ax, 100, 200), 200);
+  EXPECT_EQ(weather::scaleY(5.0f, ax, 100, 200), 150);
+  EXPECT_EQ(weather::scaleY(99.0f, ax, 100, 200), 100);  // clamped
+  EXPECT_EQ(weather::scaleY(-9.0f, ax, 100, 200), 200);
+}
+
+TEST(WeatherGraph, FirstCurrentHourSkipsPast) {
+  std::vector<weather::Hourly> h(5);
+  for (int i = 0; i < 5; ++i) h[i].time = 1000000 + i * 3600;
+  EXPECT_EQ(weather::firstCurrentHour(h, 1000000 + 100), 0u);
+  EXPECT_EQ(weather::firstCurrentHour(h, 1000000 + 3600 + 5), 1u);  // inside hour 1: hour 1 still current
+  EXPECT_EQ(weather::firstCurrentHour(h, 1000000 + 3600 * 10), 5u);
+}

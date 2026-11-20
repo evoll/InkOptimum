@@ -4,6 +4,7 @@
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
+#include <Library.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -41,6 +42,24 @@ std::string lyra3CoverThumbPath(const RecentBook& book, int width, int height) {
 
 constexpr int hPaddingInSelection = 8;
 constexpr int cornerRadius = 6;
+
+// Small outlined format badge (EPUB, FB2, DOCX...) in the cover's bottom-left
+// corner. Drawn into the cached cover frame, so it costs nothing per redraw.
+void drawFormatBadge(GfxRenderer& renderer, const Rect& slot, const std::string& path) {
+  const std::string label = library::formatLabel(path);
+  if (label.empty() || label.size() > 5) return;
+  constexpr int padX = 4;
+  constexpr int padY = 1;
+  const int textW = renderer.getTextWidth(SMALL_FONT_ID, label.c_str());
+  const int w = textW + 2 * padX;
+  const int h = renderer.getLineHeight(SMALL_FONT_ID) + 2 * padY;
+  if (w + 4 > slot.width || h + 4 > slot.height) return;
+  const int x = slot.x + 3;
+  const int y = slot.y + slot.height - h - 3;
+  renderer.fillRoundedRect(x, y, w, h, 2, Color::White);
+  renderer.drawRoundedRect(x, y, w, h, 1, 2, true);
+  renderer.drawText(SMALL_FONT_ID, x + padX, y + padY, label.c_str(), true);
+}
 }  // namespace
 
 void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
@@ -129,6 +148,10 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
                             true);
           renderer.drawIcon(CoverIcon, tileX + hPaddingInSelection + 24, tileY + hPaddingInSelection + 24, 32, 32);
         }
+        drawFormatBadge(renderer,
+                        Rect{tileX + hPaddingInSelection, tileY + hPaddingInSelection,
+                             tileWidth - 2 * hPaddingInSelection, Lyra3CoversMetrics::values.homeCoverHeight},
+                        recentBooks[i].path);
       }
 
       coverBufferStored = storeCoverBuffer();

@@ -1,8 +1,10 @@
+#include "util/NightScheduleRuntime.h"
 #include "EpubReaderActivity.h"
 
 #include <BlePageTurner.h>
 
 #include <Epub/FlowContext.h>
+#include <Epub/LetterSpacing.h>
 #include <Epub/WordSpacing.h>
 #include <Epub/LayoutQuirks.h>
 
@@ -48,6 +50,7 @@
 #include "activities/util/LegacyGridDiagnosticsActivity.h"
 #include "InkMODSettings.h"
 #include "InkMODState.h"
+#include "BookSearchActivity.h"
 #include "EpubReaderBookmarkListActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
@@ -234,6 +237,7 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
   hashLayoutValue(hash, SETTINGS.wordSpacing);
+  hashLayoutValue(hash, SETTINGS.letterSpacing);
   return hash;
 }
 
@@ -255,6 +259,7 @@ uint32_t bookWidePagesLayoutSignature(const int fontId, const uint16_t viewportW
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
   hashLayoutValue(hash, SETTINGS.wordSpacing);
+  hashLayoutValue(hash, SETTINGS.letterSpacing);
   return hash;
 }
 
@@ -602,10 +607,10 @@ ReaderViewportLayout computeReaderViewportLayout(GfxRenderer& renderer, const bo
   const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
-    layout.marginTop += std::max(static_cast<int>(SETTINGS.screenMargin),
+    layout.marginTop += std::max(static_cast<int>(SETTINGS.effectiveMarginTop()),
                                  topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
   } else {
-    layout.marginTop += SETTINGS.screenMargin;
+    layout.marginTop += SETTINGS.effectiveMarginTop();
 
     // X3's panel-safe inset is asymmetric: portrait top is 9 px while the
     // side insets are only 3 px. In the reader this stacks with screenMargin
@@ -621,12 +626,12 @@ ReaderViewportLayout computeReaderViewportLayout(GfxRenderer& renderer, const bo
   if (automaticPageTurnActive &&
       (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
     layout.marginBottom +=
-        std::max(SETTINGS.screenMargin,
+        std::max(SETTINGS.effectiveMarginBottom(),
                  static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin +
                                       ReaderUtils::STATUS_BAR_TEXT_PADDING));
   } else {
     layout.marginBottom +=
-        std::max(SETTINGS.screenMargin, static_cast<uint8_t>(statusBarHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING));
+        std::max(SETTINGS.effectiveMarginBottom(), static_cast<uint8_t>(statusBarHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING));
   }
 
   layout.viewportWidth = renderer.getScreenWidth() - layout.marginLeft - layout.marginRight;
@@ -722,6 +727,35 @@ void buildBookmarkSnippet(const Page& page, char* out, const size_t outSize) {
 
 uint16_t clampAutoPageTurnIntervalSeconds(const uint16_t seconds) {
   return std::clamp(seconds, MIN_AUTO_PAGE_TURN_INTERVAL_S, MAX_AUTO_PAGE_TURN_INTERVAL_S);
+}
+
+// Per-book inline-footnote choice: 0 = as in settings, 1 = on, 2 = off. One byte in the book cache.
+constexpr const char* INLINE_FOOTNOTE_MODE_FILE = "/inline_notes.mode";
+
+uint8_t loadInlineFootnoteMode(const std::string& cachePath) {
+  FsFile f;
+  if (!Storage.openFileForRead("ERS", cachePath + INLINE_FOOTNOTE_MODE_FILE, f)) return 0;
+  uint8_t mode = 0;
+  const int n = f.read(&mode, 1);
+  f.close();
+  return (n == 1 && mode <= 2) ? mode : 0;
+}
+
+void saveInlineFootnoteMode(const std::string& cachePath, const uint8_t mode) {
+  const std::string path = cachePath + INLINE_FOOTNOTE_MODE_FILE;
+  if (mode == 0) {
+    Storage.remove(path.c_str());
+    return;
+  }
+  FsFile f;
+  if (!Storage.openFileForWrite("ERS", path, f)) return;
+  f.write(&mode, 1);
+  f.close();
+}
+
+bool resolveInlineFootnotes(const std::string& cachePath) {
+  const uint8_t mode = loadInlineFootnoteMode(cachePath);
+  return mode == 1 || (mode == 0 && SETTINGS.inlineFootnotePreviews != 0);
 }
 
 uint16_t loadAutoPageTurnIntervalSeconds(const std::string& cachePath) {
@@ -1278,6 +1312,16 @@ void EpubReaderActivity::onEnter() {
   mappedInput.setReaderMode(true);
 
   epub->setupCacheDir();
+  // Inline footnote previews: notes are gathered once per book (popup), then every section build
+  // streams them into the text. Without a usable footnotes.bin the plain page cache is used.
+  {
+    bool inlineNotes = resolveInlineFootnotes(epub->getCachePath());
+    if (inlineNotes && !FootnotePreviews::cacheExists(epub->getCachePath())) {
+      GUI.drawPopup(renderer, tr(STR_GATHERING_FOOTNOTES));
+      FootnotePreviews::gather(*epub);
+    }
+    Section::setInlineFootnotePreviews(inlineNotes && FootnotePreviews::cacheExists(epub->getCachePath()));
+  }
   // Per-book font size / line spacing override (no-op when the book has none).
   book_overrides::enterBook(epub->getCachePath());
   lastAutoPageTurnIntervalSeconds = loadAutoPageTurnIntervalSeconds(epub->getCachePath());
@@ -1286,6 +1330,7 @@ void EpubReaderActivity::onEnter() {
                              epub->getPath().find("\\fb2_") != std::string::npos;
   clippings.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), fb2BackedBook ? "fb2" : "epub");
 
+  bool progressLoaded = false;
   if (APP_STATE.pendingBookmarkSpine != UINT16_MAX && APP_STATE.pendingBookmarkProgress >= 0.0f) {
     // Resume from a bookmark selected on the Home screen
     currentSpineIndex = APP_STATE.pendingBookmarkSpine;
@@ -1296,6 +1341,9 @@ void EpubReaderActivity::onEnter() {
     pendingBookmarkParagraphIndex =
         epub->isFb2Package() ? UINT16_MAX : APP_STATE.pendingBookmarkParagraphIndex;
     pendingPercentJump = true;
+    if (pendingBookmarkParagraphIndex == UINT16_MAX && !epub->isFb2Package()) {
+      legacyBookmarkAnchor = {true, static_cast<uint16_t>(currentSpineIndex), pendingSpineProgress};
+    }
     cachedSpineIndex = currentSpineIndex;
 
     // Clear the pending jump
@@ -1306,6 +1354,7 @@ void EpubReaderActivity::onEnter() {
   } else {
     EpubReaderUtils::Progress progress;
     if (EpubReaderUtils::loadProgress(*epub, progress)) {
+      progressLoaded = true;
       currentSpineIndex = progress.spineIndex;
       nextPageNumber = progress.pageNumber;
       cachedSpineIndex = currentSpineIndex;
@@ -1315,9 +1364,9 @@ void EpubReaderActivity::onEnter() {
       LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
     }
   }
-  // We may want a better condition to detect if we are opening for the first time.
-  // This will trigger if the book is re-opened at Chapter 0.
-  if (currentSpineIndex == 0 && !pendingPercentJump) {
+  // Only a book with no saved position starts at the text reference; a reader
+  // who paged back into spine 0 stays there. (crosspoint #4472)
+  if (!progressLoaded && currentSpineIndex == 0 && !pendingPercentJump) {
     int textSpineIndex = epub->getSpineIndexForTextReference();
     if (textSpineIndex != 0) {
       currentSpineIndex = textSpineIndex;
@@ -1370,6 +1419,7 @@ void EpubReaderActivity::onExit() {
   readerWork.cancel();
   // Give the rest of the UI the global layout settings back.
   book_overrides::exitBook();
+  Section::setInlineFootnotePreviews(false);
   coalescedPageDelta.store(0, std::memory_order_relaxed);
   coalescedSpineDelta.store(0, std::memory_order_relaxed);
   navigationSettleUntilMs.store(0, std::memory_order_relaxed);
@@ -2986,6 +3036,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               currentSpineIndex = bm.spineIndex;
               pendingSpineProgress = bm.progress;
               pendingBookmarkParagraphIndex = epub->isFb2Package() ? UINT16_MAX : bm.paragraphIndex;
+              if (pendingBookmarkParagraphIndex == UINT16_MAX && !epub->isFb2Package()) {
+                legacyBookmarkAnchor = {true, static_cast<uint16_t>(bm.spineIndex), bm.progress};
+              }
               pendingPercentJump = true;
               section.reset();
               armReadingPaceWarmup("bookmark_jump");
@@ -2995,6 +3048,42 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               returnToReaderMenu();
             }
             requestUpdate();
+          });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::SEARCH_BOOK: {
+      pauseReadingPaceTimer("book_search");
+      startActivityForResult(
+          std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_BOOK), "", 60,
+                                                  InputType::Text, 2),
+          [this](const ActivityResult& kbResult) {
+            const auto* kb = kbResult.isCancelled ? nullptr : std::get_if<KeyboardResult>(&kbResult.data);
+            if (kb == nullptr || kb->text.empty()) {
+              resumeReadingPaceTimer("book_search_cancel");
+              returnToReaderMenu();
+              requestUpdate();
+              return;
+            }
+            startActivityForResult(
+                std::make_unique<BookSearchActivity>(renderer, mappedInput, epub, kb->text, currentSpineIndex),
+                [this](const ActivityResult& result) {
+                  if (!result.isCancelled) {
+                    returnToReaderMenuOnBack = false;
+                    const auto& hit = std::get<BookmarkResult>(result.data);
+                    RenderLock lock(*this);
+                    currentSpineIndex = hit.spineIndex;
+                    pendingSpineProgress = hit.progress;
+                    pendingBookmarkParagraphIndex = epub->isFb2Package() ? UINT16_MAX : hit.paragraphIndex;
+                    pendingPercentJump = true;
+                    section.reset();
+                    armReadingPaceWarmup("search_jump");
+                    pauseReadingPaceTimer("search_jump");
+                  } else {
+                    resumeReadingPaceTimer("book_search_cancel");
+                    returnToReaderMenu();
+                  }
+                  requestUpdate();
+                });
           });
       break;
     }
@@ -3121,6 +3210,47 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
       openAutoPageTurnIntervalPicker();
       break;
+    case EpubReaderMenuActivity::MenuAction::INLINE_FOOTNOTES: {
+      if (!epub) break;
+      pauseReadingPaceTimer("inline_footnotes");
+      const uint8_t current = loadInlineFootnoteMode(epub->getCachePath());
+      std::vector<std::string> names = {tr(STR_PROFILE_GLOBAL), tr(STR_STATE_ON), tr(STR_STATE_OFF)};
+      startActivityForResult(
+          std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "InlineFootnotesSelect",
+                                                    StrId::STR_INLINE_FOOTNOTE_PREVIEWS, std::move(names), current,
+                                                    true, true),
+          [this, current](const ActivityResult& result) {
+            if (result.isCancelled) {
+              resumeReadingPaceTimer("inline_footnotes_cancel");
+              returnToReaderMenu();
+              requestUpdate();
+              return;
+            }
+            const auto mode = static_cast<uint8_t>(std::get<OptionSelectionResult>(result.data).index);
+            returnToReaderMenuOnBack = false;
+            if (!epub || mode > 2 || mode == current) {
+              resumeReadingPaceTimer("inline_footnotes_same");
+              requestUpdate();
+              return;
+            }
+            const bool before = resolveInlineFootnotes(epub->getCachePath());
+            saveInlineFootnoteMode(epub->getCachePath(), mode);
+            const bool after = resolveInlineFootnotes(epub->getCachePath());
+            if (after != before) {
+              if (after && !FootnotePreviews::cacheExists(epub->getCachePath())) {
+                GUI.drawPopup(renderer, tr(STR_GATHERING_FOOTNOTES));
+                FootnotePreviews::gather(*epub);
+              }
+              Section::setInlineFootnotePreviews(after && FootnotePreviews::cacheExists(epub->getCachePath()));
+              resumeReadingPaceTimer("inline_footnotes_apply");
+              reindexCurrentSection();  // pages are laid out again with / without the notes
+            } else {
+              resumeReadingPaceTimer("inline_footnotes_same");
+              requestUpdate();
+            }
+          });
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
     case EpubReaderMenuActivity::MenuAction::READER_OPTIONS:
     case EpubReaderMenuActivity::MenuAction::CONTROLS_OPTIONS:
@@ -3346,7 +3476,7 @@ void EpubReaderActivity::executeReaderQuickAction(InkMODSettings::LONG_PRESS_MEN
       break;
     case InkMODSettings::LONG_MENU_TOGGLE_DARK_MODE:
       if (BoardConfig::isX4Pro()) {
-        SETTINGS.screenInverted = !SETTINGS.screenInverted;
+        NightScheduleRuntime::toggle();
         renderer.promoteNextRefresh(HalDisplay::FULL_REFRESH);
       } else {
         SETTINGS.readerDarkMode = !SETTINGS.readerDarkMode;
@@ -3522,9 +3652,43 @@ bool EpubReaderActivity::handleShortcutAction(const uint8_t rawAction) {
 }
 
 bool EpubReaderActivity::executeShortPowerButtonAction() {
+  // Double press: the first tap is held back for a short window. A second tap
+  // inside it runs the double-press action; otherwise the held-back tap runs
+  // the normal short-press action. Only when the short press is a reader-side
+  // action (or Ignore); global short actions (sleep, refresh...) fire at once
+  // elsewhere and cannot be delayed from here, so double press is off then.
+  constexpr uint32_t kDoublePressWindowMs = 320;
+  const auto shortAction = static_cast<InkMODSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn);
+  const bool doubleEnabled = SETTINGS.doublePwrBtn != InkMODSettings::SHORT_PWRBTN::IGNORE &&
+                             shortAction != InkMODSettings::SHORT_PWRBTN::PAGE_TURN &&
+                             !isPowerButtonActionAvailableOutsideReader(shortAction);
+  const uint32_t now = millis();
+  if (pendingPowerTap && (!doubleEnabled || now - pendingPowerTapMs > kDoublePressWindowMs)) {
+    pendingPowerTap = false;
+    if (shortAction != InkMODSettings::SHORT_PWRBTN::IGNORE && handleShortcutAction(SETTINGS.shortPwrBtn)) {
+      return true;
+    }
+  }
+
   if (!mappedInput.wasReleased(MappedInputManager::Button::Power) ||
       mappedInput.getHeldTime() >= SETTINGS.getPowerButtonLongPressDuration()) {
     return false;
+  }
+
+  if (doubleEnabled) {
+    if (pendingPowerTap) {
+      pendingPowerTap = false;
+      const auto doubleAction = static_cast<InkMODSettings::SHORT_PWRBTN>(SETTINGS.doublePwrBtn);
+      if (doubleAction == InkMODSettings::SHORT_PWRBTN::SLEEP ||
+          doubleAction == InkMODSettings::SHORT_PWRBTN::QUICK_RESUME_SLEEP) {
+        requestDeferredHomeSleep(doubleAction == InkMODSettings::SHORT_PWRBTN::QUICK_RESUME_SLEEP);
+        return true;
+      }
+      return handleShortcutAction(SETTINGS.doublePwrBtn) || handleGlobalShortcutAction(doubleAction);
+    }
+    pendingPowerTap = true;
+    pendingPowerTapMs = now;
+    return true;
   }
 
   switch (SETTINGS.shortPwrBtn) {
@@ -4080,6 +4244,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // The sections built or loaded from here on run under the vertical-text setting (it is part of their cache key).
   FlowContext::setRequest(static_cast<VerticalText>(SETTINGS.verticalText));
   WordSpacing::current() = std::min<uint8_t>(SETTINGS.wordSpacing, WordSpacing::MAX_VALUE);
+  LetterSpacing::current() = std::min<uint8_t>(SETTINGS.letterSpacing, LetterSpacing::MAX_VALUE);
   if (!epub) {
     return;
   }
@@ -4795,6 +4960,19 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       }
       pendingBookmarkParagraphIndex = UINT16_MAX;
       pendingPercentJump = false;
+      if (legacyBookmarkAnchor.active) {
+        // A bookmark from before paragraph anchors: pin it to the text of the page it landed on.
+        if (static_cast<int>(legacyBookmarkAnchor.spineIndex) == currentSpineIndex) {
+          if (const auto pIdx = section->getParagraphIndexForPage(static_cast<uint16_t>(section->currentPage))) {
+            char snippet[BOOKMARK_SNIPPET_MAX] = {};
+            if (auto anchorPage = section->loadPageFromSectionFile()) {
+              buildBookmarkSnippet(*anchorPage, snippet, sizeof(snippet));
+            }
+            BOOKMARKS.anchorBookmark(legacyBookmarkAnchor.spineIndex, legacyBookmarkAnchor.progress, *pIdx, snippet);
+          }
+        }
+        legacyBookmarkAnchor.active = false;
+      }
     }
 
     // Apply rapid page presses only after the page count is known. If the
@@ -5107,7 +5285,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
       ClippingUtils::drawSavedHighlights(renderer, *page, clippings.getClippings(),
                                          static_cast<uint16_t>(currentSpineIndex),
                                          static_cast<uint16_t>(section->currentPage), fontId,
-                                         orientedMarginLeft, pageRenderY, foregroundBlack);
+                                         orientedMarginLeft, pageRenderY, foregroundBlack, SETTINGS.savedHighlightStyle);
     }
   };
 
@@ -5661,7 +5839,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   if (sameFile) {
     targetSpineIndex = currentSpineIndex;
   } else {
-    targetSpineIndex = epub->resolveHrefToSpineIndex(hrefStr);
+    targetSpineIndex = epub->resolveLinkToSpineIndex(hrefStr, currentSpineIndex);
   }
 
   if (targetSpineIndex < 0) {

@@ -1,12 +1,21 @@
 #include "SdCardFontSystem.h"
 
+#include <Arduino.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <SdCardFont.h>
+
+#include <new>
 
 #include "InkMODSettings.h"
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
-  registry_.discover();
+  // Scan the card now only if a saved font needs the list; otherwise leave the scan to the first consumer.
+  if (SETTINGS.sdFontFamilyName[0] != '\0' || SETTINGS.uiFontFamily[0] != '\0') {
+    registry_.discover();
+  } else {
+    registryDirty_.store(true, std::memory_order_release);
+  }
 
   // Register this system as the SD font ID resolver in settings.
   // Uses a static trampoline since InkMODSettings stores a plain function pointer.
@@ -31,7 +40,44 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
     }
   }
 
-  LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
+  applyUiFont(renderer);
+
+  LOG_DBG("SDFS", "SD font system ready (%s)", registryDirty_.load() ? "font scan deferred" : "fonts discovered");
+}
+
+void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
+  const std::string wanted = SETTINGS.uiFontFamily;
+  if (wanted.empty() && uiFontLoadedFamily_.empty()) return;  // nothing to load or drop: no need to scan the card
+  refreshIfDirty();
+  if (wanted == uiFontLoadedFamily_ && (wanted.empty() || uiFont_)) return;
+
+  renderer.setDedicatedUiGlyphFont(nullptr);  // before the font goes away
+  uiFont_.reset();
+  uiFontLoadedFamily_.clear();
+  if (wanted.empty()) return;
+
+  const auto* family = registry_.findFamily(wanted);
+  // Vector (TTF/OTF) families render at any size through the reader path; the UI glyph font is a bitmap
+  // .cpfont only, so those stay unsupported here.
+  if (!family || family->vector) {
+    LOG_DBG("SDFS", "UI font family unusable: %s", wanted.c_str());
+    return;
+  }
+  const auto* file = family->findClosestFile(10);  // built-in UI body text is 10 pt
+  if (!file) return;
+  if (ESP.getMaxAllocHeap() < 48 * 1024) {
+    LOG_ERR("SDFS", "Not enough heap for the UI font %s", wanted.c_str());
+    return;
+  }
+  std::unique_ptr<SdCardFont> font(new (std::nothrow) SdCardFont());
+  if (!font || !font->load(file->path.c_str())) {
+    LOG_ERR("SDFS", "Failed to load UI font %s", file->path.c_str());
+    return;
+  }
+  uiFont_ = std::move(font);
+  uiFontLoadedFamily_ = wanted;
+  renderer.setDedicatedUiGlyphFont(uiFont_.get());
+  LOG_DBG("SDFS", "UI glyph font: %s (%u pt)", wanted.c_str(), file->pointSize);
 }
 
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
@@ -39,23 +85,26 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
   // contents on disk may have changed (e.g. user re-uploaded a new build).
-  const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
-  if (registryWasDirty) {
-    LOG_DBG("SDFS", "Registry dirty — re-discovering fonts");
-    registry_.discover();
-  }
-
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
   const uint8_t targetPointSize = SETTINGS.getSdFontTargetPointSize();
   const uint8_t sizeStep = SETTINGS.fontSize;
 
   if (wantedFamily[0] == '\0') {
+    // Built-in font: nothing needs the list, so a pending scan stays pending.
     if (!currentFamily.empty()) {
       manager_.unloadAll(renderer);
     }
     return;
   }
+
+  std::unique_lock<std::mutex> lock(discoverMutex_);
+  const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
+  if (registryWasDirty) {
+    LOG_DBG("SDFS", "Registry dirty — re-discovering fonts");
+    registry_.discover();
+  }
+  lock.unlock();
 
   // Reload if family changed OR if the user-selected size maps to a
   // different file than what's currently loaded OR if the registry was
@@ -115,6 +164,7 @@ int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEn
 int SdCardFontSystem::loadPreviewFamily(const std::string& familyName, GfxRenderer& renderer,
                                         const uint8_t targetPointSize) {
   refreshIfDirty();
+  refreshIfDirty();
   const auto* family = registry_.findFamily(familyName);
   if (!family) return 0;
 
@@ -143,9 +193,8 @@ int SdCardFontSystem::loadPreviewFamily(const std::string& familyName, GfxRender
 }
 
 bool SdCardFontSystem::changeReaderFontSize(const bool larger) {
-  refreshIfDirty();
-
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    refreshIfDirty();
     const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
     if (family) {
       const auto sizes = family->availableSizes();

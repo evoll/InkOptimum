@@ -407,6 +407,12 @@ void markReadingHistoryDay(uint32_t& anchorDay, std::array<uint8_t, READING_HIST
   setBit(bits, static_cast<size_t>(delta));
 }
 
+bool readingHistoryHasDay(const uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits,
+                          const uint32_t dayIndex) {
+  if (dayIndex > anchorDay) return false;
+  return isBitSet(bits, static_cast<size_t>(anchorDay - dayIndex));
+}
+
 void recordReadingSpanIntoHistory(uint32_t& anchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& bits,
                                   const ReadingStatsDateTime& localStart, const uint32_t seconds) {
   if (!localStart.isValid() || seconds == 0) {

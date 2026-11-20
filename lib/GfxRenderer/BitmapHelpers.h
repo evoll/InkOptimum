@@ -5,9 +5,16 @@
 
 struct BmpHeader;
 
+// How a 0-255 level is cut into the 4 panel levels. DisplayTuned uses thresholds fitted to the X4
+// panel (they already compensate its dark grey steps). Native uses evenly spaced levels
+// (0/85/170/255): needed after adaptive tone mapping, which has already corrected the levels, so
+// the tuned thresholds would compensate a second time (idea: Paperio-Reader).
+enum class Gray4QuantizationMode : uint8_t { DisplayTuned = 0, Native = 1 };
+
 // Helper functions
 uint8_t quantize(int gray, int x, int y);
 uint8_t quantizeSimple(int gray);
+uint8_t quantizeNative(int gray);
 uint8_t quantize1bit(int gray, int x, int y);
 int adjustPixel(int gray);
 
@@ -104,7 +111,8 @@ class Atkinson1BitDitherer {
 // Less error buildup = fewer artifacts than Floyd-Steinberg
 class AtkinsonDitherer {
  public:
-  explicit AtkinsonDitherer(int width) : width(width) {
+  explicit AtkinsonDitherer(int width, Gray4QuantizationMode mode = Gray4QuantizationMode::DisplayTuned)
+      : width(width), native(mode == Gray4QuantizationMode::Native) {
     errorRow0 = new int16_t[width + 4]();  // Current row
     errorRow1 = new int16_t[width + 4]();  // Next row
     errorRow2 = new int16_t[width + 4]();  // Row after next
@@ -130,7 +138,7 @@ class AtkinsonDitherer {
     // Quantize to 4 levels
     uint8_t quantized;
     int quantizedValue;
-    if (false) {  // original thresholds
+    if (native) {  // evenly spaced levels
       if (adjusted < 43) {
         quantized = 0;
         quantizedValue = 0;
@@ -190,6 +198,7 @@ class AtkinsonDitherer {
 
  private:
   int width;
+  bool native;
   int16_t* errorRow0;
   int16_t* errorRow1;
   int16_t* errorRow2;
@@ -205,7 +214,8 @@ class AtkinsonDitherer {
 //      7/16  X
 class FloydSteinbergDitherer {
  public:
-  explicit FloydSteinbergDitherer(int width) : width(width), rowCount(0) {
+  explicit FloydSteinbergDitherer(int width, Gray4QuantizationMode mode = Gray4QuantizationMode::DisplayTuned)
+      : width(width), native(mode == Gray4QuantizationMode::Native), rowCount(0) {
     errorCurRow = new int16_t[width + 2]();  // +2 for boundary handling
     errorNextRow = new int16_t[width + 2]();
   }
@@ -234,7 +244,7 @@ class FloydSteinbergDitherer {
     // Quantize to 4 levels (0, 85, 170, 255)
     uint8_t quantized;
     int quantizedValue;
-    if (false) {  // original thresholds
+    if (native) {  // evenly spaced levels
       if (adjusted < 43) {
         quantized = 0;
         quantizedValue = 0;
@@ -316,6 +326,7 @@ class FloydSteinbergDitherer {
 
  private:
   int width;
+  bool native;
   int rowCount;
   int16_t* errorCurRow;
   int16_t* errorNextRow;

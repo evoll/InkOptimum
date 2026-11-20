@@ -113,6 +113,8 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "simulator/SimulatorSmokeTest.h"
 #endif
 #include "SdCardFontSystem.h"
+#include "util/LanguagePackLoader.h"
+#include <Epub/hyphenation/SdHyphenationPack.h>
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 #include "util/SerialLineBuffer.h"
@@ -134,6 +136,11 @@ EpdFontFamily smallFontFamily(&smallFont);
 EpdFont ui10RegularFont(&inter_10_regular);
 EpdFont ui10BoldFont(&inter_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
+
+EpdFont ui11RegularFont(&inter_11_regular);
+EpdFont ui11BoldFont(&inter_11_bold);
+EpdFontFamily ui11FontFamily(&ui11RegularFont, &ui11BoldFont);
+EpdFontFamily ui11BoldFamily(&ui11BoldFont, &ui11BoldFont);
 
 EpdFont ui12RegularFont(&inter_12_regular);
 EpdFont ui12BoldFont(&inter_12_bold);
@@ -202,6 +209,9 @@ void applyUiTextSize(GfxRenderer& r) {
     // are regenerated (needs the LexendDeca + ChareInk7 source fonts, not present in
     // this checkout) and verified to have full Cyrillic coverage.
     r.replaceFont(UI_10_FONT_ID, bold ? ui12BoldFamily : ui12FontFamily);
+  } else if (SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_MEDIUM) {
+    // Inter 11 (~28 px lines) fits every theme's list row (30 px and up) and has the same Latin/Cyrillic coverage.
+    r.replaceFont(UI_10_FONT_ID, bold ? ui11BoldFamily : ui11FontFamily);
   } else {
     r.replaceFont(UI_10_FONT_ID, bold ? ui10BoldFamily : ui10FontFamily);
   }
@@ -1133,6 +1143,9 @@ void setup() {
     return;
   }
 
+  // Hyphenation packs for languages that are not built in (SD: /.inkmod/hyphenation/).
+  SdHyphenationPack::install();
+
   // Headless emergency recovery: root-of-SD /inkmod-recovery.bin is validated
   // and flashed before display/UI initialization.
   tryEmergencyFirmwareUpdate();
@@ -1203,6 +1216,9 @@ void setup() {
 
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
+  if (SETTINGS.languagePack[0] != '\0' && !LanguagePackLoader::load(SETTINGS.languagePack)) {
+    SETTINGS.languagePack[0] = '\0';  // pack removed or built for another firmware: back to the built-in language
+  }
   // A card that already holds plugins keeps them working after the Plugins gate was introduced (it defaults
   // to off); the check runs once, so switching the setting off afterwards sticks.
   if (!SETTINGS.pluginsMigrated) {
@@ -1631,6 +1647,10 @@ void loop() {
   // Refresh the battery icon when USB is plugged or unplugged.
   // Placed after sleep guards so we never queue a render that won't be processed.
   if (gpio.wasUsbStateChanged()) {
+    // A charger plug/unplug is an asynchronous power-domain transition.
+    // Restore the normal CPU clock before rendering the new battery icon.
+    // X4 can otherwise start a full E-Ink refresh while downclocked at 10 MHz.
+    powerManager.setPowerSaving(false);
     activityManager.requestUpdate();
   }
 
@@ -1671,12 +1691,16 @@ void loop() {
     yield();
   } else {
     const unsigned long idleMs = millis() - lastActivityTime;
-    if (idleMs >= HalPowerManager::IDLE_POWER_SAVING_MS) {
+    // Keep X4 at its normal clock while USB power is present. Power saving
+    // provides no battery benefit on a charger and clock transitions during
+    // the USB/charging path are unnecessary (issue #60).
+    const bool usbPoweredX4 = gpio.deviceIsX4() && gpio.isUsbConnectedCached();
+    if (idleMs >= HalPowerManager::IDLE_POWER_SAVING_MS && !usbPoweredX4) {
       powerManager.setPowerSaving(true);
       delay(50);
     } else {
       powerManager.setPowerSaving(false);
-      delay(10);
+      delay(usbPoweredX4 ? 50 : 10);
     }
   }
 }

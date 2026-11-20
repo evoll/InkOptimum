@@ -1,4 +1,5 @@
 #include "FrontlightPanelActivity.h"
+#include "util/NightScheduleRuntime.h"
 
 #include <BoardConfig.h>
 #include <FreeInkUIIcon.h>
@@ -151,10 +152,8 @@ void FrontlightPanelActivity::onTileEvent(const fui::ActionEvent& event, void* u
 void FrontlightPanelActivity::runTile(const int idx) {
   switch (idx) {
     case 0:  // Night mode (inverted output polarity, applied to the whole UI)
-      SETTINGS.screenInverted = SETTINGS.screenInverted ? 0 : 1;
-      // FrontlightPanel renders immediately without going through the normal
-      // ActivityManager render-task inversion setter.
-      display.setInverted(SETTINGS.screenInverted != 0);
+      // With the night schedule on this holds the other polarity until the hours change.
+      display.setInverted(NightScheduleRuntime::toggle());
       SETTINGS.saveToFile();
       // Inversion rewrites every pixel; take the clean waveform so the panel
       // does not keep a ghost of the old polarity.
@@ -415,7 +414,7 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
              I18N.get(touchOn ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
 
     const char* labels[kTileCount] = {tr(STR_NIGHT_MODE), tr(STR_FORCE_REFRESH), orientLabel, touchLabel};
-    const fui::State states[kTileCount] = {SETTINGS.screenInverted ? fui::StateChecked : fui::StateNormal,
+    const fui::State states[kTileCount] = {NightScheduleRuntime::inverted() ? fui::StateChecked : fui::StateNormal,
                                            fui::StateNormal, fui::StateNormal,
                                            // Filled when touch reader controls are OFF — the non-default,
                                            // attention-worthy state.

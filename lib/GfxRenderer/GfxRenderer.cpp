@@ -758,9 +758,21 @@ bool isUiCjkCodepoint(const uint32_t cp) {
 }
 }  // namespace
 
+void GfxRenderer::setDedicatedUiGlyphFont(SdCardFont* font) {
+  uiGlyphFontDedicated_ = font != nullptr;
+  if (font) {
+    setUiCjkFont(font);
+  } else if (uiCjkEnabled_ && !sdCardFonts_.empty()) {
+    setUiCjkFont(sdCardFonts_.rbegin()->second);  // back to the reading font
+  } else {
+    setUiCjkFont(nullptr);
+  }
+}
+
 void GfxRenderer::setUiCjkEnabled(const bool enabled) {
   uiCjkEnabled_ = enabled;
   if (!enabled) {
+    uiGlyphFontDedicated_ = false;
     setUiCjkFont(nullptr);
   } else if (!uiCjkFont_ && !sdCardFonts_.empty()) {
     setUiCjkFont(sdCardFonts_.rbegin()->second);
@@ -808,8 +820,26 @@ const EpdFontFamily* GfxRenderer::uiCjkFallbackFor(const int fontId, const char*
   return &uiCjkFamily_;
 }
 
+namespace {
+// Glyphs a string draws: every code point but the combining marks, which overlay their base.
+int countSpacedGlyphs(const char* text) {
+  int n = 0;
+  while (const uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (!utf8IsCombiningMark(cp)) ++n;
+  }
+  return n;
+}
+}  // namespace
+
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style,
                               const BidiUtils::BidiBaseDir baseDir) const {
+  const int w = getTextWidthRaw(fontId, text, style, baseDir);
+  if (letterSpacingPx_ == 0 || text == nullptr || *text == '\0') return w;
+  return w + letterSpacingPx_ * countSpacedGlyphs(text);
+}
+
+int GfxRenderer::getTextWidthRaw(const int fontId, const char* text, const EpdFontFamily::Style style,
+                                 const BidiUtils::BidiBaseDir baseDir) const {
   if (text == nullptr || *text == '\0') {
     return 0;
   }
@@ -947,7 +977,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
         const bool bothDigits = prevCp >= '0' && prevCp <= '9' && cp >= '0' && cp <= '9';
         kernFP = bothDigits ? 0 : glyphFont->getKerning(prevCp, cp, style);
       }
-      lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);
+      lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP) + letterSpacingPx_;
     }
 
     if (!hasRealGlyph && syntheticGlyph::isSpaceFallback(cp)) {
@@ -1632,11 +1662,16 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   auto* outputRow = bitmapScratchOutputRow_;
   auto* rowBytes = bitmapScratchRowBytes_;
 
-  // X4 Pro sleep/home covers ultimately go through a monochrome framebuffer.
-  // A 4x4 ordered matrix makes its regular lattice visible as the "grid" seen
-  // on-device. Use the same serpentine Floyd-Steinberg idea as ImageBlock for
-  // unscaled full-size grayscale BMPs, so midtones survive without a pattern.
-  const bool x4ProFs = BoardConfig::isX4Pro() && renderMode == BW && bitmap.hasGreyscale() && !isScaled;
+  // The LUT 0x02 X4 Pro panel renders the FS-converted grayscale BMPs
+  // visibly washed out in sleep screens and the standalone BMP viewer.
+  // CrossPoint's proven BW BMP path treats palette levels 0..2 as black.
+  // Limit the compatibility path to LUT 0x02; keep the existing diffusion for
+  // the other X4 Pro panel variants and leave direct reader image rendering alone.
+  const bool x4ProLut02Bw = BoardConfig::isX4Pro() &&
+                            BoardConfig::ACTIVE.displayControllerVariant == 0x02 &&
+                            renderMode == BW && bitmap.hasGreyscale();
+  const bool x4ProFs = BoardConfig::isX4Pro() && !x4ProLut02Bw &&
+                       renderMode == BW && bitmap.hasGreyscale() && !isScaled;
   int16_t* fsCurrent = nullptr;
   int16_t* fsNext = nullptr;
   bool fsReverse = false;
@@ -1660,7 +1695,14 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     }
     screenY += y;  // the offset should not be scaled
     if (screenY >= getScreenHeight()) {
-      break;
+      // Top-down: every later row is lower still. Bottom-up: later rows move up
+      // onto the screen, so consume this one and keep going.
+      if (bitmap.isTopDown()) break;
+      if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
+        LOG_ERR("GFX", "Failed to read row %d from bitmap", bmpY);
+        return;
+      }
+      continue;
     }
 
     if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
@@ -1694,7 +1736,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
 
       if (renderMode == BW) {
-        if (BoardConfig::isX4Pro() && bitmap.hasGreyscale()) {
+        if (BoardConfig::isX4Pro() && bitmap.hasGreyscale() && !x4ProLut02Bw) {
           if (fsCurrent) {
             static constexpr uint8_t kGray[4] = {0, 68, 145, 255};
             int adjusted = static_cast<int>(kGray[val]) + fsCurrent[bmpX + 1];
@@ -2311,6 +2353,12 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
 }
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
+  const int w = getTextAdvanceXRaw(fontId, text, style);
+  if (letterSpacingPx_ == 0 || text == nullptr || *text == '\0') return w;
+  return w + letterSpacingPx_ * countSpacedGlyphs(text);
+}
+
+int GfxRenderer::getTextAdvanceXRaw(const int fontId, const char* text, EpdFontFamily::Style style) const {
   // Advance table fast-path for SD card fonts during layout.
   // No kerning/ligature lookup — consistent with previous metadataOnly behavior
   // where kern/lig data was not loaded.

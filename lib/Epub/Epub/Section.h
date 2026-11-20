@@ -16,8 +16,10 @@ class Section {
   std::shared_ptr<Epub> epub;
   const int spineIndex;
   GfxRenderer& renderer;
+  const bool useInlineFootnotes;
   std::string filePath;
   HalFile file;
+  static inline bool inlineFootnotePreviewsEnabled = false;
 
   // Layout generation is part of the cache filename rather than the binary
   // record format. This forces one clean repagination after layout-semantics
@@ -37,13 +39,20 @@ class Section {
   uint16_t leadingFrontMatterPages = 0;
   int currentPage = 0;
 
+  // Inline footnote previews put the note text into the pages, so those pages live in their own cache
+  // variant ("_inlfn"). The reader switches this on per opened book (setting on and footnotes.bin
+  // gathered); a failed note read switches it off again so the next build falls back to plain pages.
+  static void setInlineFootnotePreviews(bool enabled) { inlineFootnotePreviewsEnabled = enabled; }
+  static bool inlineFootnotePreviewsActive() { return inlineFootnotePreviewsEnabled; }
+
   explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer,
                    const char* cacheSuffix = "")
       : epub(epub),
         spineIndex(spineIndex),
         renderer(renderer),
+        useInlineFootnotes(inlineFootnotePreviewsEnabled),
         filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + LAYOUT_CACHE_GENERATION +
-                 (cacheSuffix ? cacheSuffix : "") + ".bin") {}
+                 (cacheSuffix ? cacheSuffix : "") + (inlineFootnotePreviewsEnabled ? "_inlfn" : "") + ".bin") {}
   ~Section() = default;
   // A missing section cache is a normal first-open condition, not an I/O error.
   // This lightweight probe lets callers avoid opening/logging cache variants

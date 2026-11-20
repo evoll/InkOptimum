@@ -26,6 +26,8 @@ struct ReaderLayoutSettingsSnapshot {
   uint8_t lineHeightPercent;
   uint8_t orientation;
   uint8_t screenMargin;
+  uint8_t screenMarginTop;
+  uint8_t screenMarginBottom;
   uint8_t readerClockAtBottom;
   uint8_t publisherPageNumbers;
   uint8_t paragraphAlignment;
@@ -41,7 +43,8 @@ struct ReaderLayoutSettingsSnapshot {
   bool operator==(const ReaderLayoutSettingsSnapshot& other) const {
     return fontFamily == other.fontFamily && fontSize == other.fontSize && sdFontSizeRange == other.sdFontSizeRange &&
            lineHeightPercent == other.lineHeightPercent && orientation == other.orientation &&
-           screenMargin == other.screenMargin && readerClockAtBottom == other.readerClockAtBottom &&
+           screenMargin == other.screenMargin && screenMarginTop == other.screenMarginTop &&
+           screenMarginBottom == other.screenMarginBottom && readerClockAtBottom == other.readerClockAtBottom &&
            publisherPageNumbers == other.publisherPageNumbers &&
            paragraphAlignment == other.paragraphAlignment && embeddedStyle == other.embeddedStyle &&
            hyphenationEnabled == other.hyphenationEnabled && imageRendering == other.imageRendering &&
@@ -61,6 +64,8 @@ ReaderLayoutSettingsSnapshot captureReaderLayoutSettings() {
       SETTINGS.lineHeightPercent,
       SETTINGS.orientation,
       SETTINGS.screenMargin,
+      SETTINGS.screenMarginTop,
+      SETTINGS.screenMarginBottom,
       SETTINGS.readerClockAtBottom,
       SETTINGS.publisherPageNumbers,
       SETTINGS.paragraphAlignment,
@@ -136,6 +141,8 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
       case BookMenuItemId::GO_TO_PRINTED_PAGE: if(hasPrintedPages)items.push_back({MenuAction::GO_TO_PRINTED_PAGE,StrId::STR_GO_TO_PRINTED_PAGE}); break;
       case BookMenuItemId::READING_PROFILES: items.push_back({MenuAction::READING_PROFILES,StrId::STR_READING_PROFILES}); break;
       case BookMenuItemId::BLUETOOTH: items.push_back({MenuAction::BLUETOOTH,StrId::STR_BT_PAGE_TURNER}); break;
+      case BookMenuItemId::INLINE_FOOTNOTES: items.push_back({MenuAction::INLINE_FOOTNOTES,StrId::STR_INLINE_FOOTNOTE_PREVIEWS}); break;
+      case BookMenuItemId::SEARCH_BOOK: items.push_back({MenuAction::SEARCH_BOOK,StrId::STR_SEARCH_BOOK}); break;
       default: break;
     }
   }
@@ -212,12 +219,16 @@ void EpubReaderMenuActivity::loop() {
                                               {InkMODSettings::EXTRA_LARGE, 130},
                                               {InkMODSettings::SMALL, 90}};
       constexpr uint8_t kProfileCount = 3;
+      // Entry 4 keeps the live reader options (margins, alignment, spacing, hyphenation too) for this book only.
+      constexpr uint8_t kCurrentEntry = kProfileCount + 1;
       std::vector<std::string> names = {tr(STR_PROFILE_GLOBAL), tr(STR_PROFILE_NORMAL), tr(STR_PROFILE_LARGE),
-                                        tr(STR_PROFILE_COMPACT)};
+                                        tr(STR_PROFILE_COMPACT), tr(STR_PROFILE_CURRENT)};
       std::vector<std::string> details = {tr(STR_PROFILE_GLOBAL_DETAIL), tr(STR_PROFILE_NORMAL_DETAIL),
-                                          tr(STR_PROFILE_LARGE_DETAIL), tr(STR_PROFILE_COMPACT_DETAIL)};
+                                          tr(STR_PROFILE_LARGE_DETAIL), tr(STR_PROFILE_COMPACT_DETAIL),
+                                          tr(STR_PROFILE_CURRENT_DETAIL)};
       uint8_t current = 0;
       if (book_overrides::bookHasOverride()) {
+        current = kCurrentEntry;
         for (uint8_t i = 0; i < kProfileCount; ++i) {
           if (SETTINGS.fontSize == kProfiles[i].fontSize &&
               SETTINGS.lineHeightPercent == kProfiles[i].lineHeightPercent) {
@@ -232,9 +243,11 @@ void EpubReaderMenuActivity::loop() {
           [this](const ActivityResult& result) {
             if (!result.isCancelled) {
               const auto& pick = std::get<OptionSelectionResult>(result.data);
-              if (pick.index <= kProfileCount) {
+              if (pick.index <= kCurrentEntry) {
                 book_overrides::Record record;
-                if (pick.index > 0) {
+                if (pick.index == kCurrentEntry) {
+                  record = book_overrides::currentAsRecord();
+                } else if (pick.index > 0) {
                   record.present = true;
                   record.values = {kProfiles[pick.index - 1].fontSize, kProfiles[pick.index - 1].lineHeightPercent};
                 }

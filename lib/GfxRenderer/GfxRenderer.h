@@ -114,6 +114,7 @@ class GfxRenderer {
 
   // CJK interface fallback (see setUiCjkEnabled).
   bool uiCjkEnabled_ = false;
+  bool uiGlyphFontDedicated_ = false;  // a UI font picked on its own, not borrowed from the reading font
   SdCardFont* uiCjkFont_ = nullptr;
   mutable EpdFontFamily uiCjkFamily_{nullptr};
   mutable std::string uiCjkLoaded_;  // unique CJK characters already read from the card
@@ -160,6 +161,9 @@ class GfxRenderer {
   }
 
  private:
+  mutable int letterSpacingPx_ = 0;
+  int getTextWidthRaw(int fontId, const char* text, EpdFontFamily::Style style, BidiUtils::BidiBaseDir baseDir) const;
+  int getTextAdvanceXRaw(int fontId, const char* text, EpdFontFamily::Style style) const;
   ScreenInsets viewableInsets;
 
  public:
@@ -200,15 +204,20 @@ class GfxRenderer {
   // (glyphs are read from the card on demand and remembered until the font cache is cleared).
   void setUiCjkEnabled(bool enabled);
   bool isUiCjkEnabled() const { return uiCjkEnabled_; }
+  // A dedicated SD font for interface glyphs (chosen in settings, loaded near the UI point size). While set it
+  // wins over the reading font; nullptr goes back to borrowing the most recently registered reading font.
+  // The caller keeps ownership and must clear it before freeing the font.
+  void setDedicatedUiGlyphFont(SdCardFont* font);
+  bool hasDedicatedUiGlyphFont() const { return uiGlyphFontDedicated_; }
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) {
     sdCardFonts_[fontId] = font;
-    if (uiCjkEnabled_) setUiCjkFont(font);
+    if (uiCjkEnabled_ && !uiGlyphFontDedicated_) setUiCjkFont(font);
   }
   void unregisterSdCardFont(int fontId) { removeFont(fontId); }
   void clearSdCardFonts() {
-    setUiCjkFont(nullptr);
+    if (!uiGlyphFontDedicated_) setUiCjkFont(nullptr);
     sdCardFonts_.clear();
   }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
@@ -320,6 +329,11 @@ class GfxRenderer {
   /// Returns the kerning adjustment between two adjacent codepoints.
   int getKerning(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const;
   int getTextAdvanceX(int fontId, const char* text, EpdFontFamily::Style style) const;
+
+  // Extra pixels after every drawn glyph (reader letter spacing). Applies to drawText, getTextWidth and
+  // getTextAdvanceX alike so layout and drawing agree; 0 (the default) leaves every advance as the font sets it.
+  void setLetterSpacing(const int px) const { letterSpacingPx_ = px < 0 ? 0 : px; }
+  int getLetterSpacing() const { return letterSpacingPx_; }
   int getFontAscenderSize(int fontId) const;
   int getLineHeight(int fontId) const;
   std::string truncatedText(int fontId, const char* text, int maxWidth,

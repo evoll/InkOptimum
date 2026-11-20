@@ -24,6 +24,7 @@ struct Field {
 const Field kFields[] = {
     {"shortPwrBtn", &InkMODSettings::shortPwrBtn, 0},
     {"longPwrBtn", &InkMODSettings::longPwrBtn, 0},
+    {"doublePwrBtn", &InkMODSettings::doublePwrBtn, 0},
     {"homeDoublePressAction", &InkMODSettings::homeDoublePressAction, 0},
     {"homeLongPressAction", &InkMODSettings::homeLongPressAction, 0},
     {"longPressButtonBehavior", &InkMODSettings::longPressButtonBehavior, 0},

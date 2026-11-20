@@ -12,9 +12,10 @@
       "url": "https://github.com/daveallie"
     }
   ],
-  "dependencies": {
-    "greiman/SdFat": "^2.3.1"
-  },
+  "dependencies": {},
   "platforms": "espressif32",
-  "frameworks": ["arduino", "espidf"]
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ]
 }

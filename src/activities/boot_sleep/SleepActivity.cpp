@@ -9,6 +9,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <PNGdec.h>
+#include <Epub/converters/DirectPixelWriter.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
 
 #include <algorithm>
@@ -22,7 +23,10 @@
 #include "../reader/ReadingStatsUtils.h"
 #include "../reader/TxtReaderActivity.h"
 #include "../reader/XtcReaderActivity.h"
+#include <esp_random.h>
+
 #include "AppVersion.h"
+#include "ClippingStore.h"
 #include "InkMODSettings.h"
 #include "InkMODState.h"
 #include "RecentBooksStore.h"
@@ -35,6 +39,74 @@
 #include "images/InkMODLogo120.h"
 #include "images/InkMODLogo240.h"
 #include "images/MoonIcon.h"
+#include "WeatherIcons.h"
+#include "weather/WeatherService.h"
+#include "weather/WeatherText.h"
+
+// Adaptive tone applies to user-supplied sleep images only; overlays and covers draw as before.
+static BitmapToneMapping sleepImageToneMapping() {
+  return SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::ADAPTIVE_TONE
+             ? BitmapToneMapping::Adaptive
+             : BitmapToneMapping::None;
+}
+
+// --- Rendered PNG sleep image cache (".pxc" sidecar, idea: Paperio-Reader) ---
+// A PNG sleep image is decoded (and, with adaptive tone, decoded twice) on every sleep. The result is the
+// final 2-bit image, so it is stored next to the source as /dir/.name.png.<size>.t<0|1>.pxc and replayed
+// on later sleeps. The source size and the tone flag are in the name, so replacing the image or changing
+// the filter never picks up a stale file. Format = PixelCache (u16 w, u16 h, 2-bit rows).
+static std::string sleepPngCachePath(const std::string& imagePath, bool adaptive) {
+  FsFile f;
+  if (!Storage.openFileForRead("SLP", imagePath, f)) return std::string();
+  const uint32_t size = static_cast<uint32_t>(f.size());
+  f.close();
+  const size_t slash = imagePath.find_last_of('/');
+  const std::string dir = slash == std::string::npos ? std::string() : imagePath.substr(0, slash + 1);
+  const std::string name = slash == std::string::npos ? imagePath : imagePath.substr(slash + 1);
+  return dir + "." + name + "." + std::to_string(size) + (adaptive ? ".t1" : ".t0") + ".pxc";
+}
+
+// Replays the cache into the framebuffer (current render mode). false = missing/invalid, caller decodes.
+static bool replaySleepPngCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int width,
+                                int height) {
+  FsFile f;
+  if (!Storage.openFileForRead("SLP", cachePath, f)) return false;
+  uint16_t cw = 0, ch = 0;
+  const int bytesPerRow = (width + 3) / 4;
+  if (f.read(&cw, 2) != 2 || f.read(&ch, 2) != 2 || cw != width || ch != height ||
+      static_cast<uint32_t>(f.size()) != 4U + static_cast<uint32_t>(bytesPerRow) * static_cast<uint32_t>(height)) {
+    f.close();
+    Storage.remove(cachePath.c_str());  // wrong geometry or truncated: drop it
+    return false;
+  }
+  uint8_t* row = static_cast<uint8_t*>(malloc(bytesPerRow));
+  if (!row) {
+    f.close();
+    return false;
+  }
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  DirectPixelWriter pw;
+  pw.init(renderer);
+  bool ok = true;
+  for (int r = 0; r < height && ok; r++) {
+    if (f.read(row, bytesPerRow) != bytesPerRow) {
+      ok = false;
+      break;
+    }
+    const int sy = y + r;
+    if (sy < 0 || sy >= screenH) continue;
+    pw.beginRow(sy);
+    for (int c = 0; c < width; c++) {
+      const int sx = x + c;
+      if (sx < 0 || sx >= screenW) continue;
+      pw.writePixel(sx, (row[c >> 2] >> (6 - (c & 3) * 2)) & 0x03);
+    }
+  }
+  free(row);
+  f.close();
+  return ok;
+}
 
 namespace {
 
@@ -548,6 +620,8 @@ void SleepActivity::onEnter() {
       return renderOverlaySleepScreen();
     case (InkMODSettings::SLEEP_SCREEN_MODE::READING_STATS_SLEEP):
       return renderReadingStatsSleepScreen();
+    case (InkMODSettings::SLEEP_SCREEN_MODE::QUOTE_SLEEP):
+      return renderQuoteSleepScreen();
     case (InkMODSettings::SLEEP_SCREEN_MODE::MINIMAL_SLEEP):
       return renderMinimalSleepScreen();
     case (InkMODSettings::SLEEP_SCREEN_MODE::MINIMAL_STATS_SLEEP):
@@ -611,10 +685,21 @@ void SleepActivity::renderCustomSleepScreen() const {
         config.performanceMode = false;
         config.useExactDimensions = true;
 
+        config.adaptiveTone = sleepImageToneMapping() == BitmapToneMapping::Adaptive;
+        const std::string pxcPath = sleepPngCachePath(selection.path, config.adaptiveTone);
+
         PngToFramebufferConverter converter;
         renderer.clearScreen();
         renderer.setRenderMode(GfxRenderer::BW);
-        if (converter.decodeToFramebuffer(selection.path, renderer, config)) {
+        bool rendered = !pxcPath.empty() &&
+                        replaySleepPngCache(renderer, pxcPath, config.x, config.y, drawWidth, drawHeight);
+        if (rendered) {
+          LOG_INF("SLP", "Sleep PNG replayed from cache: %s", pxcPath.c_str());
+        } else {
+          config.cachePath = pxcPath;  // decoder writes the cache as it goes (best effort)
+          rendered = converter.decodeToFramebuffer(selection.path, renderer, config);
+        }
+        if (rendered) {
           renderer.displayBuffer(BoardConfig::isX4Pro() ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH,
                                  TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
           return;
@@ -626,7 +711,7 @@ void SleepActivity::renderCustomSleepScreen() const {
       if (Storage.openFileForRead("SLP", selection.path, file)) {
         LOG_INF("SLP", "Loading custom sleep image: %s", selection.path.c_str());
         delay(100);
-        Bitmap bitmap(file, true);
+        Bitmap bitmap(file, true, sleepImageToneMapping());
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           renderBitmapSleepScreen(bitmap);
           return;
@@ -642,7 +727,7 @@ void SleepActivity::renderCustomSleepScreen() const {
   // render a custom sleep screen instead of the default.
   FsFile file;
   if (Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
-    Bitmap bitmap(file, true);
+    Bitmap bitmap(file, true, sleepImageToneMapping());
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Loading: /sleep.bmp");
       renderBitmapSleepScreen(bitmap);
@@ -748,8 +833,10 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool bla
   paintCoverCanvas();
 
   const bool x4Pro = BoardConfig::isX4Pro();
+  // ADAPTIVE_TONE changes how levels are derived, not whether they exist: it stays a greyscale mode.
   const bool hasGreyscale = !x4Pro && bitmap.hasGreyscale() &&
-                            SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+                            (SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER ||
+                             SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::ADAPTIVE_TONE);
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
 
@@ -865,6 +952,49 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
     renderPerBookStatsPage(renderer, nullptr, bookTitle, bookStats, progressPercent, false, 0, false, false, false);
   }
   renderer.invertScreen();
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+}
+
+void SleepActivity::renderQuoteSleepScreen() const {
+  ClippingQuote quote;
+  const auto randomBelow = [](uint32_t bound) -> uint32_t {
+    // Rejection sampling avoids modulo bias for any library size.
+    const uint32_t threshold = static_cast<uint32_t>(-bound) % bound;
+    uint32_t value;
+    do {
+      value = esp_random();
+    } while (value < threshold);
+    return value % bound;
+  };
+  if (!ClippingStore::randomQuote(quote, randomBelow)) {
+    return renderDefaultSleepScreen();  // no highlights saved yet
+  }
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int margin = 40;
+  const int font = UI_12_FONT_ID;
+  const int lineHeight = renderer.getLineHeight(font);
+  const int captionHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int maxLines = std::max(1, (height - 2 * margin - 3 * captionHeight - 70) / lineHeight);
+  const auto lines = renderer.wrappedText(font, quote.text.c_str(), width - 2 * margin, maxLines);
+  std::string caption = quote.author.empty() ? quote.title : quote.author + " - " + quote.title;
+  const auto captionLines = renderer.wrappedText(UI_10_FONT_ID, caption.c_str(), width - 2 * margin, 3);
+  const int blockHeight =
+      static_cast<int>(lines.size()) * lineHeight + 20 + static_cast<int>(captionLines.size()) * captionHeight;
+  int y = std::max(margin + 24, (height - blockHeight) / 2);
+  renderer.clearScreen();
+  for (const auto& line : lines) {
+    renderer.drawText(font, margin, y, line.c_str());
+    y += lineHeight;
+  }
+  y += 8;
+  renderer.drawLine(width - margin - 100, y, width - margin, y, 2, true);
+  y += 12;
+  for (const auto& line : captionLines) {
+    const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, line.c_str());
+    renderer.drawText(UI_10_FONT_ID, width - margin - textWidth, y, line.c_str());
+    y += captionHeight;
+  }
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
@@ -1045,6 +1175,65 @@ void drawBigDigit(const GfxRenderer& renderer, const int x, const int y, const i
 
 }  // namespace
 
+// Cached forecast for today (no network): icon, high / low, description, place. Returns false when the cache
+// holds nothing usable for today's date, so the caller falls back to the logo.
+static bool drawCalendarWeather(GfxRenderer& renderer, const int pageWidth, const int areaTop, const int areaHeight,
+                                const ReadingStatsDate& today) {
+  const auto result = WEATHER.loadCached();
+  if (result.status == WeatherService::Status::NoCache || result.status == WeatherService::Status::NoLocation) {
+    return false;
+  }
+  const auto& fc = result.forecast;
+  const weather::Daily* day = nullptr;
+  for (const auto& d : fc.daily) {
+    const time_t dayStart = d.date + fc.utcOffsetSeconds;
+    struct tm tmv {};
+    gmtime_r(&dayStart, &tmv);
+    if (tmv.tm_year + 1900 == today.year && tmv.tm_mon + 1 == today.month && tmv.tm_mday == today.day) {
+      day = &d;
+      break;
+    }
+  }
+  if (day == nullptr) return false;  // cache is from another day: better no weather than wrong weather
+
+  const auto& cfg = WEATHER.settings();
+  char range[32];
+  snprintf(range, sizeof(range), "%d\xC2\xB0 / %d\xC2\xB0%s", static_cast<int>(std::lround(day->tempMax)),
+           static_cast<int>(std::lround(day->tempMin)), cfg.tempUnit == weather::TempUnit::Celsius ? "C" : "F");
+  const char* desc = I18N.get(weather_text::descriptionId(day->weatherCode));
+  const int bigH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int textW = std::max({renderer.getTextWidth(UI_12_FONT_ID, range, EpdFontFamily::BOLD),
+                              renderer.getTextWidth(UI_10_FONT_ID, desc),
+                              renderer.getTextWidth(UI_10_FONT_ID, cfg.locationName.c_str())});
+  const int gap = 18;
+  const int blockW = WEATHER_ICON_SIZE + gap + std::min(textW, pageWidth - 48 - WEATHER_ICON_SIZE - gap);
+  const int textH = bigH + lineH + (cfg.locationName.empty() ? 0 : lineH);
+  const int blockH = std::max(WEATHER_ICON_SIZE, textH);
+  const int x = (pageWidth - blockW) / 2;
+  const int y = areaTop + (areaHeight - blockH) / 2;
+
+  const uint8_t* bmp = weather::iconBitmap(weather::iconForCode(day->weatherCode, true));
+  const int iconY = y + (blockH - WEATHER_ICON_SIZE) / 2;
+  for (int py = 0; py < WEATHER_ICON_SIZE; ++py) {
+    for (int px = 0; px < WEATHER_ICON_SIZE; ++px) {
+      if (weather::iconPixelSet(bmp, px, py)) renderer.drawPixel(x + px, iconY + py);
+    }
+  }
+  const int tx = x + WEATHER_ICON_SIZE + gap;
+  const int maxTextW = pageWidth - 24 - tx;
+  int ty = y + (blockH - textH) / 2;
+  renderer.drawText(UI_12_FONT_ID, tx, ty, range, true, EpdFontFamily::BOLD);
+  ty += bigH;
+  renderer.drawText(UI_10_FONT_ID, tx, ty, renderer.truncatedText(UI_10_FONT_ID, desc, maxTextW).c_str());
+  if (!cfg.locationName.empty()) {
+    ty += lineH;
+    renderer.drawText(UI_10_FONT_ID, tx, ty,
+                      renderer.truncatedText(UI_10_FONT_ID, cfg.locationName.c_str(), maxTextW).c_str());
+  }
+  return true;
+}
+
 void SleepActivity::renderCalendarSleepScreen() const {
   if (SETTINGS.clockDisabled) {
     // User turned the clock off after previously picking Calendar - it's no
@@ -1173,9 +1362,13 @@ void SleepActivity::renderCalendarSleepScreen() const {
   // height passed in match its actual 120x120 layout, so it has to be drawn at native
   // size (like renderDefaultSleepScreen does) or the row stride comes out wrong and
   // the image comes out corrupted instead of shrunk.
-  const int logoY = pageHeight - INKMODLOGO240_HEIGHT - 18;
-  drawInkMODBitmap(renderer, InkMODLogo240, INKMODLOGO240_WIDTH, INKMODLOGO240_HEIGHT,
-                   (pageWidth - INKMODLOGO240_WIDTH) / 2, logoY);
+  const bool weatherShown = SETTINGS.calendarSleepWeather &&
+                            drawCalendarWeather(renderer, pageWidth, pageHeight - kLogoAreaH, kLogoAreaH, now.date);
+  if (!weatherShown) {
+    const int logoY = pageHeight - INKMODLOGO240_HEIGHT - 18;
+    drawInkMODBitmap(renderer, InkMODLogo240, INKMODLOGO240_WIDTH, INKMODLOGO240_HEIGHT,
+                     (pageWidth - INKMODLOGO240_WIDTH) / 2, logoY);
+  }
 
   if (SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_INVERTED) {
     renderer.invertScreen();

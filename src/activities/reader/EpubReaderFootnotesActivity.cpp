@@ -10,6 +10,28 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace {
+constexpr int kFootnoteRowHeight = 52;
+constexpr int kFootnoteListTop = 60;
+constexpr int kFootnoteTextInset = 32;
+
+// The hit-test and the painter must agree on the same list geometry.
+// Keep the footer reserved even in landscape / inverted portrait.
+struct FootnoteListLayout {
+  int top;
+  int height;
+  int visibleRows;
+};
+
+FootnoteListLayout footnoteListLayout(GfxRenderer& renderer) {
+  const bool inverted = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
+  const int top = kFootnoteListTop + (inverted ? 50 : 0);
+  const int height = std::max(1, renderer.getScreenHeight() - top -
+                                  UITheme::getInstance().getMetrics().buttonHintsHeight);
+  return {top, height, std::max(1, height / kFootnoteRowHeight)};
+}
+}  // namespace
+
 void EpubReaderFootnotesActivity::onEnter() {
   Activity::onEnter();
   selectedIndex = 0;
@@ -36,11 +58,13 @@ void EpubReaderFootnotesActivity::loop() {
   }
 
   if (!footnotes.empty() && mappedInput.hasTouch()) {
-    const auto orientation = renderer.getOrientation();
-    const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-    const int contentY = isPortraitInverted ? 50 : 0;
-    constexpr int lineHeight = 36;
-    const int visibleCount = std::max(1, (renderer.getScreenHeight() - contentY) / lineHeight);
+    const auto list = footnoteListLayout(renderer);
+    const int visibleCount = list.visibleRows;
+    // Reconcile selection and scroll *before* hit-testing. Previously this
+    // happened only in render(), so a tap after button navigation could hit
+    // a different row from the one currently visible on E-Ink.
+    if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+    if (selectedIndex >= scrollOffset + visibleCount) scrollOffset = selectedIndex - visibleCount + 1;
 
     const auto swipe = mappedInput.wasSwipe();
     if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
@@ -56,9 +80,8 @@ void EpubReaderFootnotesActivity::loop() {
     }
 
     int tx = 0, ty = 0;
-    const int listTop = 60 + contentY;
-    if (mappedInput.wasScreenTapped(tx, ty) && ty >= listTop) {
-      const int row = (ty - listTop) / lineHeight;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= list.top && ty < list.top + list.height) {
+      const int row = (ty - list.top) / kFootnoteRowHeight;
       const int index = scrollOffset + row;
       if (row >= 0 && row < visibleCount && index >= 0 && index < static_cast<int>(footnotes.size())) {
         selectedIndex = index;
@@ -120,20 +143,20 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
     return;
   }
 
-  constexpr int lineHeight = 36;
   const int screenWidth = renderer.getScreenWidth();
-  const int marginLeft = contentX + 20;
-
-  const int visibleCount = std::max(1, (renderer.getScreenHeight() - contentY) / lineHeight);
+  const int marginLeft = contentX + kFootnoteTextInset;
+  const auto list = footnoteListLayout(renderer);
+  const int listTop = list.top;
+  const int visibleCount = list.visibleRows;
   if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
   if (selectedIndex >= scrollOffset + visibleCount) scrollOffset = selectedIndex - visibleCount + 1;
 
   for (int i = scrollOffset; i < static_cast<int>(footnotes.size()) && i < scrollOffset + visibleCount; i++) {
-    const int y = 60 + contentY + (i - scrollOffset) * lineHeight;
+    const int y = listTop + (i - scrollOffset) * kFootnoteRowHeight;
     const bool isSelected = (i == selectedIndex);
 
     if (isSelected) {
-      renderer.fillRect(0, y, screenWidth, lineHeight, true);
+      renderer.fillRect(0, y, screenWidth, kFootnoteRowHeight, true);
     }
 
     // Show footnote number and abbreviated href
@@ -141,10 +164,10 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
     if (label.empty()) {
       label = tr(STR_LINK);
     }
-    renderer.drawText(UI_10_FONT_ID, marginLeft, y + 4, label.c_str(), !isSelected);
+    renderer.drawText(UI_10_FONT_ID, marginLeft, y + 12, label.c_str(), !isSelected);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
 
   renderer.displayBuffer();

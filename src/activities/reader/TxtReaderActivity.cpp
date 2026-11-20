@@ -1,3 +1,4 @@
+#include "util/NightScheduleRuntime.h"
 #include "TxtReaderActivity.h"
 
 #include <BidiUtils.h>
@@ -300,7 +301,7 @@ bool TxtReaderActivity::remoteTurn(const bool forward, const bool /*chapter*/) {
 
 void TxtReaderActivity::toggleDarkMode() {
   if (BoardConfig::isX4Pro()) {
-    SETTINGS.screenInverted = !SETTINGS.screenInverted;
+    NightScheduleRuntime::toggle();
     renderer.promoteNextRefresh(HalDisplay::FULL_REFRESH);
   } else {
     SETTINGS.readerDarkMode = !SETTINGS.readerDarkMode;
@@ -475,16 +476,16 @@ void TxtReaderActivity::initializeReader() {
   cachedOrientedMarginRight += cachedScreenMargin;
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
-    cachedOrientedMarginTop += std::max(static_cast<int>(cachedScreenMargin),
+    cachedOrientedMarginTop += std::max(static_cast<int>(SETTINGS.effectiveMarginTop()),
                                         topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
   } else {
-    cachedOrientedMarginTop += cachedScreenMargin;
+    cachedOrientedMarginTop += SETTINGS.effectiveMarginTop();
     if (gpio.deviceIsX3() && SETTINGS.orientation == InkMODSettings::ORIENTATION::PORTRAIT) {
       cachedOrientedMarginTop = std::max(0, cachedOrientedMarginTop - 6);
     }
   }
   cachedOrientedMarginBottom += std::max(
-      cachedScreenMargin,
+      SETTINGS.effectiveMarginBottom(),
       static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight() + ReaderUtils::STATUS_BAR_TEXT_PADDING));
 
   viewportWidth = renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
@@ -930,15 +931,15 @@ bool TxtReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gfx
   marginRight += screenMargin;
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
-    marginTop +=
-        std::max(static_cast<int>(screenMargin), topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
+    marginTop += std::max(static_cast<int>(SETTINGS.effectiveMarginTop()),
+                          topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
   } else {
-    marginTop += screenMargin;
+    marginTop += SETTINGS.effectiveMarginTop();
     if (gpio.deviceIsX3() && SETTINGS.orientation == InkMODSettings::ORIENTATION::PORTRAIT) {
       marginTop = std::max(0, marginTop - 6);
     }
   }
-  marginBottom += std::max(screenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight() +
+  marginBottom += std::max(SETTINGS.effectiveMarginBottom(), static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight() +
                                                               ReaderUtils::STATUS_BAR_TEXT_PADDING));
 
   const int vw = renderer.getScreenWidth() - marginLeft - marginRight;

@@ -195,6 +195,7 @@ bool JsonSettingsIO::saveSettings(const InkMODSettings& s, const char* path) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   doc["fontFamily"] = s.fontFamily;
   // SD card font family name — not in SettingsList, save manually
+  if (s.uiFontFamily[0] != '\0') doc["uiFontFamily"] = s.uiFontFamily;
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
@@ -204,6 +205,7 @@ bool JsonSettingsIO::saveSettings(const InkMODSettings& s, const char* path) {
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (s.language < getLanguageCount()) ? LANGUAGE_CODES[s.language] : "EN";
+  doc["languagePack"] = s.languagePack;
   // Separate from the legacy clock sync flag because older builds synced time
   // only, leaving the RTC date registers at their placeholder/default value.
   doc["clockDateHasBeenSynced"] = s.clockDateHasBeenSynced;
@@ -392,6 +394,9 @@ bool JsonSettingsIO::loadSettings(InkMODSettings& s, const char* json, bool* nee
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   s.fontFamily = clamp(storedFontFamily, InkMODSettings::BUILTIN_FONT_COUNT, 0);
   // SD card font family name — not in SettingsList, load manually
+  const char* ufn = doc["uiFontFamily"] | "";
+  strncpy(s.uiFontFamily, ufn, sizeof(s.uiFontFamily) - 1);
+  s.uiFontFamily[sizeof(s.uiFontFamily) - 1] = '\0';
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
   s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';
@@ -411,6 +416,19 @@ bool JsonSettingsIO::loadSettings(InkMODSettings& s, const char* json, bool* nee
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
     s.language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
+  }
+  if (const char* pack = doc["languagePack"] | static_cast<const char*>(nullptr)) {
+    // Letters and digits only: the code becomes a file name on the SD card.
+    size_t n = 0;
+    for (; pack[n] && n < sizeof(s.languagePack) - 1; ++n) {
+      const char c = pack[n];
+      if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+        n = 0;
+        break;
+      }
+    }
+    memcpy(s.languagePack, pack, n);
+    s.languagePack[n] = '\0';
   }
   s.clockDateHasBeenSynced = clamp(doc["clockDateHasBeenSynced"] | (uint8_t)0, (uint8_t)2, (uint8_t)0);
   s.clockLastSyncedEpoch = doc["clockLastSyncedEpoch"] | (uint32_t)0;

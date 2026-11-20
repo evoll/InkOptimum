@@ -1,0 +1,9 @@
+{
+  "name": "Lua",
+  "version": "5.4.7",
+  "description": "Lua 5.4.7 (MIT), core + base/coroutine/table/string/math/utf8 only. No io/os/debug/package libraries: the XtApp host provides its own sandbox.",
+  "build": {
+    "flags": ["-DLUA_USE_C89", "-Wno-error"],
+    "srcFilter": ["+<*.c>"]
+  }
+}

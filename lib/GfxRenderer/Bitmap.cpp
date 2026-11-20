@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS
@@ -12,6 +14,33 @@
 // For cover images, dithering is done in JpegToBmpConverter.cpp instead.
 constexpr bool USE_ATKINSON = true;  // Use Atkinson dithering instead of Floyd-Steinberg
 // ============================================================================
+
+// Reads a row-subsampled luminance histogram of the pixel data and derives the adaptive tone points
+// (shared with the PNG decoder, see AdaptiveTone.h). Any failure leaves the image untouched.
+// The caller rewinds the file afterwards.
+bool Bitmap::analyzeAdaptiveTone() {
+  adaptiveTone = {};
+  std::unique_ptr<uint32_t[]> histogram(new (std::nothrow) uint32_t[256]());
+  std::unique_ptr<uint8_t[]> rowBuffer(new (std::nothrow) uint8_t[static_cast<size_t>(rowBytes)]);
+  if (!histogram || !rowBuffer) return false;
+  if (!file.seek(bfOffBits)) return false;
+
+  const int bytesPerPixel = bpp / 8;
+  uint64_t sampled = 0;
+  for (int y = 0; y < height; y += adaptive_tone::ROW_STEP) {
+    if (file.read(rowBuffer.get(), rowBytes) != rowBytes) return false;
+    const uint8_t* pixel = rowBuffer.get();
+    for (int x = 0; x < width; x++) {
+      histogram[(77u * pixel[2] + 150u * pixel[1] + 29u * pixel[0]) >> 8]++;
+      pixel += bytesPerPixel;
+    }
+    sampled += static_cast<uint64_t>(width);
+    const int skipRows = (y + adaptive_tone::ROW_STEP < height) ? adaptive_tone::ROW_STEP - 1 : 0;
+    if (skipRows > 0 && !file.seekCur(static_cast<int32_t>(skipRows) * rowBytes)) return false;
+  }
+  adaptiveTone = adaptive_tone::derivePoints(histogram.get(), sampled);
+  return adaptiveTone.active;
+}
 
 Bitmap::~Bitmap() {
   delete[] errorCurRow;
@@ -132,12 +161,20 @@ BmpReaderError Bitmap::parseHeaders() {
   rowBytes = (width * bpp + 31) / 32 * 4;
 
   for (int i = 0; i < 256; i++) paletteLum[i] = static_cast<uint8_t>(i);
+  // The palette follows the DIB header, which is longer than 40 bytes for V4/V5 files.
+  if (colorsUsed > 0 && !file.seek(14 + biSize)) return BmpReaderError::SeekPixelDataFailed;
   if (colorsUsed > 0) {
     for (uint32_t i = 0; i < colorsUsed; i++) {
       uint8_t rgb[4];
       file.read(rgb, 4);  // Read B, G, R, Reserved in one go
       paletteLum[i] = (77u * rgb[2] + 150u * rgb[1] + 29u * rgb[0]) >> 8;
     }
+  }
+
+  // Adaptive tone needs its own pass over the pixel data; true-colour input only (a paletted BMP has
+  // too few distinct luminances for percentiles to mean anything).
+  if (toneMapping == BitmapToneMapping::Adaptive && bpp >= 24) {
+    analyzeAdaptiveTone();
   }
 
   if (!file.seek(bfOffBits)) {
@@ -166,11 +203,13 @@ BmpReaderError Bitmap::parseHeaders() {
   //  - High-color + dithering enabled → error-diffusion dithering (Atkinson or Floyd-Steinberg)
   //  - High-color + dithering disabled → simple quantization (no error diffusion)
   const bool highColor = !nativePalette;
+  const Gray4QuantizationMode ditherMode =
+      adaptiveTone.active ? Gray4QuantizationMode::Native : Gray4QuantizationMode::DisplayTuned;
   if (highColor && dithering) {
     if (USE_ATKINSON) {
-      atkinsonDitherer = new AtkinsonDitherer(width);
+      atkinsonDitherer = new AtkinsonDitherer(width, ditherMode);
     } else {
-      fsDitherer = new FloydSteinbergDitherer(width);
+      fsDitherer = new FloydSteinbergDitherer(width, ditherMode);
     }
   }
 
@@ -190,7 +229,8 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
   int currentX = 0;
 
   // Helper lambda to pack 2bpp color into the output stream
-  auto packPixel = [&](const uint8_t lum) {
+  auto packPixel = [&](uint8_t lum) {
+    if (adaptiveTone.active) lum = adaptive_tone::apply(adaptiveTone, lum);
     uint8_t color;
     if (atkinsonDitherer) {
       color = atkinsonDitherer->processPixel(adjustPixel(lum), currentX);
@@ -202,7 +242,7 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
         color = static_cast<uint8_t>(adjustPixel(lum) >> 6);
       } else {
         // Non-native palette with dithering disabled: simple quantization
-        color = quantize(adjustPixel(lum), currentX, prevRowY);
+        color = adaptiveTone.active ? quantizeNative(adjustPixel(lum)) : quantize(adjustPixel(lum), currentX, prevRowY);
       }
     }
     currentOutByte |= (color << bitShift);

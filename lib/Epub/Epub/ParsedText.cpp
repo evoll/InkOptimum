@@ -1,4 +1,5 @@
 #include "ParsedText.h"
+#include "LetterSpacing.h"
 #include "WordSpacing.h"
 
 #include <BidiUtils.h>
@@ -645,6 +646,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                                        const bool includeLastLine, const size_t maxLines,
                                        const size_t trailingLinesToKeep, const bool paragraphContinuation) {
+  const LetterSpacing::Scope<GfxRenderer> letterSpacing(renderer, letterSpacingPx_);
   if (words.empty()) {
     return;
   }

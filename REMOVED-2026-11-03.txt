@@ -3,4 +3,4 @@ lib/I18n/translations/ukrainian.yaml
 lib/JsonParser/StreamingJsonParser.h
 lib/JsonParser/StreamingJsonParser.cpp
 
-freeink-sdk/ заменить целиком (main 1e1cec2 + патчи InkOptimum в SecureNet).
+freeink-sdk/ заменить целиком (main e637713 + патчи InkOptimum в SecureNet).

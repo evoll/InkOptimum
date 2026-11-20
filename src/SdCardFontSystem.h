@@ -1,9 +1,13 @@
 #pragma once
 
+#include <SdCardFont.h>
 #include <SdCardFontManager.h>
 #include <SdCardFontRegistry.h>
 
 #include <atomic>
+#include <mutex>
+#include <memory>
+#include <string>
 
 class GfxRenderer;
 
@@ -14,7 +18,9 @@ class SdCardFontSystem {
   SdCardFontSystem() = default;
   SdCardFontSystem(const SdCardFontSystem&) = delete;
   SdCardFontSystem& operator=(const SdCardFontSystem&) = delete;
-  /// Discover SD card fonts and load user's saved selection. Call once during setup.
+  /// Load the user's saved SD font selection. Call once during setup. The font list is scanned here only when a
+  /// saved reading or UI font needs it; otherwise the scan waits for the first consumer (font picker, web UI,
+  /// reader with an SD font), which saves the boot time and the list's heap for users who read in built-in fonts.
   void begin(GfxRenderer& renderer);
 
   /// Ensure the correct SD font family is loaded for the current settings.
@@ -43,11 +49,22 @@ class SdCardFontSystem {
   /// Change the reader font size using the active SD family when one is selected.
   bool changeReaderFontSize(bool larger);
 
+  /// Load (or drop) the dedicated UI glyph font named by SETTINGS.uiFontFamily: the family file closest to the
+  /// built-in UI size, kept apart from the reading font. Cheap when nothing changed. Call after the setting changes.
+  void applyUiFont(GfxRenderer& renderer);
+
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
-  const SdCardFontRegistry& registry() const { return registry_; }
+  /// The SD card is scanned on the first call when nothing at boot needed the list (see begin()).
+  const SdCardFontRegistry& registry() const {
+    refreshIfDirty();
+    return registry_;
+  }
 
   /// Non-const access to the registry (for FontInstaller).
-  SdCardFontRegistry& registry() { return registry_; }
+  SdCardFontRegistry& registry() {
+    refreshIfDirty();
+    return registry_;
+  }
 
   /// Mark the registry as needing re-discovery.
   /// Thread-safe: can be called from the web server task.
@@ -56,16 +73,21 @@ class SdCardFontSystem {
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
   /// without waiting for the reader activity to run ensureLoaded().
-  void refreshIfDirty() {
+  /// A second task that asks while the scan runs waits for it (it never sees a half-built list).
+  void refreshIfDirty() const {
+    std::lock_guard<std::mutex> lock(discoverMutex_);
     if (registryDirty_.exchange(false, std::memory_order_acquire)) {
       registry_.discover();
     }
   }
 
  private:
-  SdCardFontRegistry registry_;
+  mutable SdCardFontRegistry registry_;
   SdCardFontManager manager_;
-  std::atomic<bool> registryDirty_{false};
+  mutable std::mutex discoverMutex_;
+  mutable std::atomic<bool> registryDirty_{false};
+  std::unique_ptr<SdCardFont> uiFont_;
+  std::string uiFontLoadedFamily_;
 };
 
 // Global SD card font system instance (defined in main.cpp).

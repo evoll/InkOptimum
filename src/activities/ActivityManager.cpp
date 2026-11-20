@@ -1,4 +1,5 @@
 #include "ActivityManager.h"
+#include "util/NightScheduleRuntime.h"
 
 #include <BlePageTurner.h>
 
@@ -55,7 +56,7 @@ void ActivityManager::renderTaskLoop() {
     RenderLock lock;
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
-      display.setInverted(SETTINGS.screenInverted != 0);
+      display.setInverted(NightScheduleRuntime::inverted());
       // Boot/sleep/recovery screens are not proof of a healthy reader UI.
       const bool healthScreen =
           currentActivity->name != "Boot" && currentActivity->name != "Sleep" && currentActivity->name != "SdFirmwareUpdate";

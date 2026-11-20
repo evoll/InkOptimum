@@ -9,6 +9,7 @@
 #include "InkMODSettings.h"
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
+#include "util/LanguagePackLoader.h"
 #include "fontIds.h"
 #include "util/TouchListNavigation.h"
 
@@ -16,11 +17,18 @@ void LanguageSelectActivity::onEnter() {
   Activity::onEnter();
 
   // Set current selection based on current language
+  packs = LanguagePackLoader::scan();
+  totalItems = builtInCount + static_cast<int>(packs.size());
   const auto currentLang = static_cast<uint8_t>(I18N.getLanguage());
   const auto* begin = std::begin(SORTED_LANGUAGE_INDICES);
   const auto* end = std::end(SORTED_LANGUAGE_INDICES);
   const auto* it = std::find(begin, end, currentLang);
   selectedIndex = (it != end) ? std::distance(begin, it) : 0;
+  if (I18N.hasExternalPack()) {
+    for (size_t i = 0; i < packs.size(); ++i) {
+      if (packs[i].code == SETTINGS.languagePack) selectedIndex = builtInCount + static_cast<int>(i);
+    }
+  }
 
   requestUpdate();
 }
@@ -89,14 +97,25 @@ void LanguageSelectActivity::loop() {
 }
 
 void LanguageSelectActivity::handleSelection() {
-  const uint8_t langIndex = SORTED_LANGUAGE_INDICES[selectedIndex];
-
-  {
+  if (selectedIndex >= builtInCount) {
+    // SD pack: loaded on top of the base language, which stays the fallback in the settings file.
+    const auto& pack = packs[selectedIndex - builtInCount];
     RenderLock lock(*this);
-    I18N.setLanguage(static_cast<Language>(langIndex));
+    if (!LanguagePackLoader::load(pack.code.c_str())) {
+      return;  // unreadable or incompatible: stay on the list, nothing changes
+    }
+    strncpy(SETTINGS.languagePack, pack.code.c_str(), sizeof(SETTINGS.languagePack) - 1);
+    SETTINGS.languagePack[sizeof(SETTINGS.languagePack) - 1] = '\0';
+  } else {
+    const uint8_t langIndex = SORTED_LANGUAGE_INDICES[selectedIndex];
+    {
+      RenderLock lock(*this);
+      I18N.clearExternalPack();
+      I18N.setLanguage(static_cast<Language>(langIndex));
+    }
+    SETTINGS.language = langIndex;
+    SETTINGS.languagePack[0] = '\0';
   }
-
-  SETTINGS.language = langIndex;
   SETTINGS.saveToFile();
 
   // Return to previous page
@@ -117,9 +136,17 @@ void LanguageSelectActivity::render(RenderLock&&) {
   const auto currentLang = static_cast<uint8_t>(I18N.getLanguage());
   GUI.drawList(
       renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, totalItems, selectedIndex,
-      [this](int index) { return I18N.getLanguageName(static_cast<Language>(SORTED_LANGUAGE_INDICES[index])); },
+      [this](int index) {
+        if (index >= builtInCount) return packs[index - builtInCount].name;
+        return std::string(I18N.getLanguageName(static_cast<Language>(SORTED_LANGUAGE_INDICES[index])));
+      },
       nullptr, nullptr,
-      [this, currentLang](int index) { return SORTED_LANGUAGE_INDICES[index] == currentLang ? tr(STR_SELECTED) : ""; },
+      [this, currentLang](int index) {
+        if (index >= builtInCount) {
+          return (I18N.hasExternalPack() && packs[index - builtInCount].code == SETTINGS.languagePack) ? tr(STR_SELECTED) : "";
+        }
+        return (!I18N.hasExternalPack() && SORTED_LANGUAGE_INDICES[index] == currentLang) ? tr(STR_SELECTED) : "";
+      },
       true);
 
   // Button hints

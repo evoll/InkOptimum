@@ -93,6 +93,12 @@ class EpubReaderActivity final : public Activity {
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
   uint16_t pendingBookmarkParagraphIndex = UINT16_MAX;
+  // A bookmark opened without a paragraph anchor: it gets the anchor of the page the jump lands on.
+  struct LegacyBookmarkAnchor {
+    bool active = false;
+    uint16_t spineIndex = 0;
+    float progress = 0.0f;
+  } legacyBookmarkAnchor;
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
@@ -198,6 +204,8 @@ class EpubReaderActivity final : public Activity {
   bool consumeLongPowerButtonRelease();
   bool consumeLongPowerButtonHold();
   bool executeShortPowerButtonAction();
+  bool pendingPowerTap = false;
+  uint32_t pendingPowerTapMs = 0;
   bool executeLongPowerButtonAction();
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
 

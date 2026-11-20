@@ -6,11 +6,16 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <XtApp.h>
+
 #include <memory>
 
 #include "BookmarkStore.h"
 #include "LcpLoans.h"
+#include "activities/apps/ClockActivity.h"
 #include "activities/apps/LcpLoansActivity.h"
+#include "activities/apps/ReadingCalendarActivity.h"
+#include "activities/apps/XtAppActivity.h"
 #include "InkMODSettings.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
@@ -53,6 +58,55 @@ bool readManifest(const std::string& path, ManifestInfo& out) {
   out.hasEvents = !doc["events"].isNull();
   return true;
 }
+
+// Lua mini apps live in /XTApps/<id>/ (manifest.json + index.lua). Official Licorice packages (*.xtapp) are listed
+// too, but only to say that they are encrypted and cannot run here.
+struct XtEntry {
+  std::string title;
+  std::string description;
+  std::string dir;
+  std::string error;
+};
+
+void scanXtApps(std::vector<XtEntry>& out) {
+  HalFile root = Storage.open("/XTApps");
+  if (!root || !root.isDirectory()) return;
+  for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+    char name[128];
+    if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
+    XtEntry item;
+    const std::string path = std::string("/XTApps/") + name;
+    if (entry.isDirectory()) {
+      std::string buffer(MAX_MANIFEST_BYTES, '\0');
+      const size_t n = Storage.readFileToBuffer((path + "/manifest.json").c_str(), buffer.data(), buffer.size(),
+                                                MAX_MANIFEST_BYTES - 1);
+      if (n == 0 || n >= MAX_MANIFEST_BYTES - 1) continue;
+      buffer.resize(n);
+      xtapp::Manifest m;
+      if (!xtapp::parseManifest(buffer, m, nullptr, I18N.getLanguage() == Language::RU ? "ru" : "en")) continue;
+      item.title = m.displayName;
+      item.description = m.description.empty() ? std::string(tr(STR_APP_XTAPP)) : m.description;
+      item.dir = path;
+      if (m.encrypted) {
+        item.error = tr(STR_APP_XTAPP_LOCKED);
+      } else if (!Storage.exists((path + "/" + m.entry).c_str())) {
+        continue;
+      }
+    } else {
+      const size_t len = strlen(name);
+      if (len < 7 || strcasecmp(name + len - 6, ".xtapp") != 0) continue;
+      char head[0x80 + 0x400];
+      const size_t got = Storage.readFileToBuffer(path.c_str(), head, sizeof(head), sizeof(head));
+      const auto info = xtapp::inspectContainer(std::string(head, got));
+      xtapp::Manifest m;
+      item.title = (info.valid && xtapp::parseManifest(info.manifestJson, m)) ? m.displayName : std::string(name);
+      item.description = tr(STR_APP_XTAPP_LOCKED);
+      item.dir = path;
+      item.error = tr(STR_APP_XTAPP_LOCKED);
+    }
+    out.push_back(std::move(item));
+  }
+}
 }  // namespace
 
 void AppsActivity::loadItems() {
@@ -67,11 +121,30 @@ void AppsActivity::loadItems() {
     items_.push_back(std::move(item));
   };
   addBuiltIn(ACTION_WEATHER, tr(STR_WEATHER), tr(STR_APP_BUILTIN));
+  addBuiltIn(ACTION_CLOCK, tr(STR_CLOCK_DISABLED), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_READING_STATS, tr(STR_READING_STATS), tr(STR_APP_BUILTIN));
+  addBuiltIn(ACTION_READING_CALENDAR, tr(STR_READING_CALENDAR), tr(STR_APP_BUILTIN));
   if (BookmarkStore::hasAnyBookmarks()) addBuiltIn(ACTION_BOOKMARKS, tr(STR_BOOKMARKS), tr(STR_APP_BUILTIN));
   if (OPDS_STORE.hasServers()) addBuiltIn(ACTION_OPDS, tr(STR_OPDS_BROWSER), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_FILE_TRANSFER, tr(STR_FILE_TRANSFER), tr(STR_APP_BUILTIN));
   if (!lcploans::list().empty()) addBuiltIn(ACTION_LCP_LOANS, tr(STR_LCP_LOANS), tr(STR_APP_BUILTIN));
+
+  {
+    std::vector<XtEntry> xt;
+    scanXtApps(xt);
+    std::sort(xt.begin(), xt.end(),
+              [](const XtEntry& a, const XtEntry& b) { return strcasecmp(a.title.c_str(), b.title.c_str()) < 0; });
+    for (auto& e : xt) {
+      Item item;
+      item.builtIn = false;
+      item.isXtApp = true;
+      item.title = std::move(e.title);
+      item.description = std::move(e.description);
+      item.xtDir = std::move(e.dir);
+      item.xtError = std::move(e.error);
+      items_.push_back(std::move(item));
+    }
+  }
 
   if (SETTINGS.pluginsEnabled == 0) return;  // enabling stays in Settings > System > Plugins
 
@@ -129,6 +202,21 @@ void AppsActivity::openSelected() {
       selected_ = std::min(selected_, std::max(0, static_cast<int>(items_.size()) - 1));
       requestUpdate();
     });
+    return;
+  }
+  if (item.builtIn && item.action == ACTION_READING_CALENDAR) {
+    startActivityForResult(std::make_unique<ReadingCalendarActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
+    return;
+  }
+  if (item.builtIn && item.action == ACTION_CLOCK) {
+    startActivityForResult(std::make_unique<ClockActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
+    return;
+  }
+  if (item.isXtApp) {
+    startActivityForResult(std::make_unique<XtAppActivity>(renderer, mappedInput, item.xtDir, item.xtError),
+                           [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
   if (item.builtIn) {

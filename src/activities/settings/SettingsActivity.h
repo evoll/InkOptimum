@@ -45,6 +45,7 @@ enum class SettingAction {
   SdFirmwareUpdate,
   SwitchOtaSlot,
   Language,
+  UiFont,
   DownloadFonts,
   ClockSync,
   CalculateStorageUsage,

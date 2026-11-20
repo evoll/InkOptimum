@@ -121,9 +121,11 @@ void IntervalSelectionActivity::loop() {
                                          [this] { adjustValue(smallStep); });
   } else {
     // Keep the existing X3/X4 four-button behaviour unchanged.
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::PageBack},
+    // On X4 the logical PageBack/PageForward keys can map to the same physical side buttons as Up/Down, which
+    // added an extra small step to the large one (inkmod v1.1.11 fix): front Left/Right own the fine step.
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left},
                                          [this] { adjustValue(-smallStep); });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::PageForward},
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right},
                                          [this] { adjustValue(smallStep); });
     buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustValue(largeStep); });
     buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustValue(-largeStep); });

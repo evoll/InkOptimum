@@ -16,7 +16,7 @@ constexpr uint8_t RECENT_BOOKS_FILE_VERSION = 3;
 constexpr char RECENT_BOOKS_FILE_BIN[] = "/.inkmod/recent.bin";
 constexpr char RECENT_BOOKS_FILE_JSON[] = "/.inkmod/recent.json";
 constexpr char RECENT_BOOKS_FILE_BAK[] = "/.inkmod/recent.bin.bak";
-constexpr int MAX_RECENT_BOOKS = 18;
+constexpr int MAX_RECENT_BOOKS = 50;
 constexpr char MY_CLIPPINGS_FILE[] = "My Clippings.txt";
 
 bool isMyClippingsExportPath(const std::string& path) {

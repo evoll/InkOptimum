@@ -1,4 +1,5 @@
 #pragma once
+#include <AdaptiveTone.h>
 #include <HalStorage.h>
 
 #include <cstdint>
@@ -20,6 +21,10 @@ struct RenderConfig {
   bool performanceMode = false;
   bool useExactDimensions = false;  // If true, use maxWidth/maxHeight as exact output size (no recalculation)
   std::string cachePath;            // If non-empty, decoder will write pixel cache to this path
+  // PNG only: stretch the image to its own black/white points before quantizing (sleep images).
+  // The decoder fills tonePoints itself (extra decode pass); native 0/85/170/255 quantization is then used.
+  bool adaptiveTone = false;
+  adaptive_tone::Points tonePoints;
 };
 
 class ImageToFramebufferDecoder {

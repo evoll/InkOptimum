@@ -18,13 +18,31 @@ const char* I18n::get(StrId id) const {
     return "???";
   }
 
+  if (_packBuffer) {
+    if (const char* s = I18nPack::get(_pack, index)) return s;
+    return STRINGS_EN_DATA + (static_cast<size_t>(OFFSETS_EN[index] & 0x7FFF) << 1);  // untranslated in the pack
+  }
+
   // Use generated helper function - no hardcoded switch needed!
   const LangStrings lang = getLanguageStrings(_language);
 
   // If bit 15 of the offset is set, apply the offset to the English lookup table
   const uint16_t off = lang.offsets[index];
-  if (off & 0x8000) return STRINGS_EN_DATA + (off & 0x7FFF);
-  return lang.data + off;
+  if (off & 0x8000) return STRINGS_EN_DATA + (static_cast<size_t>(off & 0x7FFF) << 1);
+  return lang.data + (static_cast<size_t>(off) << 1);
+}
+
+bool I18n::setExternalPack(std::unique_ptr<uint8_t[]> buffer, size_t size) {
+  I18nPack::Parsed parsed;
+  if (!I18nPack::parse(buffer.get(), size, static_cast<size_t>(StrId::_COUNT), I18N_KEY_HASH, parsed)) return false;
+  _pack = parsed;
+  _packBuffer = std::move(buffer);
+  return true;
+}
+
+void I18n::clearExternalPack() {
+  _packBuffer.reset();
+  _pack = {};
 }
 
 void I18n::setLanguage(Language lang) {

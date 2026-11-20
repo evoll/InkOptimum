@@ -1,0 +1,9 @@
+{
+  "name": "XtApp",
+  "version": "1.0.0",
+  "description": "Lua mini-app host (Licorice-style manifest.json + index.lua apps)",
+  "dependencies": [{"name": "Lua"}],
+  "build": {
+    "flags": ["-DLUA_USE_C89"]
+  }
+}

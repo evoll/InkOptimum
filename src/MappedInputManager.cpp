@@ -246,6 +246,19 @@ bool MappedInputManager::decodeSwipe(int& sx,int& sy,int& ex,int& ey) const {
   renderer->tapToLogical(nxs,nys,sx,sy); renderer->tapToLogical(nxe,nye,ex,ey); return true;
 }
 
+namespace {
+// Back gesture, second form: a left-to-right swipe that starts in the bottom strip of the screen
+// (the button-hint row), anywhere along it. Together with the strict left-edge swipe this is the
+// touch "Back". Both forms are kept out of ordinary swipe navigation.
+bool isBottomStripBackSwipe(const int sx, const int sy, const int ex, const int ey, const int screenH) {
+  const int dx = ex - sx;
+  const int dy = ey - sy;
+  const int adx = dx < 0 ? -dx : dx;
+  const int ady = dy < 0 ? -dy : dy;
+  return sy >= screenH - screenH / 10 && dx > 0 && adx > 2 * ady;
+}
+}  // namespace
+
 MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
   int sx = 0, sy = 0;
   return wasSwipeFrom(sx, sy);
@@ -260,7 +273,8 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipeFrom(int& startX, int& 
   // activities process Left/Right before Back and would otherwise navigate and
   // return early, making Back appear broken.
   if (fui::edgeSwipe(fui::ScreenEdge::Left, sx, sy, ex, ey,
-                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f)) {
+                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f) ||
+      isBottomStripBackSwipe(sx, sy, ex, ey, renderer->getScreenHeight())) {
     return SwipeDir::None;
   }
 
@@ -285,7 +299,8 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipeStartedInRect(const int
   // Keep the global Back edge gesture exclusive even when its start point also
   // lies inside the caller's rectangle (e.g. a full-width Home carousel).
   if (fui::edgeSwipe(fui::ScreenEdge::Left, sx, sy, ex, ey,
-                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f)) {
+                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f) ||
+      isBottomStripBackSwipe(sx, sy, ex, ey, renderer->getScreenHeight())) {
     return SwipeDir::None;
   }
 
@@ -310,7 +325,12 @@ bool MappedInputManager::wasEdgeSwipe(const freeink::ui::ScreenEdge edge) const 
   return fui::edgeSwipe(edge,sx,sy,ex,ey,renderer->getScreenWidth(),renderer->getScreenHeight(),edgeFrac);
 }
 
-bool MappedInputManager::wasBackGesture() const { return wasEdgeSwipe(fui::ScreenEdge::Left); }
+bool MappedInputManager::wasBackGesture() const {
+  if (wasEdgeSwipe(fui::ScreenEdge::Left)) return true;
+  if (!renderer) return false;
+  int sx = 0, sy = 0, ex = 0, ey = 0;
+  return decodeSwipe(sx, sy, ex, ey) && isBottomStripBackSwipe(sx, sy, ex, ey, renderer->getScreenHeight());
+}
 bool MappedInputManager::hasHomeKey() const { return gpio.hasHomeKey(); }
 bool MappedInputManager::wasHomeGesture() const { return gpio.hasHomeKey() ? gpio.wasHomeKeyTapped() : wasEdgeSwipe(fui::ScreenEdge::Bottom); }
 bool MappedInputManager::wasHomeKeyHold() const { return gpio.hasHomeKey() && gpio.wasHomeKeyLongPressed(); }

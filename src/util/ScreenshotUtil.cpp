@@ -78,7 +78,7 @@ void ScreenshotUtil::takeScreenshot(GfxRenderer& renderer) {
   char filename[256];
   buildFilename(info, filename, sizeof(filename));
 
-  bool saved = saveFramebufferAsBmp(filename, fb, renderer.getDisplayWidth(), renderer.getDisplayHeight());
+  bool saved = saveFramebufferAsBmp(filename, renderer);
   if (saved) {
     LOG_DBG("SCR", "Screenshot saved to %s", filename);
   } else {
@@ -109,14 +109,19 @@ void ScreenshotUtil::takeScreenshot(GfxRenderer& renderer) {
   }
 }
 
-bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* framebuffer, int width, int height) {
+bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const GfxRenderer& renderer) {
+  const uint8_t* framebuffer = renderer.getFrameBuffer();
   if (!framebuffer) {
     return false;
   }
 
-  // Note: the width and height, we rotate the image 90d counter-clockwise to match the default display orientation
-  int phyWidth = height;
-  int phyHeight = width;
+  // Export in the logical (current orientation) layout so landscape reading screenshots are not rotated.
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int panelWidth = renderer.getDisplayWidth();
+  const int panelHeight = renderer.getDisplayHeight();
+  const int stride = renderer.getDisplayWidthBytes();
+  const auto orientation = renderer.getOrientation();
 
   std::string path(filename);
   size_t last_slash = path.find_last_of('/');
@@ -136,60 +141,65 @@ bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* f
   }
 
   BmpHeader header;
+  createBmpHeader(&header, width, height, BmpRowOrder::BottomUp);
 
-  createBmpHeader(&header, phyWidth, phyHeight, BmpRowOrder::BottomUp);
-
-  bool write_error = false;
   if (file.write(reinterpret_cast<uint8_t*>(&header), sizeof(header)) != sizeof(header)) {
-    write_error = true;
-  }
-
-  if (write_error) {
-    // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filename);
     return false;
   }
 
-  const uint32_t rowSizePadded = (phyWidth + 31) / 32 * 4;
-  // Max row size for 528px height (X3) after rotation = 68 bytes; use fixed buffer to avoid VLA
-  constexpr size_t kMaxRowSize = 68;
+  const uint32_t rowSizePadded = (width + 31) / 32 * 4;
+  // Widest logical row is 800px (landscape) = 100 bytes; fixed buffer avoids a VLA/heap allocation.
+  constexpr size_t kMaxRowSize = 100;
   if (rowSizePadded > kMaxRowSize) {
     LOG_ERR("SCR", "Row size %u exceeds buffer capacity", rowSizePadded);
-    // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filename);
     return false;
   }
 
-  // rotate the image 90d counter-clockwise on-the-fly while writing to save memory
   uint8_t rowBuffer[kMaxRowSize];
-  memset(rowBuffer, 0, rowSizePadded);
-
-  for (int outY = 0; outY < phyHeight; outY++) {
-    for (int outX = 0; outX < phyWidth; outX++) {
-      // 90d counter-clockwise: source (srcX, srcY)
-      // BMP rows are bottom-to-top, so outY=0 is the bottom of the displayed image
-      int srcX = width - 1 - outY;     // phyHeight == width
-      int srcY = phyWidth - 1 - outX;  // phyWidth == height
-      int fbIndex = srcY * (width / 8) + (srcX / 8);
-      uint8_t pixel = (framebuffer[fbIndex] >> (7 - (srcX % 8))) & 0x01;
+  bool write_error = false;
+  for (int outY = 0; outY < height; outY++) {
+    memset(rowBuffer, 0, rowSizePadded);
+    // BMP rows start at the bottom; renderer coordinates start at the top.
+    const int y = height - 1 - outY;
+    for (int outX = 0; outX < width; outX++) {
+      int srcX = 0;
+      int srcY = 0;
+      // Mirror GfxRenderer's logical-to-panel transform.
+      switch (orientation) {
+        case GfxRenderer::Portrait:
+          srcX = y;
+          srcY = panelHeight - 1 - outX;
+          break;
+        case GfxRenderer::LandscapeClockwise:
+          srcX = panelWidth - 1 - outX;
+          srcY = panelHeight - 1 - y;
+          break;
+        case GfxRenderer::PortraitInverted:
+          srcX = panelWidth - 1 - y;
+          srcY = outX;
+          break;
+        case GfxRenderer::LandscapeCounterClockwise:
+          srcX = outX;
+          srcY = y;
+          break;
+      }
+      const uint8_t pixel = (framebuffer[srcY * stride + (srcX / 8)] >> (7 - (srcX % 8))) & 0x01;
       rowBuffer[outX / 8] |= pixel << (7 - (outX % 8));
     }
     if (file.write(rowBuffer, rowSizePadded) != rowSizePadded) {
       write_error = true;
       break;
     }
-    memset(rowBuffer, 0, rowSizePadded);  // Clear the buffer for the next row
   }
 
-  // Explicitly close() file before calling Storage.remove()
   file.close();
-
   if (write_error) {
     Storage.remove(filename);
     return false;
   }
-
   return true;
 }

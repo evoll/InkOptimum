@@ -7,6 +7,7 @@
 #include <GfxRenderer.h>
 
 #include "Epub/ParsedText.h"
+#include "Epub/LetterSpacing.h"
 #include "Epub/WordSpacing.h"
 
 namespace {
@@ -378,4 +379,23 @@ TEST(WordSpacing, LevelsRoundTripAndNeverEatTheWholeGap) {
   EXPECT_EQ(WordSpacing::extra(6, 0), 0);
   EXPECT_GE(6 + WordSpacing::extra(6, WordSpacing::fromLevel(-4)), 1);
   EXPECT_EQ(WordSpacing::extra(0, WordSpacing::fromLevel(3)), 0);
+}
+
+TEST(ParsedText, LetterSpacingWidensWordsAndIsRestoredAfterLayout) {
+  GfxRenderer renderer;
+  const auto secondWordX = [&](const uint8_t spacing) {
+    LetterSpacing::current() = spacing;
+    ParsedText text = leftAligned(false);
+    text.setLetterSpacing(LetterSpacing::pixels());  // the parser does this when it starts a block
+    text.addWord("aaaa", EpdFontFamily::REGULAR);
+    text.addWord("bbbb", EpdFontFamily::REGULAR);
+    const auto lines = layoutBlocks(text, renderer, 200);
+    LetterSpacing::current() = 0;
+    return lines.empty() || lines[0].x.size() < 2 ? -1 : lines[0].x[1];
+  };
+  const int base = secondWordX(0);
+  ASSERT_GT(base, 0);
+  EXPECT_EQ(secondWordX(1), base + 4);  // four glyphs, one extra pixel after each
+  EXPECT_EQ(secondWordX(3), base + 12);
+  EXPECT_EQ(renderer.getLetterSpacing(), 0);  // the layout put the renderer's own value back
 }

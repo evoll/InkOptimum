@@ -2,6 +2,8 @@
 #include <BoardConfig.h>
 #include "ChapterHtmlSlimParser.h"
 
+#include "../LetterSpacing.h"
+
 #include <Arduino.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -694,6 +696,8 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       combinedStyle.paddingBottom = static_cast<int16_t>(combinedStyle.paddingBottom + style.paddingBottom);
       combinedStyle.fromBrElement = incoming.fromBrElement;
       currentTextBlock->setBlockStyle(combinedStyle);
+      // The reused block may have been created on the other side of a heading boundary.
+      currentTextBlock->setHyphenationEnabled(blockHyphenationEnabled());
 
       flushPendingAnchor();
       return;
@@ -705,7 +709,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
   const bool preserveNaturalWordSpaces = epub && epub->isFb2Package();
-  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, forceParagraphIndents, hyphenationEnabled,
+  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, forceParagraphIndents, blockHyphenationEnabled(),
                                                        bionicReadingEnabled, guideReadingEnabled, blockStyle,
                                                        preserveNaturalWordSpaces));
   if (!currentTextBlock) {
@@ -717,6 +721,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
 
   wordsExtractedInBlock = 0;
   paragraphTopSpacingApplied = false;
+  currentTextBlock->setLetterSpacing(vertical_ ? 0 : LetterSpacing::pixels());
   // A new paragraph inside an open <bdi>/<bdo>/dir element stays inside it.
   for (const auto& elem : bidiStack_) {
     for (uint8_t k = 0; k < elem.nOpen; ++k) currentTextBlock->bidiOpen(elem.opens[k]);
@@ -1229,7 +1234,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         const char* idValue = atts[i + 1];
         const bool isTocAnchor =
             std::find(self->tocAnchors.begin(), self->tocAnchors.end(), idValue) != self->tocAnchors.end();
-        if (isTocAnchor || self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER) {
+        if (!isTocAnchor && self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+          // An id in the middle of a paragraph belongs to that paragraph's page, not to the next block's
+          // (witchhunt c67fb6b7 / crosspoint #4328). It is recorded when the block is laid out (makePages);
+          // several such ids no longer overwrite one another. Approximation: the page where the block's
+          // remaining text starts.
+          if (self->inlineAnchorIds.size() + self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER) {
+            self->inlineAnchorIds.emplace_back(idValue);
+          }
+        } else if (isTocAnchor || self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER) {
           self->pendingAnchorId = idValue;
         }
       } else if (strcmp(atts[i], "dir") == 0) {
@@ -1630,11 +1643,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                                                                       self->cancellationToken);
                 cachedImageFile.flush();
                 cachedImageFile.close();
-                if (extractSuccess) {
-                  delay(50);  // Give SD card time to sync
-                } else {
+                if (!extractSuccess) {
                   Storage.remove(cachedImagePath.c_str());
                 }
+                // flush() + close() above already complete the write before
+                // getDimensions() reads the file. A fixed 50 ms pause after
+                // every image only adds avoidable cold-open latency.
               }
 
               if (extractSuccess) {
@@ -2189,6 +2203,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->flushPartWordBuffer();
     }
     self->enterBlockCssStyle(cssStyle);
+    self->headingDepth = std::min(self->headingDepth, self->depth);
     auto headerBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Center, self->viewportWidth);
     headerBlockStyle.textAlignDefined = true;
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
@@ -2858,6 +2873,17 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       // at its boundary (FB2 issue #52).
       self->pendingFootnotes.push_back({self->currentFootnoteStartWordIndex, entry});
     }
+    if (self->inlineFootnotePreviews && self->currentFootnote.href[0] != '\0') {
+      // Membership in the book-level preview cache is the gate: the gatherer only stored targets of
+      // footnote-shaped links, so any href that resolves is a real note.
+      if (self->inlineFootnotePreviews->has(self->currentFootnote.href)) {
+        self->pendingInlineFootnoteHref = self->currentFootnote.href;
+      } else if (self->inlineFootnotePreviews->failed()) {
+        self->inlineFootnoteFailed = true;
+        self->cancelled = true;
+        return;
+      }
+    }
     self->insideFootnoteLink = false;
   }
 
@@ -2914,6 +2940,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     self->pendingListMarkerDepth = -1;
   }
 
+  // Leaving heading: the block opened after it hyphenates again
+  if (self->headingDepth == self->depth) {
+    self->headingDepth = INT_MAX;
+  }
+
   // Leaving bold tag
   if (self->boldUntilDepth == self->depth) {
     self->boldUntilDepth = INT_MAX;
@@ -2939,6 +2970,30 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   if (!self->inlineStyleStack.empty() && self->inlineStyleStack.back().depth == self->depth) {
     self->inlineStyleStack.pop_back();
     self->updateEffectiveInlineStyle();
+  }
+
+  if (!self->pendingInlineFootnoteHref.empty()) {
+    // Finish the reference under its own style, then the whole note in the ordinary surrounding
+    // size, italic to tell it from the main text.
+    if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+    const bool surroundingItalic = self->effectiveItalic;
+    self->effectiveItalic = true;
+    characterData(self, " (", 2);
+    const bool complete = self->inlineFootnotePreviews->stream(
+        self->pendingInlineFootnoteHref.c_str(), [self](const char* data, size_t size) {
+          characterData(self, data, static_cast<int>(size));
+          return !self->cancelled;
+        });
+    self->pendingInlineFootnoteHref.clear();
+    if (complete) characterData(self, ")", 1);
+    if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+    self->effectiveItalic = surroundingItalic;
+    // A failed SD read must not leave silently truncated pages in the cache.
+    if (!complete && !self->cancelled) {
+      self->inlineFootnoteFailed = true;
+      self->cancelled = true;
+    }
+    if (self->cancelled) return;
   }
 
   // Clear block style when leaving header or block elements
@@ -3085,6 +3140,10 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
     if (lowMemoryAbort) {
       return false;
     }
+    for (auto& id : inlineAnchorIds) {
+      anchorData.push_back({std::move(id), static_cast<uint16_t>(completedPageCount)});
+    }
+    inlineAnchorIds.clear();
     if (!pendingAnchorId.empty()) {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
       pendingAnchorId.clear();
@@ -3125,7 +3184,10 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   // Track cumulative words to assign footnotes to the page containing their anchor
   wordsExtractedInBlock += line->wordCount();
   auto footnoteIt = pendingFootnotes.begin();
-  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+  // A link starts at a zero-based word boundary. Equality means its first
+  // visible word belongs to the NEXT line, possibly on the next page.
+  // Do not assign that footnote to the preceding page (issue #56).
+  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first < wordsExtractedInBlock) {
     currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
     ++footnoteIt;
   }
@@ -3153,6 +3215,11 @@ void ChapterHtmlSlimParser::makePages() {
       return;
     }
   }
+
+  for (auto& id : inlineAnchorIds) {
+    anchorData.push_back({std::move(id), static_cast<uint16_t>(completedPageCount)});
+  }
+  inlineAnchorIds.clear();
 
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 

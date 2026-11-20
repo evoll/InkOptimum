@@ -236,6 +236,9 @@ void FileBrowserActivity::loadFiles() {
       if (mode == Mode::PickFirmware) {
         // Firmware picker: only show .bin files.
         shouldAdd = FsHelpers::checkFileExtension(filename, ".bin");
+      } else if (mode == Mode::PickImage) {
+        // Cover picker: JPG/PNG only (BookCover::isSupportedImage).
+        shouldAdd = FsHelpers::hasJpgExtension(filename) || FsHelpers::hasPngExtension(filename);
       } else {
         bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2") || FsHelpers::checkFileExtension(filename, ".fb3") ||
                      (FsHelpers::checkFileExtension(filename, ".docx") || FsHelpers::hasConvertedBookExtension(filename));
@@ -840,7 +843,7 @@ void FileBrowserActivity::loop() {
     const std::string& entry = files[selectorIndex];
     bool isDirectory = (entry.back() == '/');
 
-    if (mode == Mode::PickFirmware && !isDirectory) {
+    if ((mode == Mode::PickFirmware || mode == Mode::PickImage) && !isDirectory) {
       std::string cleanBasePath = basepath;
       if (cleanBasePath.back() != '/') cleanBasePath += "/";
       ActivityResult res{FilePathResult{cleanBasePath + entry}};
@@ -1050,7 +1053,7 @@ void FileBrowserActivity::loop() {
         selectorIndex = findEntry(dirName);
 
         requestUpdate();
-      } else if (mode == Mode::PickFirmware) {
+      } else if (mode == Mode::PickFirmware || mode == Mode::PickImage) {
         ActivityResult res;
         res.isCancelled = true;
         setResult(std::move(res));
@@ -1121,6 +1124,8 @@ void FileBrowserActivity::render(RenderLock&&) {
   std::string folderName =
       (mode == Mode::PickFirmware)
           ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
+          : (mode == Mode::PickImage)
+                ? std::string(tr(STR_SELECT_COVER_IMAGE))
           : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
 
@@ -1134,9 +1139,10 @@ void FileBrowserActivity::render(RenderLock&&) {
   if (files.empty()) {
     const char* emptyMsg = fileListMemoryLimited
                                ? tr(STR_MEMORY_ERROR)
-                               : ((mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND));
+                               : ((mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES)
+                                                : (mode == Mode::PickImage) ? tr(STR_NO_IMAGE_FILES) : tr(STR_NO_FILES_FOUND));
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyMsg);
-    if (!fileListMemoryLimited && mode != Mode::PickFirmware) {
+    if (!fileListMemoryLimited && mode == Mode::Books) {
       const int jokeTop = contentTop + 58;
       InkMODHumor::drawBounded(renderer, InkMODHumor::Moment::EmptyFolder, 0, jokeTop, pageWidth,
                                std::max(0, contentHeight - 70), SMALL_FONT_ID, true,
@@ -1192,8 +1198,8 @@ void FileBrowserActivity::render(RenderLock&&) {
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, pathDisplay);
   }
 
-  const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
-  const bool selectingFirmwareFile = mode == Mode::PickFirmware && !files.empty() && files[selectorIndex].back() != '/';
+  const char* backLabel = (basepath == "/") ? (mode != Mode::Books ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
+  const bool selectingFirmwareFile = mode != Mode::Books && !files.empty() && files[selectorIndex].back() != '/';
   const char* confirmLabel = files.empty() ? "" : (selectingFirmwareFile ? tr(STR_SELECT) : tr(STR_OPEN));
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, files.empty() ? "" : tr(STR_DIR_UP),
                                             files.empty() ? "" : tr(STR_DIR_DOWN));

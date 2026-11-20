@@ -303,8 +303,59 @@ bool ClippingSelectionActivity::wordAtPoint(const int x, const int y, size_t& wo
   return false;
 }
 
+bool ClippingSelectionActivity::handleDragSelection() {
+  const int hintsTop = renderer.getScreenHeight() - UITheme::getInstance().getMetrics().buttonHintsHeight;
+  int x = 0;
+  int y = 0;
+
+  // The lift ends a drag; swallow the swipe/tap the same contact would otherwise produce.
+  if (mappedInput.wasScreenTouchReleased()) {
+    const bool wasDragging = dragging_;
+    dragging_ = false;
+    touchOnWord_ = false;
+    if (wasDragging) {
+      requestUpdate();
+      return true;
+    }
+  }
+
+  if (mappedInput.wasScreenTouchPressed(x, y)) {
+    dragging_ = false;
+    touchOnWord_ = false;
+    // Footer hints and the Save button keep their tap behaviour.
+    const int saveTop = hintsTop - 56;
+    if (y < (selecting_ && BoardConfig::isX4Pro() ? saveTop : hintsTop)) {
+      size_t w = 0;
+      if (wordAtPoint(x, y, w)) {
+        touchOnWord_ = true;
+        pressWord_ = w;
+      }
+    }
+    return false;
+  }
+
+  if (touchOnWord_ && mappedInput.isScreenTouchHeld(x, y)) {
+    size_t w = 0;
+    if (!wordAtPoint(x, y, w)) return dragging_;
+    if (!dragging_) {
+      if (w == pressWord_) return false;  // still a tap
+      dragging_ = true;
+      selecting_ = true;
+      anchorPage_ = currentPage_;
+      anchorWord_ = pressWord_;
+    }
+    if (cursor_ != w) {
+      cursor_ = w;
+      requestUpdate();
+    }
+    return true;
+  }
+  return dragging_;
+}
+
 bool ClippingSelectionActivity::handleTouchInput() {
   if (!mappedInput.hasTouch()) return false;
+  if (handleDragSelection()) return true;
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Left) {

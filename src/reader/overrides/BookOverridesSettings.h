@@ -7,6 +7,13 @@
 // Glue between the platform-free override core and the live global SETTINGS.
 namespace book_overrides {
 
+// The live layout fields an override can change, read from / written to SETTINGS.
+Values captureLive();
+void storeLive(const Values& values);
+
+// Record for "the current reader settings, for this book only" (every field explicit).
+Record currentAsRecord();
+
 // Loads the book's override (if any) and applies it over SETTINGS. Call before layout/fonts are used.
 // Returns true when live layout settings changed.
 bool enterBook(const std::string& cacheDir);

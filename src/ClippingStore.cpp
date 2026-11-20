@@ -71,6 +71,46 @@ bool ClippingStore::getAllClippedBooks(std::vector<ClippedBookEntry>& out) {
   return true;
 }
 
+bool ClippingStore::randomQuote(ClippingQuote& quote, uint32_t (*randomBelow)(uint32_t)) {
+  quote = {};
+  if (!randomBelow) return false;
+  std::vector<ClippedBookEntry> books;
+  if (!getAllClippedBooks(books) || books.empty()) return false;
+  uint32_t total = 0;
+  for (const auto& b : books) total += b.count;
+  if (total == 0) return false;
+
+  uint32_t pick = randomBelow(total);
+  for (const auto& b : books) {
+    if (pick >= b.count) {
+      pick -= b.count;
+      continue;
+    }
+    FsFile file;
+    if (!Storage.openFileForRead("CLIP", makeStorePath(b.path, b.bookType), file)) return false;
+    uint8_t version = 0;
+    uint16_t count = 0;
+    std::string title, author, path;
+    if (!serialization::tryReadPod(file, version) || !serialization::tryReadPod(file, count) ||
+        !serialization::tryReadString(file, title) || !serialization::tryReadString(file, author) ||
+        !serialization::tryReadString(file, path) || version != CLIPPING_FILE_VERSION || pick >= count) {
+      file.close();
+      return false;
+    }
+    Clipping clipping;
+    bool ok = true;
+    for (uint32_t i = 0; i <= pick && ok; ++i) ok = readFixed(file, &clipping, sizeof(clipping));
+    file.close();
+    if (!ok) return false;
+    clipping.text[sizeof(clipping.text) - 1] = '\0';
+    quote.text = clipping.text;
+    quote.title = std::move(title);
+    quote.author = std::move(author);
+    return quote.text.find_first_not_of(" \t\r\n") != std::string::npos;
+  }
+  return false;
+}
+
 bool ClippingStore::load() {
   if (storePath_.empty()) return true;
 

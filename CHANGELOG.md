@@ -10,6 +10,10 @@
   (`embed`, `isolate`, `bidi-override`, `isolate-override`, `plaintext`) now steer the line's bidi pass. The controls
   live beside the words (never in their text), carry across line breaks and paragraphs inside the element, and an
   empty element leaves nothing behind. CSS cache version 18, section cache unchanged.
+- **Letter spacing** (Settings → Reader): 0–3 extra pixels after every glyph of the book text. Layout
+  (`getTextAdvanceX`) and drawing (`drawText`) add the same amount, so justification and line breaks agree; menus and the
+  status bar are untouched, vertical text ignores it. Part of the section cache key (layout flags are now a mixed-radix
+  byte), so changing it rebuilds the chapter.
 - **Status bar text size** (Settings → Status bar): small / medium (UI 10) / large (UI 12). The reader's bottom band
   grows by the font's extra line height, so the text area re-lays out accordingly.
 - Settings > System > Screen Calibration (from CrossInk): per-device edges of the viewable area (Top, Right, Bottom, Left, 0-32 px; reset to the factory 9/3/3/3), applied live, stored in NVS (not in the SD settings or backups) and loaded at boot. `GfxRenderer` takes the margins from `ScreenInsets` instead of constants. Not tried on a device.

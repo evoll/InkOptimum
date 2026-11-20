@@ -17,11 +17,30 @@
 // persistence lives in BookOverrides.cpp.
 namespace book_overrides {
 
+// A field holding kInherit is not overridden: the book follows the global value for it.
+constexpr uint8_t kInherit = 0xFF;
+
 struct Values {
   uint8_t fontSize = 0;
   uint8_t lineHeightPercent = 100;
+  // Added in file version 2. Default: follow the global settings.
+  uint8_t screenMargin = kInherit;
+  uint8_t paragraphAlignment = kInherit;
+  uint8_t extraParagraphSpacing = kInherit;
+  uint8_t hyphenationEnabled = kInherit;
+  // Added in file version 3. Top / bottom margin values keep the global meaning (0 = as screen margin).
+  uint8_t screenMarginTop = kInherit;
+  uint8_t screenMarginBottom = kInherit;
+  uint8_t bionicReadingEnabled = kInherit;
+  uint8_t guideReadingEnabled = kInherit;
 
-  bool operator==(const Values& o) const { return fontSize == o.fontSize && lineHeightPercent == o.lineHeightPercent; }
+  bool operator==(const Values& o) const {
+    return fontSize == o.fontSize && lineHeightPercent == o.lineHeightPercent && screenMargin == o.screenMargin &&
+           paragraphAlignment == o.paragraphAlignment && extraParagraphSpacing == o.extraParagraphSpacing &&
+           hyphenationEnabled == o.hyphenationEnabled && screenMarginTop == o.screenMarginTop &&
+           screenMarginBottom == o.screenMarginBottom && bionicReadingEnabled == o.bionicReadingEnabled &&
+           guideReadingEnabled == o.guideReadingEnabled;
+  }
 };
 
 struct Record {
@@ -29,7 +48,10 @@ struct Record {
   Values values;
 };
 
-// Text format: "v1 <fontSize> <lineHeightPercent>\n". Returns false on malformed input.
+// Text format: "v3 <fontSize> <lineHeight> <margin> <align> <paraSpacing> <hyphenation> <marginTop> <marginBottom>
+// <bionic> <guide>\n" (255 = follow global). Versions 2 (first six numbers) and 1 ("v1 <fontSize> <lineHeightPercent>")
+// are still read; fields they do not carry follow the global values.
+// Returns false on malformed input.
 std::string serialize(const Record& record);
 bool parse(const char* text, size_t length, Record& out);
 

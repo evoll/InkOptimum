@@ -21,6 +21,7 @@
 #include <new>
 #include <utility>
 
+#include "Epub/BookCover.h"
 #include "Epub/CoverImageRefScanner.h"
 #include "Epub/CoverNameScan.h"
 #include "Epub/NavCoverLandmark.h"
@@ -360,7 +361,10 @@ bool Epub::parseTocNcxFile() const {
     return false;
   }
 
-  TocNcxParser ncxParser(contentBasePath, ncxSize, bookMetadataCache.get());
+  // The NCX's hrefs are relative to the NCX itself, which need not sit in the OPF's folder (witchhunt 1b5ee33a);
+  // the nav document below already works this way.
+  const std::string ncxContentBasePath = tocNcxItem.substr(0, tocNcxItem.find_last_of('/') + 1);
+  TocNcxParser ncxParser(ncxContentBasePath, ncxSize, bookMetadataCache.get());
   if (!ncxParser.setup()) {
     LOG_ERR("EBP", "Could not setup toc ncx parser");
     return false;
@@ -808,6 +812,50 @@ std::string Epub::getCoverBmpPath(bool cropped) const {
   return cachePath + "/" + coverFileName + ".bmp";
 }
 
+bool Epub::readCoverSourceToStream(const std::string& customPath, const std::string& itemHref, Print& out) const {
+  if (customPath.empty()) return readItemContentsToStream(itemHref, out, 1024);
+  FsFile src;
+  if (!Storage.openFileForRead("EBP", customPath, src)) return false;
+  uint8_t buffer[1024];
+  bool ok = true;
+  for (;;) {
+    const int n = src.read(buffer, sizeof(buffer));
+    if (n < 0) {
+      ok = false;
+      break;
+    }
+    if (n == 0) break;
+    if (out.write(buffer, static_cast<size_t>(n)) != static_cast<size_t>(n)) {
+      ok = false;
+      break;
+    }
+  }
+  src.close();
+  return ok;
+}
+
+void Epub::invalidateCoverCache() const {
+  if (cachePath.empty() || !Storage.exists(cachePath.c_str())) return;
+  std::vector<std::string> removals;
+  HalFile directory = Storage.open(cachePath.c_str());
+  if (directory && directory.isDirectory()) {
+    char name[160];
+    for (HalFile entry = directory.openNextFile(); entry; entry = directory.openNextFile()) {
+      entry.getName(name, sizeof(name));
+      const bool isFile = !entry.isDirectory();
+      entry.close();
+      if (!isFile) continue;
+      const std::string filename(name);
+      if (FsHelpers::hasBmpExtension(filename) &&
+          (filename.rfind("thumb_", 0) == 0 || filename.rfind("cover_", 0) == 0)) {
+        removals.push_back(cachePath + "/" + filename);
+      }
+    }
+  }
+  if (directory) directory.close();
+  for (const auto& path : removals) Storage.remove(path.c_str());
+}
+
 bool Epub::generateCoverBmp(bool cropped, const bool deferProgressive) const {
   if (Storage.exists(getCoverBmpPath(cropped).c_str())) {
     return true;
@@ -818,7 +866,9 @@ bool Epub::generateCoverBmp(bool cropped, const bool deferProgressive) const {
     return false;
   }
 
-  const auto coverImageHref = resolvedCoverHref();
+  // Converted books (FB2/FB3/DOCX/...) live in a cache package; the cover sits next to the user's original file.
+  const std::string customCover = BookCover::findCustom(unpackedPackage ? Fb2::resolveOriginalPath(filepath) : filepath);
+  const auto coverImageHref = customCover.empty() ? resolvedCoverHref() : customCover;
   if (coverImageHref.empty()) {
     LOG_ERR("EBP", "No known cover image");
     return false;
@@ -832,7 +882,7 @@ bool Epub::generateCoverBmp(bool cropped, const bool deferProgressive) const {
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    if (!readItemContentsToStream(coverImageHref, coverJpg, 1024)) {
+    if (!readCoverSourceToStream(customCover, coverImageHref, coverJpg)) {
       LOG_ERR("EBP", "Failed to read cover JPG item: %s", coverImageHref.c_str());
       coverJpg.close();
       Storage.remove(coverJpgTempPath.c_str());
@@ -879,7 +929,7 @@ bool Epub::generateCoverBmp(bool cropped, const bool deferProgressive) const {
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    if (!readItemContentsToStream(coverImageHref, coverPng, 1024)) {
+    if (!readCoverSourceToStream(customCover, coverImageHref, coverPng)) {
       LOG_ERR("EBP", "Failed to read cover PNG item: %s", coverImageHref.c_str());
       coverPng.close();
       Storage.remove(coverPngTempPath.c_str());
@@ -960,7 +1010,9 @@ bool Epub::generateThumbBmpInternal(int width, int height, const bool adaptiveCo
     return false;
   }
 
-  const auto coverImageHref = resolvedCoverHref();
+  // Converted books (FB2/FB3/DOCX/...) live in a cache package; the cover sits next to the user's original file.
+  const std::string customCover = BookCover::findCustom(unpackedPackage ? Fb2::resolveOriginalPath(filepath) : filepath);
+  const auto coverImageHref = customCover.empty() ? resolvedCoverHref() : customCover;
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
   } else if (FsHelpers::hasJpgExtension(coverImageHref)) {
@@ -971,7 +1023,7 @@ bool Epub::generateThumbBmpInternal(int width, int height, const bool adaptiveCo
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    if (!readItemContentsToStream(coverImageHref, coverJpg, 1024)) {
+    if (!readCoverSourceToStream(customCover, coverImageHref, coverJpg)) {
       LOG_ERR("EBP", "Failed to read thumbnail JPG item: %s", coverImageHref.c_str());
       coverJpg.close();
       Storage.remove(coverJpgTempPath.c_str());
@@ -1019,7 +1071,7 @@ bool Epub::generateThumbBmpInternal(int width, int height, const bool adaptiveCo
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    if (!readItemContentsToStream(coverImageHref, coverPng, 1024)) {
+    if (!readCoverSourceToStream(customCover, coverImageHref, coverPng)) {
       LOG_ERR("EBP", "Failed to read thumbnail PNG item: %s", coverImageHref.c_str());
       coverPng.close();
       Storage.remove(coverPngTempPath.c_str());
@@ -1392,24 +1444,45 @@ float Epub::calculateProgress(const int currentSpineIndex, const float currentSp
   return totalProgress / static_cast<float>(bookSize);
 }
 
-int Epub::resolveHrefToSpineIndex(const std::string& href) const {
+int Epub::resolveLinkToSpineIndex(const std::string& href, const int fromSpineIndex) const {
+  if (!href.empty() && href[0] == '#') return fromSpineIndex;
+  // The folder of the document holding the link; its hrefs are relative to it (witchhunt 1b5ee33a).
+  std::string base;
+  if (fromSpineIndex >= 0 && fromSpineIndex < getSpineItemsCount()) {
+    base = getSpineItem(fromSpineIndex).href;
+    const size_t slash = base.find_last_of('/');
+    base.resize(slash != std::string::npos ? slash + 1 : 0);
+  }
+  return resolveHrefToSpineIndex(href, base);
+}
+
+int Epub::resolveHrefToSpineIndex(const std::string& href, const std::string& linkBase) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return -1;
 
   const size_t hashPos = href.find('#');
   const std::string rawTarget = hashPos != std::string::npos ? href.substr(0, hashPos) : href;
-  const std::string target = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(rawTarget));
+  const std::string asWritten = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(rawTarget));
+  if (asWritten.empty()) return -1;
+  // The href inside its own document's folder: "../b/ch.xhtml" in OEBPS/a/ch.xhtml names OEBPS/b/ch.xhtml, not the
+  // first ch.xhtml of the spine. Without a base (TOC entries are book paths already) it is the href as written.
+  const std::string target =
+      linkBase.empty() ? asWritten : FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(linkBase + rawTarget));
 
-  if (target.empty()) return -1;
+  const size_t targetSlash = asWritten.find_last_of('/');
+  const std::string targetFilename = targetSlash != std::string::npos ? asWritten.substr(targetSlash + 1) : asWritten;
 
-  size_t targetSlash = target.find_last_of('/');
-  std::string targetFilename = (targetSlash != std::string::npos) ? target.substr(targetSlash + 1) : target;
-
+  // An exact path match anywhere beats the first filename-only match; the path the href names beats the href as
+  // written (a link that spells a book path, against the spec).
+  int asWrittenMatch = -1;
+  int filenameMatch = -1;
   for (int i = 0; i < getSpineItemsCount(); i++) {
     const auto& spineHref = getSpineItem(i).href;
     if (spineHref == target) return i;
-    size_t spineSlash = spineHref.find_last_of('/');
-    std::string spineFilename = (spineSlash != std::string::npos) ? spineHref.substr(spineSlash + 1) : spineHref;
-    if (spineFilename == targetFilename) return i;
+    if (asWrittenMatch == -1 && spineHref == asWritten) asWrittenMatch = i;
+    if (filenameMatch != -1) continue;
+    const size_t spineSlash = spineHref.find_last_of('/');
+    if (spineHref.compare(spineSlash == std::string::npos ? 0 : spineSlash + 1, std::string::npos, targetFilename) == 0)
+      filenameMatch = i;
   }
-  return -1;
+  return asWrittenMatch != -1 ? asWrittenMatch : filenameMatch;
 }

@@ -27,9 +27,9 @@ class Epub;
 // Results are persisted to footnotes.bin; section builds then use Lookup, which keeps
 // only an 8-byte-per-entry hash index in RAM and reads preview text from SD on hit.
 //
-// File format v1 (little-endian):
+// File format v3 (little-endian):
 //   u32 magic 'FNP1' | u16 version | u16 count | u32 indexOffset
-//   blob:  count x { u16 textLen, char text[textLen] }   (gather order)
+//   blob:  count x { u32 textLen, char text[textLen] }   (gather order)
 //   index: count x { u32 keyHash, u32 blobOffset }        (sorted by keyHash)
 // Key string: "<targetSpineIndex>#<fragment>", FNV-1a 32-bit. A 32-bit collision
 // inside one book shows a wrong preview — cosmetically harmless, astronomically rare.
@@ -37,7 +37,8 @@ namespace FootnotePreviews {
 
 constexpr const char* CACHE_FILENAME = "/footnotes.bin";
 constexpr size_t MAX_ENTRIES = 512;      // gather cap; index cap in Lookup matches
-constexpr size_t MAX_TEXT_BYTES = 240;   // per-preview text cap (matches old table)
+constexpr size_t MAX_TEXT_BYTES = 4096;  // per-note text cap (was 240); inline notes stream it from SD
+constexpr size_t WINDOW_PREVIEW_BYTES = 1200;  // the footnote window clips to this (with "...")
 constexpr size_t MIN_SUBTREE_BYTES = 8;  // below this, an id'd element is treated as an
                                          // empty anchor and capture continues past it
 
@@ -60,7 +61,15 @@ class Lookup {
   // Resolves an href from the chapter being parsed ("#frag", "notes.xhtml#frag",
   // "../Text/notes.xhtml#frag") against the index. On a hit fills outText and
   // returns true.
-  bool find(const char* href, std::string& outText);
+  bool find(const char* href, std::string& outText, size_t maxBytes = WINDOW_PREVIEW_BYTES);
+
+  // True when href resolves to a gathered note (no text is read).
+  bool has(const char* href);
+
+  // Hands the complete note to `consume` in small chunks cut on UTF-8 boundaries (inline previews, no clipping).
+  // Returns false on a missing note, an SD read error (failed() becomes true) or when consume returns false.
+  bool stream(const char* href, const std::function<bool(const char*, size_t)>& consume);
+  bool failed() const { return failed_; }
 
   // True when `fragment` is one of the gathered footnote destinations in the
   // spine this lookup was opened for. Lets the section parser retain otherwise
@@ -79,6 +88,8 @@ class Lookup {
   FsFile file_;
   const Epub* epub_ = nullptr;
   int currentSpineIndex_ = -1;
+  bool failed_ = false;
+  bool locate(const char* href, uint32_t& length);
 };
 
 }  // namespace FootnotePreviews

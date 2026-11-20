@@ -54,4 +54,9 @@ class ClippingSelectionActivity final : public Activity {
   void appendPageText(std::string& out, int pageNumber, size_t startWord, size_t endWord);
   bool wordAtPoint(int x, int y, size_t& wordIndex) const;
   bool handleTouchInput();
+  // Finger drag over words: press on a word, slide to another one, lift. The range is then ready to Save.
+  bool handleDragSelection();
+  bool touchOnWord_ = false;
+  bool dragging_ = false;
+  size_t pressWord_ = 0;
 };

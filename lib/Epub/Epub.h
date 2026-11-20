@@ -63,6 +63,8 @@ class Epub {
   std::string findCoverImageInDocument(const std::string& docHref) const;
   // The cover picture's href, following an SVG/XHTML wrapper left in an older book cache.
   std::string resolvedCoverHref() const;
+  // Streams the cover source (custom SD picture when customPath is set, else the package item) into out.
+  bool readCoverSourceToStream(const std::string& customPath, const std::string& itemHref, Print& out) const;
   // The picture a cover reference leads to: the reference itself when it names a JPEG or PNG, else
   // the picture of the document it names. A fragment is dropped.
   std::string coverPictureOf(const std::string& href) const;
@@ -120,6 +122,8 @@ class Epub {
   // Writes a thumbnail that can either crop-to-fill or contain unusual cover
   // ratios, depending on the source image dimensions.
   bool generateAdaptiveThumbBmp(int width, int height, bool deferProgressive = false) const;
+  // Deletes the derived cover/thumbnail BMPs (after a custom cover was set or reset).
+  void invalidateCoverCache() const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
@@ -145,7 +149,12 @@ class Epub {
   // Section cache v48 is binary-compatible with v49 for ordinary EPUBs. FB2
   // packages must rebuild it because v49 changed their virtual split layout.
   bool isFb2Package() const { return isFb2Origin; }
-  int resolveHrefToSpineIndex(const std::string& href) const;
+  // The spine item a href leads to. `linkBase` is the folder (a book path ending in '/') of the document that holds
+  // the link; empty for a href that is a book path already (TOC and page lists). The item at the path the href names
+  // wins, then the href as written, then the first item with the same filename. -1 for none.
+  int resolveHrefToSpineIndex(const std::string& href, const std::string& linkBase = std::string()) const;
+  // The spine item a link in spine item `fromSpineIndex` leads to ("#n1" -> that item itself).
+  int resolveLinkToSpineIndex(const std::string& href, int fromSpineIndex) const;
 
  private:
   bool generateThumbBmpInternal(int width, int height, bool adaptiveContain, bool deferProgressive = false) const;

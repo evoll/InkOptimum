@@ -14,6 +14,7 @@
 
 #include "I18nKeys.h"
 #include "reader/overrides/BookOverrides.h"
+#include "reader/overrides/BookOverridesSettings.h"
 #include "fontIds.h"
 
 // Initialize the static instance
@@ -54,6 +55,7 @@ constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER[] = {
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
     static_cast<uint8_t>(InkMODSettings::COVER_OVERLAY),
+    static_cast<uint8_t>(InkMODSettings::QUOTE_SLEEP),
 };
 constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER_COUNT =
     sizeof(SLEEP_SCREEN_STORAGE_ORDER) / sizeof(SLEEP_SCREEN_STORAGE_ORDER[0]);
@@ -334,13 +336,10 @@ bool InkMODSettings::saveToFile() const {
   // Flash must only ever hold the global values, so swap them in for the write.
   auto& overrides = book_overrides::session();
   if (overrides.active()) {
-    auto* self = const_cast<InkMODSettings*>(this);
-    book_overrides::Values live{self->fontSize, self->lineHeightPercent};
-    self->fontSize = overrides.globals().fontSize;
-    self->lineHeightPercent = overrides.globals().lineHeightPercent;
+    const book_overrides::Values live = book_overrides::captureLive();
+    book_overrides::storeLive(overrides.globals());
     const bool ok = JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
-    self->fontSize = live.fontSize;
-    self->lineHeightPercent = live.lineHeightPercent;
+    book_overrides::storeLive(live);
     return ok;
   }
   return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);

@@ -37,6 +37,7 @@ class InkMODSettings {
     CALENDAR_SLEEP_LANDSCAPE = 14,
     CALENDAR_SLEEP_LANDSCAPE_INVERTED = 15,
     COVER_OVERLAY = 16,  // the book cover with the transparent overlay picture on top
+    QUOTE_SLEEP = 17,    // a random saved highlight (clipping), Paperio-Reader idea
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, BLACK_BACKGROUND = 2, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -44,6 +45,7 @@ class InkMODSettings {
     NO_FILTER = 0,
     BLACK_AND_WHITE = 1,
     INVERTED_BLACK_AND_WHITE = 2,
+    ADAPTIVE_TONE = 3,  // levels stretched per image (custom sleep images only)
     SLEEP_SCREEN_COVER_FILTER_COUNT
   };
 
@@ -288,7 +290,8 @@ class InkMODSettings {
   // firmware's normal built-in sizes; LARGE reuses the next-larger built-in
   // Inter size for each UI font role, so no extra font assets are needed.
   // Raw values are persisted in settings; keep existing values stable.
-  enum UI_TEXT_SIZE { UI_TEXT_SIZE_OFF = 0, UI_TEXT_SIZE_LARGE = 1, UI_TEXT_SIZE_COUNT = 2 };
+  // Persisted values: 1 stays "large" (Inter 12); 2 = medium (Inter 11, a small step up from the standard Inter 10).
+  enum UI_TEXT_SIZE { UI_TEXT_SIZE_OFF = 0, UI_TEXT_SIZE_LARGE = 1, UI_TEXT_SIZE_MEDIUM = 2, UI_TEXT_SIZE_COUNT = 3 };
   enum RECENT_BOOKS_VIEW { RECENT_BOOKS_LIST = 0, RECENT_BOOKS_GRID = 1, RECENT_BOOKS_VIEW_COUNT };
 
   // Image rendering in EPUB reader
@@ -401,6 +404,8 @@ class InkMODSettings {
   // Reader word spacing (Epub/WordSpacing.h): 0 = as the font sets it, 1..4 = +10 px per step, 5..8 = -1..-4
   // (each step removes 20 % of the space).
   uint8_t wordSpacing = 0;
+  // Reader letter spacing (Epub/LetterSpacing.h): 0..3 extra pixels after every glyph of the book text.
+  uint8_t letterSpacing = 0;
   // Where the reader's own clock (see shouldShowClockInReader()) is drawn:
   // 0 = top of the screen (its own row, alongside chapter/book progress
   // if that's shown there too), 1 = bottom, folded into the same left
@@ -424,13 +429,24 @@ class InkMODSettings {
   uint8_t extraParagraphSpacing = 1;
   uint8_t forceParagraphIndents = 1;
   uint8_t textAntiAliasing = 1;
+  // How saved highlights are drawn on the page (idea: Paperio-Reader highlight styles).
+  enum HIGHLIGHT_STYLE : uint8_t { HIGHLIGHT_INVERSE = 0, HIGHLIGHT_MARKER = 1, HIGHLIGHT_UNDERLINE = 2, HIGHLIGHT_STYLE_COUNT };
+  uint8_t savedHighlightStyle = HIGHLIGHT_INVERSE;
+  // Put the text of footnotes right after their reference (needs the footnote cache; see Section).
+  uint8_t inlineFootnotePreviews = 0;
   uint8_t readerDarkMode = 0;
   // Global display polarity / night mode used by the X4 Pro control center.
   uint8_t screenInverted = 0;
+  // X4 Pro Night Mode on a schedule: whole hours of the day (night hours may cross midnight).
+  uint8_t nightSchedule = 0;
+  uint8_t nightFromHour = 22;
+  uint8_t nightUntilHour = 7;
   // Short power button action behaviour
   uint8_t shortPwrBtn = IGNORE;
   // Long power button action behaviour
   uint8_t longPwrBtn = SLEEP;
+  // Two quick power taps in the reader (IGNORE = off; then the short press has no delay)
+  uint8_t doublePwrBtn = IGNORE;
   // How the power button wakes the device from deep sleep, independent of what a press does while awake.
   // AUTO keeps the old rule: a short tap wakes only when the short-press action is Sleep.
   enum POWER_WAKE_MODE : uint8_t { POWER_WAKE_AUTO = 0, POWER_WAKE_SHORT = 1, POWER_WAKE_LONG = 2, POWER_WAKE_MODE_COUNT };
@@ -499,6 +515,13 @@ class InkMODSettings {
 
   // Reader screen margin settings
   uint8_t screenMargin = 5;
+  // Independent top / bottom reader margins; 0 = use screenMargin (default, previous behaviour).
+  // Portrait Calendar sleep screen: show the cached weather forecast for today instead of the logo.
+  uint8_t calendarSleepWeather = 0;
+  uint8_t screenMarginTop = 0;
+  uint8_t screenMarginBottom = 0;
+  uint8_t effectiveMarginTop() const { return screenMarginTop ? screenMarginTop : screenMargin; }
+  uint8_t effectiveMarginBottom() const { return screenMarginBottom ? screenMarginBottom : screenMargin; }
   // Show EPUB publisher pagebreak labels in the reader margin when present.
   uint8_t publisherPageNumbers = 0;
   // OPDS browser settings
@@ -538,6 +561,8 @@ class InkMODSettings {
   // Bookerly is the factory default; the supplied font pack installs it at
   // /.fonts/Bookerly on the SD card.
   char sdFontFamilyName[64] = "Bookerly";
+  // SD font family that supplies interface glyphs (CJK) at the UI size; empty = borrow the reading font.
+  char uiFontFamily[64] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
   // Hide file extensions in the file browser right-side value column (0 = show, 1 = hide)
@@ -564,6 +589,8 @@ class InkMODSettings {
   uint8_t tiltPageTurnDirection = TILT_LEFT_RIGHT;
   // Language setting (Language enum index, default 0 = EN)
   uint8_t language = 0;
+  // Code of the SD UI language pack in use (/.inkmod/languages/<code>.lang); empty = built-in language.
+  char languagePack[12] = "";
   // Custom KOReader sync device display name. Empty means use the hardware default.
   char deviceName[21] = "";
   // Compact persisted reader-menu order. Prefix an id with ! to hide it.

@@ -53,6 +53,8 @@ void recordReadingSpanIntoHistory(uint32_t& anchorDay, std::array<uint8_t, READI
                                   const ReadingStatsDateTime& localStart, uint32_t seconds);
 void mergeReadingHistory(uint32_t& targetAnchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& targetBits,
                          uint32_t sourceAnchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& sourceBits);
+// True when the history marks dayIndex (an absolute day index) as a reading day.
+bool readingHistoryHasDay(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits, uint32_t dayIndex);
 uint16_t computeReadingHistoryLongestStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits);
 uint16_t computeReadingHistoryCurrentStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits,
                                             const ReadingStatsDate* today);

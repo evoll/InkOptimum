@@ -18,6 +18,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "weather/WeatherText.h"
+#include "WeatherGraph.h"
 
 namespace {
 constexpr int MARGIN = 16;
@@ -66,6 +67,15 @@ std::string fmtClock(const time_t t, const int offset) {
   weather_text::formatClock(t, offset, SETTINGS.clockFormat == 1, buf, sizeof(buf));
   return buf;
 }
+
+// Label of the page the "page" control switches to (Now -> Graph -> Days -> Now).
+const char* nextPageLabel(const uint8_t page) {
+  switch (page) {
+    case 0: return tr(STR_WEATHER_GRAPH);
+    case 1: return tr(STR_WEATHER_DAILY);
+    default: return tr(STR_WEATHER_NEXT_HOURS);
+  }
+}
 }  // namespace
 
 void WeatherActivity::onEnter() {
@@ -102,7 +112,7 @@ void WeatherActivity::openSettings() {
 }
 
 void WeatherActivity::togglePage() {
-  page = page == Page::Now ? Page::Days : Page::Now;
+  page = page == Page::Now ? Page::Graph : page == Page::Graph ? Page::Days : Page::Now;
   requestUpdate();
 }
 
@@ -274,6 +284,117 @@ void WeatherActivity::drawNow(const int top, const int bottom, const int width) 
   }
 }
 
+void WeatherActivity::drawGraph(const int top, const int bottom, const int width) const {
+  const auto& fc = data.forecast;
+  const auto& cfg = WEATHER.settings();
+  const auto& cur = fc.current;
+  const int offset = fc.utcOffsetSeconds;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+
+  // Header: icon, big current temperature, description.
+  int y = top;
+  drawIcon(renderer, weather::iconForCode(cur.weatherCode, cur.isDay), MARGIN, y);
+  const int textX = MARGIN + WEATHER_ICON_SIZE + 16;
+  const std::string temp = fmtTemp(cur.temperature) + (cfg.tempUnit == weather::TempUnit::Celsius ? "C" : "F");
+  renderer.drawText(UI_12_FONT_ID, textX, y, temp.c_str(), true, EpdFontFamily::BOLD);
+  const int tempH = renderer.getLineHeight(UI_12_FONT_ID);
+  const std::string desc =
+      renderer.truncatedText(UI_10_FONT_ID, I18N.get(weather_text::descriptionId(cur.weatherCode)), width - textX - MARGIN);
+  renderer.drawText(UI_10_FONT_ID, textX, y + tempH, desc.c_str());
+  y += WEATHER_ICON_SIZE + 14;
+
+  const size_t first = weather::firstCurrentHour(fc.hourly, time(nullptr));
+  const size_t count = std::min<size_t>(24, fc.hourly.size() > first ? fc.hourly.size() - first : 0);
+  if (count < 2) {
+    renderer.drawCenteredText(UI_10_FONT_ID, (y + bottom) / 2, tr(STR_WEATHER_FETCH_FAILED));
+    return;
+  }
+
+  float lo = fc.hourly[first].temperature;
+  float hi = lo;
+  size_t loIdx = 0;
+  size_t hiIdx = 0;
+  float precipTotal = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const auto& h = fc.hourly[first + i];
+    if (h.temperature < lo) { lo = h.temperature; loIdx = i; }
+    if (h.temperature > hi) { hi = h.temperature; hiIdx = i; }
+    precipTotal += h.precipitation;
+  }
+  const auto axis = weather::niceAxis(lo, hi);
+
+  // Layout: chart, precipitation-probability strip, hour labels, summary line.
+  const int labelW = renderer.getTextWidth(SMALL_FONT_ID, "-88\xC2\xB0") + 6;
+  const int chartL = MARGIN + labelW;
+  const int chartR = width - MARGIN;
+  const int summaryH = lineH + 4;
+  const int hoursY = bottom - summaryH - smallH;
+  const int barsH = 34;
+  const int barsBottom = hoursY - 4;
+  const int chartTop = y + smallH / 2 + 4;
+  const int chartBottom = barsBottom - barsH - 10;
+  if (chartBottom - chartTop < 40) return;  // not enough room (tiny/odd layout): skip rather than overlap
+
+  // Axis labels and light grid at the top, middle and bottom of the range.
+  const int mid = (axis.min + axis.max) / 2;
+  const int ticks[3] = {axis.max, mid, axis.min};
+  for (const int t : ticks) {
+    const int ty = weather::scaleY(static_cast<float>(t), axis, chartTop, chartBottom);
+    char lbl[12];
+    snprintf(lbl, sizeof(lbl), "%d\xC2\xB0", t);
+    renderer.drawText(SMALL_FONT_ID, chartL - 4 - renderer.getTextWidth(SMALL_FONT_ID, lbl), ty - smallH / 2, lbl);
+    for (int gx = chartL; gx < chartR; gx += 8) renderer.drawPixel(gx, ty);
+  }
+  renderer.drawLine(chartL, chartTop, chartL, chartBottom);
+
+  const float step = static_cast<float>(chartR - chartL) / static_cast<float>(count - 1);
+  auto px = [&](const size_t i) { return chartL + static_cast<int>(std::lround(static_cast<float>(i) * step)); };
+
+  // Temperature curve (2 px thick).
+  for (size_t i = 0; i + 1 < count; ++i) {
+    const int x0 = px(i);
+    const int x1 = px(i + 1);
+    const int y0 = weather::scaleY(fc.hourly[first + i].temperature, axis, chartTop, chartBottom);
+    const int y1 = weather::scaleY(fc.hourly[first + i + 1].temperature, axis, chartTop, chartBottom);
+    renderer.drawLine(x0, y0, x1, y1);
+    renderer.drawLine(x0, y0 + 1, x1, y1 + 1);
+  }
+  // Mark "now" and the extremes.
+  auto dot = [&](const size_t i) {
+    const int cx = px(i);
+    const int cy = weather::scaleY(fc.hourly[first + i].temperature, axis, chartTop, chartBottom);
+    renderer.fillRect(cx - 3, cy - 3, 7, 7, true);
+  };
+  dot(0);
+  if (hiIdx != 0) dot(hiIdx);
+  if (loIdx != 0 && loIdx != hiIdx) dot(loIdx);
+
+  // Precipitation probability bars.
+  renderer.drawLine(chartL, barsBottom, chartR, barsBottom);
+  const int barW = std::max(2, static_cast<int>(step) - 3);
+  for (size_t i = 0; i < count; ++i) {
+    const int prob = std::clamp(fc.hourly[first + i].precipitationProbability, 0, 100);
+    const int bh = prob * barsH / 100;
+    if (bh > 0) renderer.fillRect(px(i) - barW / 2, barsBottom - bh, barW, bh, true);
+  }
+  renderer.drawText(SMALL_FONT_ID, MARGIN, barsBottom - smallH, "%");
+
+  // Hour labels every 6 hours.
+  for (size_t i = 0; i < count; i += 6) {
+    const std::string hl = fmtClock(fc.hourly[first + i].time, offset);
+    int lx = px(i) - renderer.getTextWidth(SMALL_FONT_ID, hl.c_str()) / 2;
+    lx = std::clamp(lx, MARGIN, width - MARGIN - renderer.getTextWidth(SMALL_FONT_ID, hl.c_str()));
+    renderer.drawText(SMALL_FONT_ID, lx, hoursY, hl.c_str());
+  }
+
+  // Summary: range and expected precipitation.
+  char sum[96];
+  snprintf(sum, sizeof(sum), "%s / %s    %s %.1f %s", fmtTemp(hi).c_str(), fmtTemp(lo).c_str(), tr(STR_WEATHER_PRECIP),
+           static_cast<double>(precipTotal), weather::precipUnitSymbol(cfg.precipUnit));
+  renderer.drawText(UI_10_FONT_ID, MARGIN, bottom - lineH, sum);
+}
+
 void WeatherActivity::drawDays(const int top, const int bottom, const int width) const {
   const auto& fc = data.forecast;
   const auto& cfg = WEATHER.settings();
@@ -345,6 +466,8 @@ void WeatherActivity::render(RenderLock&&) {
 
     if (page == Page::Now) {
       drawNow(top, contentBottom, width);
+    } else if (page == Page::Graph) {
+      drawGraph(top, contentBottom, width);
     } else {
       drawDays(top, contentBottom, width);
     }
@@ -354,7 +477,7 @@ void WeatherActivity::render(RenderLock&&) {
     drawTouchControls();
   } else {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_WEATHER_REFRESH), tr(STR_WEATHER_SETTINGS_SHORT),
-                                              page == Page::Now ? tr(STR_WEATHER_DAILY) : tr(STR_WEATHER_NEXT_HOURS));
+                                              nextPageLabel(static_cast<uint8_t>(page)));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
   renderer.displayBuffer();
@@ -364,5 +487,5 @@ void WeatherActivity::drawTouchControls() const {
   const auto c = touchControls(renderer);
   drawControl(renderer, c.refresh, tr(STR_WEATHER_REFRESH));
   drawControl(renderer, c.settings, tr(STR_WEATHER_SETTINGS_SHORT));
-  drawControl(renderer, c.page, page == Page::Now ? tr(STR_WEATHER_DAILY) : tr(STR_WEATHER_NEXT_HOURS));
+  drawControl(renderer, c.page, nextPageLabel(static_cast<uint8_t>(page)));
 }

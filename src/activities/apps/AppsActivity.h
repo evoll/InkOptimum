@@ -14,7 +14,7 @@
 // A plugin opens its catalog or README, exactly like the Plugins screen.
 class AppsActivity final : public Activity {
  public:
-  enum AppsAction : int { ACTION_WEATHER = 0, ACTION_READING_STATS, ACTION_BOOKMARKS, ACTION_OPDS, ACTION_FILE_TRANSFER, ACTION_LCP_LOANS };
+  enum AppsAction : int { ACTION_WEATHER = 0, ACTION_READING_STATS, ACTION_BOOKMARKS, ACTION_OPDS, ACTION_FILE_TRANSFER, ACTION_LCP_LOANS, ACTION_CLOCK, ACTION_READING_CALENDAR };
 
   explicit AppsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Apps", renderer, mappedInput) {}
@@ -34,6 +34,10 @@ class AppsActivity final : public Activity {
     PluginLocations::Entry entry;
     bool hasReadme = false;
     bool hasCatalog = false;
+    // XtApps (/XTApps): a Lua mini app folder, or an encrypted .xtapp package that cannot run
+    bool isXtApp = false;
+    std::string xtDir;
+    std::string xtError;  // non-empty = locked, shown instead of running
   };
 
   void loadItems();

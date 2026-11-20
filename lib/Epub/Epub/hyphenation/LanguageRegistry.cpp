@@ -12,7 +12,6 @@
 #include "generated/hyph-pl.trie.h"
 #include "generated/hyph-ru.trie.h"
 #include "generated/hyph-sv.trie.h"
-#include "generated/hyph-uk.trie.h"
 
 namespace {
 
@@ -24,10 +23,9 @@ LanguageHyphenator russianHyphenator(ru_patterns, isCyrillicLetter, toLowerCyril
 LanguageHyphenator spanishHyphenator(es_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator italianHyphenator(it_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator swedishHyphenator(sv_patterns, isLatinLetter, toLowerLatin);
-LanguageHyphenator ukrainianHyphenator(uk_patterns, isCyrillicLetter, toLowerCyrillic);
 LanguageHyphenator polishHyphenator(pl_patterns, isLatinLetter, toLowerLatin);
 
-using EntryArray = std::array<LanguageEntry, 9>;
+using EntryArray = std::array<LanguageEntry, 8>;
 
 const EntryArray& entries() {
   static const EntryArray kEntries = {{{"english", "en", &englishHyphenator},
@@ -37,18 +35,24 @@ const EntryArray& entries() {
                                        {"spanish", "es", &spanishHyphenator},
                                        {"italian", "it", &italianHyphenator},
                                        {"polish", "pl", &polishHyphenator},
-                                       {"swedish", "sv", &swedishHyphenator},
-                                       {"ukrainian", "uk", &ukrainianHyphenator}}};
+                                       {"swedish", "sv", &swedishHyphenator}}};
   return kEntries;
 }
 
 }  // namespace
 
+namespace {
+ExternalHyphenatorFinder externalFinder = nullptr;
+}
+
+void setExternalHyphenatorFinder(ExternalHyphenatorFinder finder) { externalFinder = finder; }
+
 const LanguageHyphenator* getLanguageHyphenatorForPrimaryTag(const std::string& primaryTag) {
   const auto& allEntries = entries();
   const auto it = std::find_if(allEntries.begin(), allEntries.end(),
                                [&primaryTag](const LanguageEntry& entry) { return primaryTag == entry.primaryTag; });
-  return (it != allEntries.end()) ? it->hyphenator : nullptr;
+  if (it != allEntries.end()) return it->hyphenator;
+  return externalFinder ? externalFinder(primaryTag) : nullptr;
 }
 
 LanguageEntryView getLanguageEntries() {

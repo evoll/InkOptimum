@@ -4,6 +4,9 @@
 #include <I18n.h>
 
 #include <functional>
+#include <vector>
+
+#include "util/LanguagePackLoader.h"
 
 #include "activities/Activity.h"
 #include "components/UITheme.h"
@@ -30,5 +33,7 @@ class LanguageSelectActivity final : public Activity {
   void onBack() { finish(); }
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
-  constexpr static uint8_t totalItems = getLanguageCount();
+  constexpr static int builtInCount = getLanguageCount();
+  std::vector<LanguagePackLoader::PackInfo> packs;  // SD packs, listed after the built-in languages
+  int totalItems = builtInCount;
 };

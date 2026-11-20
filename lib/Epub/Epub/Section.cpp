@@ -1,6 +1,7 @@
 #include "Epub/LayoutQuirks.h"
 #include "Section.h"
 #include "FlowContext.h"
+#include "LetterSpacing.h"
 #include "WordSpacing.h"
 #include "BidiLine.h"
 #include "../../../src/SdCardFontSystem.h"
@@ -33,7 +34,7 @@ constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
 // the anti-giant-gap guard. Existing section caches contain already-positioned
 // word x-coordinates, so they must be rebuilt or the Justify setting will keep
 // showing the pre-fix ragged-right layout.
-constexpr uint8_t SECTION_FILE_VERSION = 80;  // v80: upstream 1.1.10 FB2 dialogue gaps (_layout65) merged; v79: bidi line pieces (TextBlock display forms); v78: Indic words shaped into glyph keys; v77: vertical-rl sections (page block extent, TextBlock flag, request in the header); v76: CJK lines justify flush; v75: whole-em grid in Chinese and Japanese books; v74: CJK punctuation widths and CJK-Latin gap, marks laid out as words of their own; v73: ornament mode packed into the image-rendering header byte; v72: SD-font layout rounds each glyph advance to a pixel (matches drawing); v71: CJK tokenization + ruby in TextBlock; v70: inkMOD 1.1.10 layout changes (ParsedText, ChapterHtmlSlimParser) merged
+constexpr uint8_t SECTION_FILE_VERSION = 82;  // v82: an inline id in a paragraph is recorded at the page of that paragraph (witchhunt c67fb6b7); v81: headings are not hyphenated (crosspoint #4442); v80: layout flags are a mixed-radix byte (letter spacing); upstream upstream 1.1.10 FB2 dialogue gaps (_layout65) merged; v79: bidi line pieces (TextBlock display forms); v78: Indic words shaped into glyph keys; v77: vertical-rl sections (page block extent, TextBlock flag, request in the header); v76: CJK lines justify flush; v75: whole-em grid in Chinese and Japanese books; v74: CJK punctuation widths and CJK-Latin gap, marks laid out as words of their own; v73: ornament mode packed into the image-rendering header byte; v72: SD-font layout rounds each glyph advance to a pixel (matches drawing); v71: CJK tokenization + ruby in TextBlock; v70: inkMOD 1.1.10 layout changes (ParsedText, ChapterHtmlSlimParser) merged
                                               // v69: a block's bold/italic/underline reach the blocks nested inside it
                                               // v68: an <img> whose entry name has no extension is laid out as an image
                                               // v67: text declared at font-size < 10% of the body (watermark spans) is dropped
@@ -291,11 +292,12 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
 }
 
 namespace {
-// Bit 0 guide reading; bits 1-2 the vertical-text request; bits 3-6 the word spacing (0 = default, so caches
-// written before the setting existed still match).
+// One byte, mixed radix: guide reading (2) x vertical-text request (3) x word spacing (9) x letter spacing (4) = 216.
 uint8_t layoutFlags(const bool guideReadingEnabled) {
-  return static_cast<uint8_t>((guideReadingEnabled ? 1 : 0) | static_cast<unsigned>(FlowContext::effectiveRequest()) << 1 |
-                              (std::min<uint8_t>(WordSpacing::current(), WordSpacing::MAX_VALUE) & 0x0F) << 3);
+  const unsigned vertical = std::min<unsigned>(static_cast<unsigned>(FlowContext::effectiveRequest()), 2);
+  const unsigned wordSpacing = std::min<uint8_t>(WordSpacing::current(), WordSpacing::MAX_VALUE);
+  const unsigned letterSpacing = LetterSpacing::pixels();
+  return static_cast<uint8_t>((guideReadingEnabled ? 1u : 0u) + 2u * (vertical + 3u * (wordSpacing + 9u * letterSpacing)));
 }
 }  // namespace
 
@@ -720,6 +722,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
   }
 
+  FootnotePreviews::Lookup inlineNotes;
+  const bool inlineNotesActive = useInlineFootnotes && inlineNotes.open(epub->getCachePath(), epub.get(), spineIndex);
   ChapterHtmlSlimParser visitor(
       epub, sourceHtmlPath, renderer, fontId, lineCompression, extraParagraphSpacing, forceParagraphIndents,
       paragraphAlignment, viewportWidth, viewportHeight, hyphenationEnabled, bionicReadingEnabled, guideReadingEnabled,
@@ -750,6 +754,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       },
       embeddedStyle, contentBase, imageBasePath, imageRendering, std::move(tocAnchors), popupFn, cssParser,
       cancellationToken);
+  if (inlineNotesActive) visitor.setInlineFootnotePreviews(&inlineNotes);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   CjkPunctuation::setBookLanguage(epub->getLanguage().c_str());
   LOG_DBG("SCT", "Parser start: spine=%d free=%u maxAlloc=%u", spineIndex, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -768,6 +773,11 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   if (cancelled) *cancelled = visitor.wasCancellationTriggered();
 
   if (!cacheInflatedSpine) Storage.remove(tmpHtmlPath.c_str());
+  if (!visitor.inlineFootnotesSucceeded()) {
+    LOG_ERR("SCT", "Inline footnote read failed (spine=%d); inline previews switched off", spineIndex);
+    inlineFootnotePreviewsEnabled = false;
+    success = false;
+  }
   if (!success || lutWriteFailed || lutEntryCount != pageCount) {
     if (visitor.wasCancellationTriggered()) {
       LOG_INF("SCT", "Section parse cancelled: spine=%d", spineIndex);

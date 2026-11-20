@@ -66,6 +66,14 @@ uint8_t quantizeSimple(int gray) {
   }
 }
 
+// Evenly spaced cut (0/85/170/255 with midpoints 43/128/213), no display compensation.
+uint8_t quantizeNative(int gray) {
+  if (gray < 43) return 0;
+  if (gray < 128) return 1;
+  if (gray < 213) return 2;
+  return 3;
+}
+
 // Hash-based noise dithering - survives downsampling without moiré artifacts
 // Uses integer hash to generate pseudo-random threshold per pixel
 static inline uint8_t quantizeNoise(int gray, int x, int y) {

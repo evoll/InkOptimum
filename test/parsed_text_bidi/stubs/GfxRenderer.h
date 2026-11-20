@@ -40,13 +40,16 @@ class GfxRenderer {
   int getSpaceAdvance(int, uint32_t, uint32_t, EpdFontFamily::Style) const { return 6; }
   int getKerning(int, uint32_t, uint32_t, EpdFontFamily::Style) const { return 0; }
   int getFontAscenderSize(int) const { return 16; }
+  void setLetterSpacing(const int px) const { letterSpacingPx_ = px; }
+  int getLetterSpacing() const { return letterSpacingPx_; }
+  mutable int letterSpacingPx_ = 0;
   int getTextAdvanceX(int, const char* text, EpdFontFamily::Style style) const {
     int width = 0;
     const auto* p = reinterpret_cast<const unsigned char*>(text);
     while (*p) {
       const uint32_t cp = utf8NextCodepoint(&p);
       if (cp == 0) break;
-      width += cp == ' ' ? 6 : (cp >= 0x2E80 ? 20 : 10);
+      width += (cp == ' ' ? 6 : (cp >= 0x2E80 ? 20 : 10)) + letterSpacingPx_;
     }
     if ((style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) width = (width + 1) / 2;
     return width;

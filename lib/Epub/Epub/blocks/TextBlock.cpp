@@ -1,5 +1,7 @@
 #include "TextBlock.h"
 
+#include "../LetterSpacing.h"
+
 #include <BidiUtils.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
@@ -133,6 +135,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     return;
   }
 
+  const LetterSpacing::Scope<GfxRenderer> letterSpacing(renderer, vertical_ ? 0 : LetterSpacing::pixels());
   const bool scanning = renderer.isFontCacheScanning();
   const int ascender = renderer.getFontAscenderSize(fontId);
   const bool hasRubyText = !wordRuby.empty();

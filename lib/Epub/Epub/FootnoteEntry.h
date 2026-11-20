@@ -9,8 +9,7 @@ struct FootnoteEntry {
   char number[FOOTNOTE_NUMBER_LEN];
   char href[FOOTNOTE_HREF_LEN];
 
-  FootnoteEntry() {
-    number[0] = '\0';
-    href[0] = '\0';
-  }
+  // Zero the whole buffers: they are written to the section cache as raw bytes, and stale heap bytes
+  // after the terminator made the same book produce different cache files (crosspoint #3813).
+  FootnoteEntry() : number{}, href{} {}
 };

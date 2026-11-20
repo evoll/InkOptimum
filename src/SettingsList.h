@@ -262,7 +262,7 @@ inline SettingInfo buildSleepScreenSetting() {
                          StrId::STR_THEME_MINIMAL, StrId::STR_THEME_MINIMAL_STATS, StrId::STR_QUICK_RESUME,
                          StrId::STR_THEME_DASHBOARD, StrId::STR_THEME_CALENDAR, StrId::STR_THEME_CALENDAR_INVERTED,
                          StrId::STR_THEME_CALENDAR_LANDSCAPE, StrId::STR_THEME_CALENDAR_LANDSCAPE_INVERTED,
-                         StrId::STR_COVER_OVERLAY},
+                         StrId::STR_COVER_OVERLAY, StrId::STR_SLEEP_QUOTE},
                         "sleepScreen", StrId::STR_CAT_DISPLAY);
   s.withEnumRawValues({
       static_cast<uint8_t>(InkMODSettings::BLANK),
@@ -282,6 +282,7 @@ inline SettingInfo buildSleepScreenSetting() {
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
       static_cast<uint8_t>(InkMODSettings::COVER_OVERLAY),
+      static_cast<uint8_t>(InkMODSettings::QUOTE_SLEEP),
   });
   return s;
 }
@@ -306,8 +307,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &InkMODSettings::sleepScreenCoverMode,
                           {StrId::STR_FIT, StrId::STR_CROP, StrId::STR_BLACK_BACKGROUND}, "sleepScreenCoverMode",
                           StrId::STR_CAT_DISPLAY));
+    add(SettingInfo::Toggle(StrId::STR_CALENDAR_SLEEP_WEATHER, &InkMODSettings::calendarSleepWeather,
+                            "calendarSleepWeather", StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &InkMODSettings::sleepScreenCoverFilter,
-                          {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
+                          {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED, StrId::STR_FILTER_ADAPTIVE},
                           "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Enum(StrId::STR_TIMEOUT_SLEEP_SCREEN, &InkMODSettings::quickResumeSleepScreen,
                           {StrId::STR_TIMEOUT_SAME_AS_MAIN, StrId::STR_TIMEOUT_QUICK_RESUME,
@@ -363,9 +366,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // size (UI_12 is already the largest built-in size, so it doesn't change).
     // Applied live - see UiTextSize.h / SettingsActivity::toggleCurrentSetting().
     add(SettingInfo::Enum(StrId::STR_UI_TEXT_SIZE, &InkMODSettings::uiTextSize,
-                          {StrId::STR_NORMAL, StrId::STR_LARGE}, "uiTextSize", StrId::STR_CAT_DISPLAY)
-            .withEnumRawValues(
-                {InkMODSettings::UI_TEXT_SIZE_OFF, InkMODSettings::UI_TEXT_SIZE_LARGE}));
+                          {StrId::STR_NORMAL, StrId::STR_MEDIUM, StrId::STR_LARGE}, "uiTextSize", StrId::STR_CAT_DISPLAY)
+            .withEnumRawValues({InkMODSettings::UI_TEXT_SIZE_OFF, InkMODSettings::UI_TEXT_SIZE_MEDIUM,
+                                InkMODSettings::UI_TEXT_SIZE_LARGE}));
     add(SettingInfo::Enum(StrId::STR_UI_FONT_STYLE, &InkMODSettings::uiFontStyle,
                           {StrId::STR_NORMAL, StrId::STR_UI_FONT_BOLD}, "uiFontStyle", StrId::STR_CAT_DISPLAY)
             .withEnumRawValues({InkMODSettings::UI_FONT_REGULAR, InkMODSettings::UI_FONT_BOLD}));
@@ -377,6 +380,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_DISPLAY));
 
     add(SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &InkMODSettings::screenInverted, "screenInverted"));
+    add(SettingInfo::Toggle(StrId::STR_NIGHT_MODE_SCHEDULE, &InkMODSettings::nightSchedule, "nightSchedule",
+                            StrId::STR_CAT_DISPLAY));
+    add(SettingInfo::Value(StrId::STR_NIGHT_FROM_HOUR, &InkMODSettings::nightFromHour, {0, 23, 1}, "nightFromHour",
+                           StrId::STR_CAT_DISPLAY));
+    add(SettingInfo::Value(StrId::STR_NIGHT_UNTIL_HOUR, &InkMODSettings::nightUntilHour, {0, 23, 1}, "nightUntilHour",
+                           StrId::STR_CAT_DISPLAY));
     // X4 Pro control-center state. Category-less entries are persisted but
     // not added to the normal settings menu, matching CrossPoint's panel-owned values.
     add(SettingInfo::Value(StrId::STR_BRIGHTNESS, &InkMODSettings::frontlightBrightness, {1, 100, 1},
@@ -413,6 +422,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::LANDSCAPE_CCW, InkMODSettings::INVERTED}));
     add(SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &InkMODSettings::screenMargin, {5, 40, 5}, "screenMargin",
                            StrId::STR_CAT_READER));
+    add(SettingInfo::Value(StrId::STR_SCREEN_MARGIN_TOP, &InkMODSettings::screenMarginTop, {0, 40, 5},
+                           "screenMarginTop", StrId::STR_CAT_READER));
+    add(SettingInfo::Value(StrId::STR_SCREEN_MARGIN_BOTTOM, &InkMODSettings::screenMarginBottom, {0, 40, 5},
+                           "screenMarginBottom", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_PUBLISHER_PAGE_NUMBERS, &InkMODSettings::publisherPageNumbers,
                             "publisherPageNumbers", StrId::STR_CAT_READER));
     add(SettingInfo::Enum(
@@ -425,6 +438,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_TEXT_AA, &InkMODSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER));
+    add(SettingInfo::Enum(StrId::STR_HIGHLIGHT_STYLE, &InkMODSettings::savedHighlightStyle,
+                          {StrId::STR_HIGHLIGHT_INVERSE, StrId::STR_HIGHLIGHT_MARKER, StrId::STR_HIGHLIGHT_UNDERLINE},
+                          "savedHighlightStyle", StrId::STR_CAT_READER));
+    add(SettingInfo::Toggle(StrId::STR_INLINE_FOOTNOTE_PREVIEWS, &InkMODSettings::inlineFootnotePreviews,
+                            "inlineFootnotePreviews", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_READER_DARK_MODE, &InkMODSettings::readerDarkMode, "readerDarkMode",
                             StrId::STR_CAT_READER));
     add(SettingInfo::Enum(StrId::STR_IMAGES, &InkMODSettings::imageRendering,
@@ -447,6 +465,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_WSP_P4},
                           "wordSpacing", StrId::STR_CAT_READER)
             .withEnumRawValues({8, 7, 6, 5, 0, 1, 2, 3, 4}));
+    add(SettingInfo::Enum(StrId::STR_LETTER_SPACING, &InkMODSettings::letterSpacing,
+                          {StrId::STR_LSP_0, StrId::STR_LSP_1, StrId::STR_LSP_2, StrId::STR_LSP_3}, "letterSpacing",
+                          StrId::STR_CAT_READER));
     add(SettingInfo::Enum(StrId::STR_VERTICAL_TEXT, &InkMODSettings::verticalText,
                           {StrId::STR_VERTICAL_AUTO, StrId::STR_VERTICAL_ON, StrId::STR_VERTICAL_OFF}, "verticalText",
                           StrId::STR_CAT_READER)
@@ -595,6 +616,58 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::FILE_BROWSER,
                                 InkMODSettings::DICTIONARY_LOOKUP,
                                 InkMODSettings::CREATE_CLIPPING}));
+    add(SettingInfo::Enum(StrId::STR_DOUBLE_PWR_BTN, &InkMODSettings::doublePwrBtn,
+                          {StrId::STR_IGNORE,
+                           StrId::STR_SLEEP,
+                           StrId::STR_QUICK_RESUME_TIMEOUT,
+                           StrId::STR_PAGE_TURN,
+                           StrId::STR_TOGGLE_BOOKMARK,
+                           StrId::STR_READING_STATS,
+                           StrId::STR_MARK_FINISHED,
+                           StrId::STR_FORCE_REFRESH,
+                           StrId::STR_REINFORCE_SCREEN,
+                           StrId::STR_CHANGE_FONT,
+                           StrId::STR_TOGGLE_GUIDE_DOTS,
+                           StrId::STR_TOGGLE_BIONIC_READING,
+                           StrId::STR_CYCLE_PAGE_TURN,
+                           StrId::STR_FILE_TRANSFER,
+                           StrId::STR_CALIBRE_WIRELESS,
+                           StrId::STR_JOIN_NETWORK,
+                           StrId::STR_CREATE_HOTSPOT,
+                           StrId::STR_SCREENSHOT_BUTTON,
+                           StrId::STR_READER_DARK_MODE,
+                           StrId::STR_FOOTNOTES,
+                           StrId::STR_BROWSE_FILES,
+                           StrId::STR_DICTIONARY,
+                           StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_MENU,
+                           StrId::STR_FRONTLIGHT},
+                          "doublePwrBtn", StrId::STR_CAT_CONTROLS)
+            .withEnumRawValues({InkMODSettings::IGNORE,
+                                InkMODSettings::SLEEP,
+                                InkMODSettings::QUICK_RESUME_SLEEP,
+                                InkMODSettings::PAGE_TURN,
+                                InkMODSettings::TOGGLE_BOOKMARK,
+                                InkMODSettings::READING_STATS,
+                                InkMODSettings::MARK_FINISHED,
+                                InkMODSettings::FORCE_REFRESH,
+                                InkMODSettings::REINFORCE_SCREEN,
+                                InkMODSettings::TOGGLE_FONT,
+                                InkMODSettings::TOGGLE_GUIDE_DOTS,
+                                InkMODSettings::TOGGLE_BIONIC_READING,
+                                InkMODSettings::CYCLE_PAGE_TURN,
+                                InkMODSettings::FILE_TRANSFER,
+                                InkMODSettings::CALIBRE_WIRELESS,
+                                InkMODSettings::JOIN_NETWORK,
+                                InkMODSettings::CREATE_HOTSPOT,
+                                InkMODSettings::SCREENSHOT,
+                                InkMODSettings::TOGGLE_DARK_MODE,
+                                InkMODSettings::FOOTNOTES,
+                                InkMODSettings::FILE_BROWSER,
+                                InkMODSettings::DICTIONARY_LOOKUP,
+                                InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::OPEN_READER_MENU,
+                                InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Enum(
             StrId::STR_LONG_PRESS_MENU_ACTION, &InkMODSettings::longPressMenuAction,
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_TOGGLE_BOOKMARK, StrId::STR_READING_STATS,
@@ -879,13 +952,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // on next WiFi connect, which is useful when crossing time zones.
     add(SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &InkMODSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CAT_SYSTEM));
-    // X3 hardware includes the QMI8658. Keep its tilt controls present even
-    // if the boot-time I2C probe had a transient miss; runtime sensor handling
-    // remains guarded by HalTiltSensor::_available.
-    if (gpio.deviceIsX3()) {
+    // X3 and X4 Classic both have a QMI8658. Keep tilt controls visible
+    // even after a transient boot-time I2C probe failure; sensor activity
+    // remains guarded by HalTiltSensor::isAvailable().
+    if (gpio.deviceIsX3() || BoardConfig::isX4Classic()) {
       for (auto& setting : v) {
         if (setting.nameId == StrId::STR_SHORT_PWR_BTN || setting.nameId == StrId::STR_LONG_PRESS_ACTION ||
-            setting.nameId == StrId::STR_LONG_PRESS_MENU_ACTION ||
+            setting.nameId == StrId::STR_DOUBLE_PWR_BTN || setting.nameId == StrId::STR_LONG_PRESS_MENU_ACTION ||
             setting.nameId == StrId::STR_LONG_PRESS_BACK_ACTION) {
           const uint8_t rawValue =
               setting.nameId == StrId::STR_LONG_PRESS_MENU_ACTION || setting.nameId == StrId::STR_LONG_PRESS_BACK_ACTION
@@ -931,6 +1004,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
               return s.nameId == StrId::STR_READER_DARK_MODE;
             }),
             v.end());
+  } else {
+    // The schedule drives the X4 Pro's global inversion; elsewhere there is nothing for it to switch.
+    v.erase(std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) {
+              return s.nameId == StrId::STR_NIGHT_MODE_SCHEDULE || s.nameId == StrId::STR_NIGHT_FROM_HOUR ||
+                     s.nameId == StrId::STR_NIGHT_UNTIL_HOUR;
+            }),
+            v.end());
   }
 
   // X4 Pro-only capacitive Home key shortcuts. Remove the settings entirely
@@ -950,6 +1030,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     for (auto& setting : v) {
       if (setting.nameId == StrId::STR_SHORT_PWR_BTN ||
           setting.nameId == StrId::STR_LONG_PRESS_ACTION ||
+          setting.nameId == StrId::STR_DOUBLE_PWR_BTN ||
           setting.nameId == StrId::STR_HOME_DOUBLE_PRESS_ACTION ||
           setting.nameId == StrId::STR_HOME_LONG_PRESS_ACTION) {
         removeEnumRawValue(setting, static_cast<uint8_t>(InkMODSettings::REINFORCE_SCREEN));
@@ -964,6 +1045,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_SHORT_PWR_BTN; });
     if (shortPowerIt != v.end()) {
       removeEnumRawValue(*shortPowerIt, static_cast<uint8_t>(InkMODSettings::TOGGLE_FRONTLIGHT));
+    }
+    for (auto& setting : v) {
+      if (setting.nameId == StrId::STR_DOUBLE_PWR_BTN) {
+        removeEnumRawValue(setting, static_cast<uint8_t>(InkMODSettings::TOGGLE_FRONTLIGHT));
+      }
     }
   }
 
@@ -1012,6 +1098,7 @@ inline std::vector<SettingInfo> buildGroupedReaderSettingsList(const std::vector
   addReaderSetting(StrId::STR_EXTRA_SPACING);
   addReaderSetting(StrId::STR_FORCE_PARAGRAPH_INDENTS);
   addReaderSetting(StrId::STR_WORD_SPACING);
+  addReaderSetting(StrId::STR_LETTER_SPACING);
 
   readerSettings.push_back(SettingInfo::SectionHeader(StrId::STR_READER_BOOK_STYLING));
   addReaderSetting(StrId::STR_EMBEDDED_STYLE);
@@ -1126,10 +1213,11 @@ inline std::vector<SettingInfo> buildControlsSettingsParentList(const std::vecto
 
 inline std::vector<SettingInfo> buildControlsPowerSettingsList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> settings;
-  settings.reserve(4);
+  settings.reserve(5);
   addSettingByName(settings, allSettings, StrId::STR_POWER_WAKE);
   addSettingByName(settings, allSettings, StrId::STR_SHORT_PWR_BTN);
   addSettingByName(settings, allSettings, StrId::STR_LONG_PRESS_ACTION);
+  addSettingByName(settings, allSettings, StrId::STR_DOUBLE_PWR_BTN);
   if (SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::FOOTNOTES ||
       SETTINGS.longPwrBtn == InkMODSettings::SHORT_PWRBTN::FOOTNOTES ||
       SETTINGS.longPressMenuAction == InkMODSettings::LONG_PRESS_MENU_ACTION::LONG_MENU_FOOTNOTES ||
@@ -1246,6 +1334,10 @@ inline std::vector<SettingInfo> buildDisplaySleepSettingsList(const std::vector<
   addSleepSetting(StrId::STR_SLEEP_SCREEN, StrId::STR_SLEEP_SCREEN_WALLPAPER);
   addSleepSetting(StrId::STR_SLEEP_COVER_MODE, StrId::STR_SLEEP_COVER_MODE_SHORT);
   addSleepSetting(StrId::STR_SLEEP_COVER_FILTER, StrId::STR_SLEEP_COVER_FILTER_SHORT);
+  if (SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP ||
+      SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_INVERTED) {
+    addSleepSetting(StrId::STR_CALENDAR_SLEEP_WEATHER, StrId::STR_CALENDAR_SLEEP_WEATHER);
+  }
   addSleepSetting(StrId::STR_TIMEOUT_SLEEP_SCREEN, StrId::STR_TIMEOUT_SLEEP_SCREEN);
 
   return sleepSettings;
@@ -1339,6 +1431,7 @@ inline std::vector<SettingInfo> buildSystemDeviceSettingsList(const std::vector<
   addSettingByName(settings, allSettings, StrId::STR_DEVICE_NAME);
   addSettingByName(settings, allSettings, StrId::STR_TIME_TO_SLEEP);
   settings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+  settings.push_back(SettingInfo::Action(StrId::STR_UI_FONT, SettingAction::UiFont));
   settings.push_back(SettingInfo::Action(StrId::STR_SCREEN_CALIBRATION, SettingAction::ScreenCalibration));
   addSettingByName(settings, allSettings, StrId::STR_WIFI_TX_POWER);
   if (!SETTINGS.clockDisabled && halClock.isAvailable()) {

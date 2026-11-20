@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+
+#include "I18nPack.h"
 
 #include "I18nKeys.h"
 /**
@@ -25,6 +28,13 @@ class I18n {
   const char* getLanguageName(Language lang) const;
   static Language languageFromCode(const char* code);
 
+  // SD-card UI language pack (see I18nPack.h). The buffer is owned here; strings that the pack
+  // does not translate fall back to English. Returns false (and keeps the built-in language)
+  // when the buffer is not a valid pack for this firmware.
+  bool setExternalPack(std::unique_ptr<uint8_t[]> buffer, size_t size);
+  void clearExternalPack();
+  bool hasExternalPack() const { return _packBuffer != nullptr; }
+
   // Get all unique characters used in a specific language
   // Returns a sorted string of unique characters
   static const char* getCharacterSet(Language lang);
@@ -33,6 +43,8 @@ class I18n {
   I18n() : _language(Language::EN) {}
 
   Language _language;
+  std::unique_ptr<uint8_t[]> _packBuffer;
+  I18nPack::Parsed _pack;
 };
 
 // Convenience macros

@@ -12,4 +12,7 @@ class BookInfoActivity final : public Activity {
   void render(RenderLock&&) override;
  private:
   std::string path_;
+  void pickCover();
+  void resetCover();
+  void afterCoverChange();
 };

@@ -38,7 +38,9 @@ class EpubReaderMenuActivity final : public Activity {
     VIEW_CLIPPINGS,
     GO_TO_PRINTED_PAGE,
     READING_PROFILES,
-    BLUETOOTH
+    BLUETOOTH,
+    INLINE_FOOTNOTES,
+    SEARCH_BOOK
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,

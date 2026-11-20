@@ -3,7 +3,7 @@
 #include "activities/Activity.h"
 #include "weather/WeatherService.h"
 
-// Weather screen: page 1 = current conditions + next hours, page 2 = daily forecast.
+// Weather screen: page 1 = current conditions + next hours, page 2 = 24 h graph, page 3 = daily forecast.
 // Shows cached data right away; Confirm (or a tap on "Refresh") fetches fresh data over Wi-Fi.
 class WeatherActivity final : public Activity {
  public:
@@ -17,7 +17,7 @@ class WeatherActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
-  enum class Page : uint8_t { Now, Days };
+  enum class Page : uint8_t { Now, Graph, Days };
 
   WeatherService::Result data;
   Page page = Page::Now;
@@ -33,6 +33,7 @@ class WeatherActivity final : public Activity {
 
   bool hasData() const { return data.fetchedAt != 0; }
   void drawNow(int top, int bottom, int width) const;
+  void drawGraph(int top, int bottom, int width) const;
   void drawDays(int top, int bottom, int width) const;
   void drawTouchControls() const;
 };

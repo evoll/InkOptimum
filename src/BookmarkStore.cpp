@@ -1,5 +1,7 @@
 #include "BookmarkStore.h"
 
+#include "BookmarkAnchor.h"
+
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Serialization.h>
@@ -401,6 +403,14 @@ bool BookmarkStore::renameBookmarkAt(size_t index, const std::string& name) {
   if (normalized == bm.name) return true;
 
   snprintf(bm.name, sizeof(bm.name), "%s", normalized.c_str());
+  dirty = true;
+  saveToFile();
+  return true;
+}
+
+bool BookmarkStore::anchorBookmark(const uint16_t spineIndex, const float progress, const uint16_t paragraphIndex,
+                                   const char* snippet) {
+  if (!bookmark_anchor::apply(bookmarks, spineIndex, progress, paragraphIndex, snippet)) return false;
   dirty = true;
   saveToFile();
   return true;

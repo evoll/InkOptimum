@@ -16,6 +16,12 @@ struct Clipping {
   char text[513] = {};
 };
 
+struct ClippingQuote {
+  std::string text;
+  std::string title;
+  std::string author;
+};
+
 struct ClippedBookEntry {
   std::string title;
   std::string author;
@@ -40,6 +46,11 @@ class ClippingStore {
 
   // Scans /.inkmod/clippings/ and lists every book that has clippings (header only, no record parsing).
   static bool getAllClippedBooks(std::vector<ClippedBookEntry>& out);
+
+  // Picks one saved highlight at random, weighted by how many highlights each book has
+  // (the idea of the quote sleep screen comes from Paperio-Reader). randomBelow(n)
+  // must return a value in [0, n).
+  static bool randomQuote(ClippingQuote& quote, uint32_t (*randomBelow)(uint32_t));
 
   const std::vector<Clipping>& getClippings() const { return clippings_; }
   bool empty() const { return clippings_.empty(); }

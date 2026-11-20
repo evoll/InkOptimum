@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <vector>
 
 #include "../Epub.h"
@@ -18,7 +19,7 @@
 namespace {
 
 constexpr uint32_t CACHE_MAGIC = 0x31504E46;  // "FNP1"
-constexpr uint16_t CACHE_VERSION = 2;
+constexpr uint16_t CACHE_VERSION = 4;  // v4: link targets resolved against their own document's folder (v3: u32 text length, notes up to MAX_TEXT_BYTES)
 constexpr size_t STREAM_CHUNK_BYTES = 1024;
 constexpr size_t MAX_HREF_BYTES = 191;
 constexpr size_t MAX_MARKER_BYTES = 15;
@@ -208,7 +209,7 @@ class LinkScanner {
       if (*fragment != '\0') {
         const int targetSpine = self->href_[0] == '#'
                                     ? self->spineIndex_
-                                    : self->epub_.resolveHrefToSpineIndex(self->href_);
+                                    : self->epub_.resolveLinkToSpineIndex(self->href_, self->spineIndex_);
         if (targetSpine >= 0) {
           const uint32_t keyHash = makeKeyHash(targetSpine, fragment);
           const bool seen = std::any_of(self->targets_.begin(), self->targets_.end(),
@@ -250,7 +251,7 @@ class NoteCapturer {
   int captureDepth_ = -1;  // depth of the id'd element while capturing, -1 = idle
   bool tailMode_ = false;  // id element closed short; capturing following siblings
   size_t activeIdx_ = 0;   // targets_ index being captured
-  char text_[FootnotePreviews::MAX_TEXT_BYTES + 1] = {};
+  std::unique_ptr<char[]> text_;  // heap: a 4 KB note buffer does not belong on the task stack
   size_t textLen_ = 0;
   bool truncated_ = false;
 
@@ -278,7 +279,7 @@ class NoteCapturer {
       text_[textLen_ - 1] = '.';
     }
     text_[textLen_] = '\0';
-    if (textLen_ > 0) emit_(activeIdx_, text_, textLen_);
+    if (textLen_ > 0) emit_(activeIdx_, text_.get(), textLen_);
     captureDepth_ = -1;
     tailMode_ = false;
   }
@@ -331,7 +332,11 @@ class NoteCapturer {
   NoteCapturer(const std::vector<Target>& targets, const std::vector<size_t>& wanted, EmitFn emit)
       : targets_(targets), wanted_(wanted), emit_(std::move(emit)) {}
   // Scans chapter XHTML (HTML-flavored): enable bare-void-tag repair.
-  bool setup() { return parser_.init(this, startElement, endElement, characterData, nullptr, true); }
+  bool setup() {
+    text_.reset(new (std::nothrow) char[FootnotePreviews::MAX_TEXT_BYTES + 1]());
+    if (!text_) return false;
+    return parser_.init(this, startElement, endElement, characterData, nullptr, true);
+  }
   bool feed(const uint8_t* data, const size_t size) { return parser_.feed(data, size); }
   void finalize() {
     parser_.finalize();
@@ -437,7 +442,7 @@ bool gather(Epub& epub, const std::function<void(int)>& progressFn) {
     }
     NoteCapturer capturer(targets, wanted, [&](const size_t targetIdx, const char* text, const size_t len) {
       const uint32_t offset = static_cast<uint32_t>(out.position());
-      serialization::writePod(out, static_cast<uint16_t>(len));
+      serialization::writePod(out, static_cast<uint32_t>(len));
       out.write(reinterpret_cast<const uint8_t*>(text), len);
       index.emplace_back(targets[targetIdx].keyHash, offset);
     });
@@ -519,14 +524,15 @@ bool Lookup::open(const std::string& bookCachePath, const Epub* epub, const int 
   return true;
 }
 
-bool Lookup::find(const char* href, std::string& outText) {
+bool Lookup::locate(const char* href, uint32_t& length) {
+  length = 0;
   if (entryCount_ == 0 || !href) return false;
   const char* hash = strchr(href, '#');
   if (!hash || hash[1] == '\0') return false;
   int targetSpine = currentSpineIndex_;
   if (href[0] != '#') {
     if (!epub_) return false;
-    targetSpine = epub_->resolveHrefToSpineIndex(href);
+    targetSpine = epub_->resolveLinkToSpineIndex(href, currentSpineIndex_);
     if (targetSpine < 0) return false;
   }
   const uint32_t keyHash = makeKeyHash(targetSpine, FsHelpers::decodeUriEscapes(hash + 1).c_str());
@@ -549,12 +555,66 @@ bool Lookup::find(const char* href, std::string& outText) {
   }
   if (!found) return false;
 
-  uint16_t len = 0;
+  uint32_t len = 0;
   if (!file_.seekSet(blobOffset)) return false;
   serialization::readPod(file_, len);
   if (len == 0 || len > MAX_TEXT_BYTES) return false;
-  outText.resize(len);
-  return file_.read(reinterpret_cast<uint8_t*>(&outText[0]), len) == static_cast<int>(len);
+  length = len;  // the text follows at the current file position
+  return true;
+}
+
+bool Lookup::has(const char* href) {
+  uint32_t length = 0;
+  return locate(href, length);
+}
+
+bool Lookup::find(const char* href, std::string& outText, const size_t maxBytes) {
+  uint32_t len = 0;
+  if (!locate(href, len)) return false;
+  const bool clip = maxBytes > 3 && len > maxBytes;
+  size_t keep = clip ? maxBytes - 3 : len;
+  outText.resize(keep);
+  if (file_.read(reinterpret_cast<uint8_t*>(&outText[0]), keep) != static_cast<int>(keep)) {
+    outText.clear();
+    return false;
+  }
+  if (clip) {
+    while (keep > 0 && (static_cast<uint8_t>(outText[keep - 1]) & 0xC0) == 0x80) --keep;  // drop continuation bytes
+    if (keep > 0 && static_cast<uint8_t>(outText[keep - 1]) >= 0xC0) --keep;               // and their lead byte
+    outText.resize(keep);
+    outText += "...";
+  }
+  return true;
+}
+
+bool Lookup::stream(const char* href, const std::function<bool(const char*, size_t)>& consume) {
+  uint32_t len = 0;
+  if (!locate(href, len)) return false;
+  constexpr size_t CHUNK = 256;
+  char buffer[CHUNK + 4];
+  size_t remaining = len;
+  size_t carried = 0;  // bytes of an incomplete UTF-8 sequence kept for the next chunk
+  while (remaining > 0 || carried > 0) {
+    const size_t want = std::min(CHUNK, remaining);
+    if (want > 0 && file_.read(reinterpret_cast<uint8_t*>(buffer + carried), want) != static_cast<int>(want)) {
+      failed_ = true;
+      return false;
+    }
+    remaining -= want;
+    size_t total = carried + want;
+    size_t emit = total;
+    if (remaining > 0) {
+      // hold back a trailing partial sequence so characters are never split between calls
+      size_t i = total;
+      while (i > 0 && (static_cast<uint8_t>(buffer[i - 1]) & 0xC0) == 0x80) --i;
+      if (i > 0 && static_cast<uint8_t>(buffer[i - 1]) >= 0xC0) emit = i - 1;
+    }
+    if (emit > 0 && !consume(buffer, emit)) return false;
+    carried = total - emit;
+    if (carried > 0) memmove(buffer, buffer + emit, carried);
+    if (remaining == 0) break;
+  }
+  return true;
 }
 
 bool Lookup::containsTarget(const char* fragment) const {

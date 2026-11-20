@@ -518,6 +518,16 @@ def generate_keys_header(
     lines.append("}")
     lines.append("")
 
+    # Hash of the ordered key list: SD language packs (scripts/make_language_pack.py)
+    # are only accepted when they were built against exactly this key order.
+    key_hash = 0x811C9DC5
+    for key in string_keys:
+        for byte in (key + "\n").encode("utf-8"):
+            key_hash = ((key_hash ^ byte) * 0x01000193) & 0xFFFFFFFF
+    lines.append("// FNV-1a hash of the ordered StrId names (SD language pack compatibility check)")
+    lines.append(f"constexpr uint32_t I18N_KEY_HASH = 0x{key_hash:08X}u;")
+    lines.append("")
+
     # getLanguageCount helper (single line to match checked-in format)
     lines.append("// Helper function to get language count")
     lines.append(
@@ -640,7 +650,7 @@ def generate_strings_cpp(
 
     # Per-language flat string blobs and offset tables.
     # Non-English languages skip strings identical to English; their offset
-    # tables use bit 15 (0x8000) to flag "use English blob at offset & 0x7FFF".
+    # tables use bit 15 (0x8000) to flag "use English blob at offset & 0x7FFF" (offsets count 2-byte units: byte offset = value * 2).
     lines.append("namespace i18n_strings {")
     lines.append("")
 
@@ -656,12 +666,12 @@ def generate_strings_cpp(
             offsets: List[int] = []
             current_offset = 0
             for s in lang_strings:
-                offsets.append(current_offset)
-                current_offset += len(s.encode("utf-8")) + 1
-            if current_offset > 0x7FFF:
+                offsets.append(current_offset // 2)
+                current_offset += _padded_size(s)
+            if current_offset // 2 > 0x7FFF:
                 raise ValueError(
                     f"Language {code}: blob size ({current_offset} bytes) exceeds "
-                    "15-bit offset limit (32767)"
+                    "15-bit offset limit (65534, offsets count 2-byte units)"
                 )
             en_offsets = list(offsets)
             blob_strings = lang_strings
@@ -673,13 +683,13 @@ def generate_strings_cpp(
                 if s == en_s:
                     offsets.append(en_offsets[i] | 0x8000)
                 else:
-                    offsets.append(current_offset)
-                    current_offset += len(s.encode("utf-8")) + 1
+                    offsets.append(current_offset // 2)
+                    current_offset += _padded_size(s)
                     blob_strings.append(s)
-            if current_offset > 0x7FFF:
+            if current_offset // 2 > 0x7FFF:
                 raise ValueError(
                     f"Language {code}: blob size ({current_offset} bytes) exceeds "
-                    "15-bit offset limit (32767)"
+                    "15-bit offset limit (65534, offsets count 2-byte units)"
                 )
 
         # Flat string data blob — all strings concatenated with \0 separators.
@@ -780,19 +790,27 @@ def _print_language_table(
     )
 
 
+def _padded_size(text: str) -> int:
+    """Bytes a string takes in a blob: UTF-8 + NUL, padded to an even size so offsets can count 2-byte units."""
+    n = len(text.encode("utf-8")) + 1
+    return n + (n & 1)
+
+
 def _append_string_data_entry(lines: List[str], text: str) -> None:
     """
-    Escape *text*, append a \\0 null separator, and format as indented C++
-    string literal lines for inclusion in a flat char data array blob.
+    Escape *text*, append a \\0 null separator (plus one more if needed to keep the
+    entry an even number of bytes), and format as indented C++ string literal lines
+    for inclusion in a flat char data array blob. Offsets in the tables count 2-byte units.
     """
     segments = escape_cpp_string(text)
+    pad = "\\0" if (len(text.encode("utf-8")) + 1) & 1 else ""
     # Append the null entry separator to the last segment
     if segments and segments[-1] != "":
-        segments[-1] += "\\0"
+        segments[-1] += "\\0" + pad
     elif segments:
-        segments[-1] = "\\0"
+        segments[-1] = "\\0" + pad
     else:
-        segments = ["\\0"]
+        segments = ["\\0" + pad]
     lines.extend(format_cpp_string_literal(segments))
 
 
