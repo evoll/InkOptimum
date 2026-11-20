@@ -101,3 +101,11 @@ Only noted by subject (NOT reviewed in depth, nothing ported): crosspoint #4542 
 
 ### Re-check 2026-11-20 (4): witchhunt 920ea6ca (CSS scoped to the sheets a chapter links)
 **Not ported.** It is a pipeline-level feature (sheet table in the CSS cache, `readSheetLinks`, `scopeToSheets` over @import edges, `Cascade::apply` skip, new cache validation, section version bump) and only changes the result for omnibus books / sheets no chapter links (matcha-reader #453). Our CSS cache has no sheet table; porting would touch the cache format without a test harness to verify. b04ac243 (link scanner) is part of the same design. Revisit only if a real book shows a cross-sheet styling bug.
+
+## Re-check 2026-11-21
+Pins fetched: crosspoint 08d9d68d (4 commits since 3331d189), witchhunt c699a618 (~600 more commits since 8d1541bf, mostly docs/arena memory work), paperio a1ba1059 / papyrix 12b7e6b / crossink 9914146e / inkmod 9af70eb unchanged.
+- crosspoint #4547 (web file manager: renaming selects only the base name, so the extension survives): **ported** into `web/pages/files.js` (folders still select everything); `src/network/html/FilesPageHtml.generated.h` regenerated with `scripts/build_web.py`.
+- #4549 (reading progress on the Lyra home card): **already present** — our LyraTheme draws `progressPercent`.
+- #4545 (selected filename in the file-browser action popup): **not applicable** — our file browser has no option popup.
+- #4546 (host-test temp files): test-only. #4549's BookMetadataCache `try*` hardening: candidate (our `tryReadString` has no length limit argument), not ported.
+- witchhunt: the new commits are plugin crypto (api.crypto, protected-content), X3 panel/power work (bbf4db6f, 3266abf4), arena memory for page lines (7c6d6f18 etc.) — all in witchhunt-specific subsystems; not reviewed for porting. `ctx.lockscreen` for XtApp checked: it is a sleep-screen session (separate lockscreen.lua run on timer wakes) tied to the firmware's sleep/wake flow, not a plain API call — deferred.

@@ -137,3 +137,6 @@ Request: add what the host lacked, starting with text input.
 - lib/XtApp: `Env::readerSummary/readerBooks/readerCurrent`, `ReaderSummary`, `ReaderBook`; `ctx.reader` (summary, books, all_books, current, days, book_days, cover) only with the manifest permission `reader`; capabilities.reader = true.
 - XtAppActivity.cpp `DeviceEnv`: totals from GlobalReadingStats, books from RecentBooksStore + BookReadingStats (cache path rules copied from HomeActivity). test/xtapp: `ReaderStatisticsNeedThePermission`.
 - Source: official API description in touch-licorice-apps `docs/firmware-notes.md` and the Bookworm app's use of it; response formats of days/book_days are unknown, so they are empty. 975 native tests pass.
+
+## 2026-11-21 — web file manager rename keeps the extension
+- web/pages/files.js: opening the rename dialog selects only the base name of a file (crosspoint #4547); generated header rebuilt. Re-check section in UPSTREAM_SYNC.md (crosspoint 08d9d68d, witchhunt c699a618 pins; verdicts for #4545/#4549).

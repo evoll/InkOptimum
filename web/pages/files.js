@@ -5612,7 +5612,13 @@ function retryAllFailedUploads() {
     setTimeout(() => {
       const input = document.getElementById('renameNewName');
       input.focus();
-      input.select();
+      // Select only the base name so the extension survives a quick rename (crosspoint #4547).
+      const dotIndex = name.lastIndexOf('.');
+      if (!isFolder && dotIndex > 0) {
+        input.setSelectionRange(0, dotIndex);
+      } else {
+        input.select();
+      }
     }, 50);
   }
 
