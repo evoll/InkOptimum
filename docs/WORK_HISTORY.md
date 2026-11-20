@@ -132,3 +132,8 @@ Request: add what the host lacked, starting with text input.
 
 ## 2026-11-20 (6) — witchhunt 920ea6ca reviewed (docs only)
 - No code changes; UPSTREAM_SYNC.md: verdict "not ported" with the reason.
+
+## 2026-11-20 (7) — XtApp: ctx.reader
+- lib/XtApp: `Env::readerSummary/readerBooks/readerCurrent`, `ReaderSummary`, `ReaderBook`; `ctx.reader` (summary, books, all_books, current, days, book_days, cover) only with the manifest permission `reader`; capabilities.reader = true.
+- XtAppActivity.cpp `DeviceEnv`: totals from GlobalReadingStats, books from RecentBooksStore + BookReadingStats (cache path rules copied from HomeActivity). test/xtapp: `ReaderStatisticsNeedThePermission`.
+- Source: official API description in touch-licorice-apps `docs/firmware-notes.md` and the Bookworm app's use of it; response formats of days/book_days are unknown, so they are empty. 975 native tests pass.

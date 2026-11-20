@@ -1380,6 +1380,64 @@ int cZlibDecompress(lua_State* L) {  // ctx.zlib:decompress(bytes [, max_bytes])
   lua_pushlstring(L, out.data(), out.size());
   return 1;
 }
+void pushReaderBook(lua_State* L, const ReaderBook& b) {
+  lua_createtable(L, 0, 8);
+  auto str = [L](const char* k, const std::string& v) {
+    lua_pushlstring(L, v.data(), v.size());
+    lua_setfield(L, -2, k);
+  };
+  str("id", b.id);
+  str("title", b.title);
+  str("author", b.author);
+  str("format", b.format);
+  if (b.percent >= 0) {
+    lua_pushinteger(L, b.percent);
+    lua_setfield(L, -2, "percent");
+  }
+  lua_pushinteger(L, static_cast<lua_Integer>(b.readSec));
+  lua_setfield(L, -2, "read_sec");
+  lua_pushboolean(L, b.finished);
+  lua_setfield(L, -2, "finished");
+}
+int cReaderSummary(lua_State* L) {  // ctx.reader:summary() -> {total_sec, today_sec, streak_days, best_streak_days}
+  ReaderSummary sm;
+  if (!S(L)->env->readerSummary(sm)) return fRetNilErr(L, "unavailable");
+  lua_createtable(L, 0, 4);
+  lua_pushinteger(L, static_cast<lua_Integer>(sm.totalSec));
+  lua_setfield(L, -2, "total_sec");
+  lua_pushinteger(L, static_cast<lua_Integer>(sm.todaySec));
+  lua_setfield(L, -2, "today_sec");
+  lua_pushinteger(L, sm.streakDays);
+  lua_setfield(L, -2, "streak_days");
+  lua_pushinteger(L, sm.bestStreakDays);
+  lua_setfield(L, -2, "best_streak_days");
+  return 1;
+}
+int cReaderBooks(lua_State* L) {  // ctx.reader:books() / all_books() -> {{id, title, author, format, read_sec, finished}}
+  std::vector<ReaderBook> v;
+  if (!S(L)->env->readerBooks(v)) return fRetNilErr(L, "unavailable");
+  lua_createtable(L, static_cast<int>(v.size()), 0);
+  int i = 1;
+  for (const auto& b : v) {
+    pushReaderBook(L, b);
+    lua_rawseti(L, -2, i++);
+  }
+  return 1;
+}
+int cReaderCurrent(lua_State* L) {  // ctx.reader:current() -> book | nil
+  ReaderBook b;
+  if (!S(L)->env->readerCurrent(b)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  pushReaderBook(L, b);
+  return 1;
+}
+int cReaderEmpty(lua_State* L) {  // days() / book_days(): per-day seconds are not recorded here
+  lua_newtable(L);
+  return 1;
+}
+int cReaderNoCover(lua_State* L) { return fRetNilErr(L, "not_found"); }
 int cHashSha1(lua_State* L) {
   size_t n;
   const char* d = luaL_checklstring(L, 2, &n);
@@ -1660,11 +1718,11 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
   lua_setfield(L, -2, "api");
 
   lua_newtable(L);  // capabilities: what this host does NOT do is explicit
-  for (const char* k : {"dialog", "ui_components", "display_full_refresh", "keyboard", "text_input", "image_decode", "qr", "net", "layers"}) {
+  for (const char* k : {"dialog", "ui_components", "display_full_refresh", "keyboard", "text_input", "image_decode", "qr", "net", "layers", "reader"}) {
     lua_pushboolean(L, 1);
     lua_setfield(L, -2, k);
   }
-  for (const char* k : {"image_transform", "pattern", "ttf", "reader", "frontlight", "ui",
+  for (const char* k : {"image_transform", "pattern", "ttf", "frontlight", "ui",
                         "lockscreen", "ui_ttf_fonts", "ui_image_transform"}) {
     lua_pushboolean(L, 0);
     lua_setfield(L, -2, k);
@@ -1814,6 +1872,18 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
   lua_newtable(L);
   setFn(L, "create", cLayersCreate);
   lua_setfield(L, -2, "layers");
+
+  if (std::find(m.permissions.begin(), m.permissions.end(), "reader") != m.permissions.end()) {
+    lua_newtable(L);
+    setFn(L, "summary", cReaderSummary);
+    setFn(L, "books", cReaderBooks);
+    setFn(L, "all_books", cReaderBooks);
+    setFn(L, "current", cReaderCurrent);
+    setFn(L, "days", cReaderEmpty);
+    setFn(L, "book_days", cReaderEmpty);
+    setFn(L, "cover", cReaderNoCover);
+    lua_setfield(L, -2, "reader");
+  }
 
   lua_newtable(L);
   setFn(L, "request", cNetRequest);

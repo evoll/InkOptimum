@@ -18,7 +18,7 @@ Copy an app **folder** to the SD card as `/XTApps/<name>/` with at least `manife
 * Apps declaring the `net` permission (the network API is not implemented) — refused at start with a message.
 * `ctx.layers:create(w,h)` -> offscreen layer (`width`, `height`, `draw(fn(g))`, `release`), drawn with `g:image`.
   Limits: 1-bit shapes only (**text drawn into a layer is skipped**), no nesting, shares the 1.5 MB image budget.
-* Not provided yet: `ctx.lockscreen`, `ctx.reader`, `ctx.system`, `ctx.net:websocket`, BLE,
+* Not provided yet: `ctx.lockscreen`, `ctx.system`, `ctx.net:websocket`, BLE,
   TTF/pattern capabilities, image transforms.
 
 ## What is implemented
@@ -55,3 +55,13 @@ Copy an app **folder** to the SD card as `/XTApps/<name>/` with at least `manife
 watchdog, memory limit, dialogs. With `XTAPP_CORPUS=<dir>` it also loads every community app in the folder
 (all 57 in touch-licorice-apps), draws them, feeds keys, taps and swipes and answers their network requests with canned replies and failures,
 failing on any Lua error. Timing, memory and the real display behaviour are untested.
+
+
+## ctx.reader (manifest permission `"reader"`)
+
+Without the permission `ctx.reader` is `nil`. Methods (call with `:`): `summary()` → `{total_sec, today_sec, streak_days, best_streak_days}`;
+`books()` / `all_books()` → recent books `{id (path), title, author, format, read_sec, finished}` (`percent` is omitted: not available here);
+`current()` → the most recent book or `nil`; `days(a,b)` and `book_days(a,b)` → **empty tables**; `cover(id)` → `nil, "not_found"`.
+The field names follow the official host docs (tla `firmware-notes.md`) and what the community Bookworm app reads; the row formats of `days`/`book_days`
+are not documented, and this firmware stores only read / not read per day (no seconds per day), hence empty. `today_sec` is always 0. Statistics come from
+`GlobalReadingStats` and each recent book's `BookReadingStats`. `capabilities.reader` is true. Not tested on a device.

@@ -58,6 +58,19 @@ struct Canvas {
   virtual int lineHeight(int size) = 0;
 };
 
+// Reading statistics for ctx.reader (manifest permission "reader"). Per-day seconds are not kept by this firmware
+// (only read / not read), so days() and book_days() are empty tables.
+struct ReaderSummary {
+  uint32_t totalSec = 0, todaySec = 0;
+  int streakDays = 0, bestStreakDays = 0;
+};
+struct ReaderBook {
+  std::string id, title, author, format;
+  int percent = -1;  // -1 = unknown (field omitted)
+  uint32_t readSec = 0;
+  bool finished = false;
+};
+
 struct Env {
   virtual ~Env() = default;
   // Files shipped inside the app folder (index.lua, src/*.lua, data/*). `rel` has no leading '/' and no "..".
@@ -82,6 +95,9 @@ struct Env {
     return false;
   }
   virtual bool qrEncode(const std::string& /*text*/, ImageData& /*out*/) { return false; }  // 1 pixel per module
+  virtual bool readerSummary(ReaderSummary& /*out*/) { return false; }
+  virtual bool readerBooks(std::vector<ReaderBook>& /*out*/) { return false; }  // recent books with their statistics
+  virtual bool readerCurrent(ReaderBook& /*out*/) { return false; }             // the book read last
 };
 
 struct Event {

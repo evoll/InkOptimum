@@ -700,3 +700,57 @@ TEST(XtApp, LayersDrawOffscreenThenBlit) {
   EXPECT_TRUE(fx.cv.at(301, 301));
   EXPECT_FALSE(fx.cv.at(10, 10));     // nothing leaked to the main canvas
 }
+
+TEST(XtApp, ReaderStatisticsNeedThePermission) {
+  struct ReaderEnv : MemEnv {
+    bool readerSummary(ReaderSummary& o) override {
+      o.totalSec = 7200;
+      o.todaySec = 0;
+      o.streakDays = 3;
+      o.bestStreakDays = 9;
+      return true;
+    }
+    bool readerBooks(std::vector<ReaderBook>& o) override {
+      ReaderBook b;
+      b.id = "/b/one.epub";
+      b.title = "One";
+      b.author = "A";
+      b.format = "epub";
+      b.readSec = 600;
+      b.finished = true;
+      o.push_back(b);
+      return true;
+    }
+    bool readerCurrent(ReaderBook& o) override {
+      o.id = "/b/one.epub";
+      o.title = "One";
+      o.percent = 42;
+      return true;
+    }
+  };
+  const char* lua = R"(
+    local r = ctx.reader
+    assert(r, 'reader table')
+    local s = r:summary()
+    assert(s.total_sec == 7200 and s.streak_days == 3 and s.best_streak_days == 9 and s.today_sec == 0)
+    local b = r:books()
+    assert(#b == 1 and b[1].title == 'One' and b[1].finished == true and b[1].read_sec == 600 and b[1].percent == nil)
+    assert(#r:all_books() == 1)
+    local c = r:current()
+    assert(c.percent == 42 and c.id == '/b/one.epub')
+    assert(next(r:days('2026-11-01', '2026-11-14')) == nil and next(r:book_days('a', 'b')) == nil)
+    assert(select(2, r:cover('x')) == 'not_found')
+  )";
+  {
+    ReaderEnv env;
+    MemCanvas cv;
+    env.pkg["index.lua"] = lua;
+    App app(env, cv, {});
+    ASSERT_TRUE(app.start(R"({"app_id":"t","display_name":"T","entry":"index.lua","api":"2.2","permissions":["reader"]})"))
+        << app.error();
+    EXPECT_FALSE(app.failed()) << app.error();
+  }
+  Fixture fx;  // without the permission ctx.reader does not exist
+  ASSERT_TRUE(fx.start("assert(ctx.reader == nil)"));
+  EXPECT_FALSE(fx.app->failed()) << fx.app->error();
+}

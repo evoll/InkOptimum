@@ -13,7 +13,15 @@
 
 #include <algorithm>
 
+#include <Epub.h>
+#include <FsHelpers.h>
+
+#include <functional>
+
 #include "MappedInputManager.h"
+#include "RecentBooksStore.h"
+#include "activities/reader/BookReadingStats.h"
+#include "activities/reader/GlobalReadingStats.h"
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -243,6 +251,54 @@ struct XtAppActivity::DeviceEnv final : xtapp::Env {
     if (bytes.size() > 4 && static_cast<uint8_t>(bytes[0]) == 0xFF && static_cast<uint8_t>(bytes[1]) == 0xD8) return decodeJpeg(bytes, out, err);
     err = "unsupported_format";
     return false;
+  }
+  // ctx.reader: this firmware keeps totals and read / not read per day, not seconds per day.
+  bool readerSummary(xtapp::ReaderSummary& out) override {
+    const GlobalReadingStats st =
+        GlobalReadingStats::hasSyncedStats() ? GlobalReadingStats::loadAggregated() : GlobalReadingStats::load();
+    ReadingStatsDateTime now;
+    const bool haveDate = getCurrentLocalReadingStatsDateTime(now) && now.date.isValid();
+    out.totalSec = st.totalReadingSeconds;
+    out.todaySec = 0;
+    out.streakDays = st.currentReadingStreak(haveDate ? &now.date : nullptr);
+    out.bestStreakDays = st.displayLongestReadingStreak();
+    return true;
+  }
+  static std::string bookCachePath(const std::string& path) {
+    if (FsHelpers::hasEpubExtension(path)) return Epub::cachePathForFilePath(path, "/.inkmod");
+    if (FsHelpers::hasXtcExtension(path)) return "/.inkmod/xtc_" + std::to_string(std::hash<std::string>{}(path));
+    if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+      return "/.inkmod/txt_" + std::to_string(std::hash<std::string>{}(path));
+    }
+    return "";
+  }
+  static xtapp::ReaderBook toReaderBook(const RecentBook& b) {
+    xtapp::ReaderBook r;
+    r.id = b.path;
+    r.title = b.title;
+    r.author = b.author;
+    const size_t dot = b.path.find_last_of('.');
+    if (dot != std::string::npos) {
+      r.format = b.path.substr(dot + 1);
+      for (auto& ch : r.format) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    }
+    const std::string cache = bookCachePath(b.path);
+    if (!cache.empty()) {
+      const BookReadingStats bs = BookReadingStats::load(cache);
+      r.readSec = bs.totalReadingSeconds;
+      r.finished = bs.isCompleted;
+    }
+    return r;
+  }
+  bool readerBooks(std::vector<xtapp::ReaderBook>& out) override {
+    for (const auto& b : RECENT_BOOKS.getBooks()) out.push_back(toReaderBook(b));
+    return true;
+  }
+  bool readerCurrent(xtapp::ReaderBook& out) override {
+    const auto& books = RECENT_BOOKS.getBooks();
+    if (books.empty()) return false;
+    out = toReaderBook(books.front());
+    return true;
   }
   bool qrEncode(const std::string& text, xtapp::ImageData& out) override {
     int version = 4;
