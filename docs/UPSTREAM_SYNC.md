@@ -109,3 +109,8 @@ Pins fetched: crosspoint 08d9d68d (4 commits since 3331d189), witchhunt c699a618
 - #4545 (selected filename in the file-browser action popup): **not applicable** — our file browser has no option popup.
 - #4546 (host-test temp files): test-only. #4549's BookMetadataCache `try*` hardening: candidate (our `tryReadString` has no length limit argument), not ported.
 - witchhunt: the new commits are plugin crypto (api.crypto, protected-content), X3 panel/power work (bbf4db6f, 3266abf4), arena memory for page lines (7c6d6f18 etc.) — all in witchhunt-specific subsystems; not reviewed for porting. `ctx.lockscreen` for XtApp checked: it is a sleep-screen session (separate lockscreen.lua run on timer wakes) tied to the firmware's sleep/wake flow, not a plain API call — deferred.
+
+## Re-check 2026-11-21 (2)
+Pins: crosspoint 428ce8ce (2 commits since 08d9d68d); witchhunt c699a618, paperio a1ba1059, papyrix 12b7e6b, crossink 9914146e, inkmod 9af70eb unchanged.
+- crosspoint #4551 (clock and battery fixed in Lyra's status strip across built-in themes, `headerBandTopShift`, `HEADER_STATUS_*`): **not applicable** — it rewrites crosspoint's `applyHeaderStatus` / freeink::ui header props; our themes draw their own headers (`drawHeader`) and keep their per-theme clock placement.
+- crosspoint #4479 (navigate installed plugins in the WebUI, plugin-host.js): **not applicable** — our plugins page is our own (`WebPlugins.cpp`, `/plugins`, `/plugins-run`); crosspoint's JS host and endpoints differ.

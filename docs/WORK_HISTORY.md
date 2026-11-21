@@ -150,3 +150,6 @@ Request: add what the host lacked, starting with text input.
 ## 2026-11-21 (3) — minutes in the reading calendar
 - ReadingCalendarActivity: loads `DailyReadingStore`; a read day with >= 1 recorded minute prints the minutes (max 999) under the day number inside the filled cell (only when the cell is tall enough for two lines); a "Reading Time: H h MM min" line for the month is added above the streak line. No new strings (STR_STATS_TIME_LBL, STR_UNIT_HOUR_SHORT, STR_UNIT_MIN_SHORT exist).
 - Layout was not seen on a screen: the extra line may not fit on a small display, and cells on X3 are untested.
+
+## 2026-11-21 (4) — upstream re-check (docs only)
+- crosspoint 428ce8ce: #4551 and #4479 judged not applicable (UPSTREAM_SYNC.md). Nothing else moved.
