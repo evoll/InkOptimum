@@ -44,6 +44,7 @@ const char* weekdayShort(const int index) {  // Monday = 0
 
 void ReadingCalendarActivity::onEnter() {
   Activity::onEnter();
+  daily_ = DailyReadingStore::load();
   stats_ = GlobalReadingStats::hasSyncedStats() ? GlobalReadingStats::loadAggregated() : GlobalReadingStats::load();
   ReadingStatsDateTime now;
   if (getCurrentLocalReadingStatsDateTime(now) && now.date.isValid()) {
@@ -146,6 +147,7 @@ void ReadingCalendarActivity::render(RenderLock&&) {
     const int offset = readingStatsDayOfWeekIndex(first);
     const int days = daysInMonth(first.year, first.month);
     int readDays = 0;
+    uint32_t monthSeconds = 0;
     const int pad = 4;
     for (int d = 1; d <= days; d++) {
       ReadingStatsDate date = first;
@@ -166,10 +168,22 @@ void ReadingCalendarActivity::render(RenderLock&&) {
       const int by = y + pad;
       const int bw = cell - 2 * pad;
       const int bh = rowH - 2 * pad;
+      const uint32_t daySeconds = read ? daily_.secondsFor(readingStatsDayIndex(date)) : 0;
       if (read) {
         readDays++;
+        monthSeconds += daySeconds;
         renderer.fillRect(bx, by, bw, bh, true);
-        renderer.drawText(UI_10_FONT_ID, bx + (bw - tw) / 2, by + (bh - th) / 2, num, false);
+        if (daySeconds >= 60 && bh >= 2 * th + 6) {
+          char mins[8];
+          snprintf(mins, sizeof(mins), "%u", static_cast<unsigned>(std::min<uint32_t>(daySeconds / 60, 999)));
+          const int mw = renderer.getTextWidth(UI_10_FONT_ID, mins);
+          const int blockH = 2 * th + 2;
+          const int topY = by + (bh - blockH) / 2;
+          renderer.drawText(UI_10_FONT_ID, bx + (bw - tw) / 2, topY, num, false);
+          renderer.drawText(UI_10_FONT_ID, bx + (bw - mw) / 2, topY + th + 2, mins, false);
+        } else {
+          renderer.drawText(UI_10_FONT_ID, bx + (bw - tw) / 2, by + (bh - th) / 2, num, false);
+        }
       } else {
         renderer.drawText(UI_10_FONT_ID, bx + (bw - tw) / 2, by + (bh - th) / 2, num, true);
       }
@@ -182,6 +196,13 @@ void ReadingCalendarActivity::render(RenderLock&&) {
     snprintf(line, sizeof(line), "%s: %d / %d", tr(STR_CAL_READ_DAYS), readDays, days);
     renderer.drawText(UI_10_FONT_ID, gridLeft, infoY, line);
     infoY += renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    if (monthSeconds >= 60) {
+      const unsigned totalMin = monthSeconds / 60;
+      snprintf(line, sizeof(line), "%s: %u %s %02u %s", tr(STR_STATS_TIME_LBL), totalMin / 60, tr(STR_UNIT_HOUR_SHORT),
+               totalMin % 60, tr(STR_UNIT_MIN_SHORT));
+      renderer.drawText(UI_10_FONT_ID, gridLeft, infoY, line);
+      infoY += renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    }
     if (today_.isValid()) {
       const uint16_t cur = stats_.currentReadingStreak(&today_);
       snprintf(line, sizeof(line), "%s: %u   %s: %u", tr(STR_STATS_READING_STREAK_LBL), static_cast<unsigned>(cur),

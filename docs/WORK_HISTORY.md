@@ -146,3 +146,7 @@ Request: add what the host lacked, starting with text input.
 - src/activities/reader/DailyReadingStore.{h,cpp}: `/.inkmod/daily_seconds.bin` (tmp + rename), `recordSpan`; EpubReaderActivity calls it next to the other statistics at session end (same thresholds: >= 10 s).
 - ctx.reader: `today_sec` and `days(from, to)` are now real (Env::readerDays, `ReaderDay`); `book_days` stays empty. Test updated. 983 native tests pass; corpus of 57 apps clean.
 - Source: closes the "minutes per day" gap noted in FEATURE_MATRIX (calendar); the calendar screen itself does not show minutes yet.
+
+## 2026-11-21 (3) — minutes in the reading calendar
+- ReadingCalendarActivity: loads `DailyReadingStore`; a read day with >= 1 recorded minute prints the minutes (max 999) under the day number inside the filled cell (only when the cell is tall enough for two lines); a "Reading Time: H h MM min" line for the month is added above the streak line. No new strings (STR_STATS_TIME_LBL, STR_UNIT_HOUR_SHORT, STR_UNIT_MIN_SHORT exist).
+- Layout was not seen on a screen: the extra line may not fit on a small display, and cells on X3 are untested.
