@@ -34,7 +34,8 @@ constexpr char TAG[] = "KOSX";
 constexpr char STATE_DIR[] = "/.inkmod/kosync_ext";
 constexpr char SYNCED_STATS_DIR[] = "/.inkmod/synced_stats";
 constexpr char SERVER_SUMMARY_FILE[] = "server_summary.bin";
-constexpr int MAX_DELTA_PAGES = 12;  // hard stop: 12*100 items is already far beyond normal device use
+constexpr int MAX_DELTA_PAGES = 40;  // hard stop: far beyond normal device use (legacy 100/page, delta 10/page)
+constexpr size_t DELTA_PAGE_ITEMS = 10;  // crosspoint #4531: ten of the largest items fit its buffers
 
 struct BookmarkWire {
   std::string id;
@@ -261,13 +262,34 @@ std::string clippingId(const Clipping& clip) {
   return sha256Id16(std::to_string(clip.timestamp) + std::string(clip.text));
 }
 
+// crosspoint #4531: a server that offers the extensions answers the bookmark list with sync_version 2. Reading
+// sessions and the cursor/acknowledgement protocol are only used then; an older server keeps the legacy
+// since/until exchange for bookmarks and never receives sessions.
+bool probeDeltaSync(freeink::SecureHttpClient& http, const std::string& documentHash) {
+  if (documentHash.empty()) return false;
+  std::string body;
+  int code = 0;
+  if (!httpGet(http, KOREADER_STORE.getBaseUrl() + "/api/v1/bookmarks/" + documentHash + "?cursor=0&limit=1", body,
+               code)) {
+    LOG_INF(TAG, "Delta probe: HTTP %d, legacy protocol", code);
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return false;
+  const bool v2 = (doc["sync_version"] | 0) == 2;
+  LOG_INF(TAG, "Delta probe: sync_version=%d", doc["sync_version"] | 0);
+  return v2;
+}
+
 bool fetchBookmarks(freeink::SecureHttpClient& http, const std::string& documentHash,
-                    std::vector<BookmarkWire>& out) {
+                    std::vector<BookmarkWire>& out, const bool delta) {
   out.clear();
   uint64_t since = 0;
   for (int page = 0; page < MAX_DELTA_PAGES; ++page) {
+    // Both cursors are sent: a delta server reads `cursor`, a legacy one `since`.
     const std::string url = KOREADER_STORE.getBaseUrl() + "/api/v1/bookmarks/" + documentHash +
-                            "?since=" + std::to_string(since) + "&limit=100";
+                            "?since=" + std::to_string(since) + "&cursor=" + std::to_string(since) +
+                            "&limit=" + std::to_string(delta ? DELTA_PAGE_ITEMS : 100);
     std::string body;
     int code = 0;
     if (!httpGet(http, url, body, code)) {
@@ -289,7 +311,7 @@ bool fetchBookmarks(freeink::SecureHttpClient& http, const std::string& document
       if (!b.id.empty()) out.push_back(std::move(b));
     }
     const bool more = doc["more"] | false;
-    const uint64_t until = doc["until"] | since;
+    const uint64_t until = doc["cursor"].is<uint64_t>() ? doc["cursor"].as<uint64_t>() : (doc["until"] | since);
     if (!more || until <= since) break;
     since = until;
   }
@@ -297,12 +319,13 @@ bool fetchBookmarks(freeink::SecureHttpClient& http, const std::string& document
 }
 
 bool putBookmarks(freeink::SecureHttpClient& http, const std::string& documentHash,
-                  const std::vector<BookmarkWire>& items) {
+                  const std::vector<BookmarkWire>& items, const bool delta) {
   const std::string url = KOREADER_STORE.getBaseUrl() + "/api/v1/bookmarks/" + documentHash;
-  for (size_t offset = 0; offset < items.size(); offset += 50) {
+  const size_t batch = delta ? DELTA_PAGE_ITEMS : 50;
+  for (size_t offset = 0; offset < items.size(); offset += batch) {
     JsonDocument doc;
     JsonArray arr = doc["items"].to<JsonArray>();
-    const size_t end = std::min(items.size(), offset + 50);
+    const size_t end = std::min(items.size(), offset + batch);
     for (size_t i = offset; i < end; ++i) {
       const auto& b = items[i];
       JsonObject o = arr.add<JsonObject>();
@@ -325,6 +348,14 @@ bool putBookmarks(freeink::SecureHttpClient& http, const std::string& documentHa
     if (!httpPut(http, url, payload, body, code)) {
       LOG_ERR(TAG, "Bookmark PUT failed: HTTP %d", code);
       return false;
+    }
+    if (delta) {
+      // A delta server states how many items it stored; anything else means they were not (all) accepted.
+      JsonDocument reply;
+      if (deserializeJson(reply, body) || (reply["accepted"] | static_cast<size_t>(0)) != end - offset) {
+        LOG_ERR(TAG, "Server did not acknowledge the bookmarks");
+        return false;
+      }
     }
   }
   return true;
@@ -607,7 +638,7 @@ bool syncStats(freeink::SecureHttpClient& http) {
 
 }  // namespace
 
-bool CrossPointExtendedSync::syncWithoutBook() {
+bool CrossPointExtendedSync::syncWithoutBook(const std::string& documentHash) {
   if (!KOREADER_STORE.usesCrossPointSyncServer() || !KOREADER_STORE.getSyncStats()) return true;
   freeink::SecureHttpClient http;
   TlsTrust::apply(http);
@@ -615,7 +646,7 @@ bool CrossPointExtendedSync::syncWithoutBook() {
   http.setTimeout(12000);
   http.setUserAgent("inkMOD-KOSync/1.1-ext");
   bool ok = syncStats(http);
-  if (!syncReadingSessions(http)) ok = false;
+  if (probeDeltaSync(http, documentHash) && !syncReadingSessions(http)) ok = false;
   http.end();
   return ok;
 }
@@ -632,6 +663,10 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
   http.setReuse(true);
   http.setTimeout(12000);
   http.setUserAgent("inkMOD-KOSync/1.1-ext");
+
+  // Probe once: only a server that offers the extensions gets the cursor protocol and the session log.
+  const bool delta = (KOREADER_STORE.getSyncBookmarks() || KOREADER_STORE.getSyncStats()) &&
+                     probeDeltaSync(http, documentHash);
 
   std::vector<std::string> knownBookmarks;
   std::vector<std::string> knownClippings;
@@ -656,7 +691,7 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
       for (const auto& id : knownBookmarks) if (!containsId(currentIds, id)) locallyDeleted.push_back(id);
 
       std::vector<BookmarkWire> remote;
-      if (!fetchBookmarks(http, documentHash, remote)) {
+      if (!fetchBookmarks(http, documentHash, remote, delta)) {
         result.bookmarksOk = false;
       } else {
         for (const auto& r : remote) {
@@ -683,7 +718,7 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
           tomb.deleted = true;
           local.push_back(std::move(tomb));
         }
-        if (!putBookmarks(http, documentHash, local)) result.bookmarksOk = false;
+        if (!putBookmarks(http, documentHash, local, delta)) result.bookmarksOk = false;
         if (result.bookmarksOk) {
           finalBookmarkIds = currentIds;
           LOG_INF(TAG, "Bookmarks synced: %u local", static_cast<unsigned>(currentIds.size()));
@@ -794,7 +829,7 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
     result.statsOk = syncStats(http);
   }
   // Session history rides on the statistics toggle: both are reading statistics.
-  if (KOREADER_STORE.getSyncStats()) {
+  if (KOREADER_STORE.getSyncStats() && delta) {
     if (!syncReadingSessions(http)) result.statsOk = false;
   }
 

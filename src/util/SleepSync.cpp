@@ -156,7 +156,7 @@ void run() {
       done = KOReaderSyncClient::updateProgress(up) == KOReaderSyncClient::OK;
       LOG_INF(TAG, "progress %.1f%% %s", up.percentage * 100.0f, done ? "sent" : "failed");
     }
-    CrossPointExtendedSync::syncWithoutBook();
+    CrossPointExtendedSync::syncWithoutBook(snap.document);
     if (done) writeSnapshot(snap, false);
   } else {
     LOG_INF(TAG, "join timed out, the position waits for the next sleep");

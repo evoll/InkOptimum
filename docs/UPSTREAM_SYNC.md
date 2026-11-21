@@ -130,4 +130,5 @@ The previous section said witchhunt's plugin-event commits "belong to crosspoint
 
 ### 2026-11-21 — crosspoint #4531 ported (partly)
 Supersedes the "not ported" notes above. Ported: reading-session log + upload to `/api/v1/stats/sessions`, Sync On Sleep (setting, snapshot, clean-boot/in-place send, server-ahead guard). Not ported: crosspoint's own KOReaderServerType/SyncRequest/SyncEngine layering (our existing CrossPointExtendedSync stays the transport), bookmark delta/cursor protocol (see next entry once checked), FB2 books at sleep. Needs device + server verification.
+Bookmarks (same day): ids already match crosspoint's; delta probe, cursor paging, `accepted` check and the probe gate for reading sessions added (WORK_HISTORY 2026-11-21 (8)). Name labels / visible-text offsets are not ported.
 

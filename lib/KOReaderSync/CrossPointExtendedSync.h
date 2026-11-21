@@ -28,5 +28,5 @@ class CrossPointExtendedSync {
 
   // Sync On Sleep: only what needs no book in memory (reading-session log and the global statistics, each behind the
   // Reading Stats toggle). Returns true when nothing failed.
-  static bool syncWithoutBook();
+  static bool syncWithoutBook(const std::string& documentHash);
 };
