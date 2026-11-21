@@ -180,3 +180,6 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 - Not verified against a real server: the delta-server answers (`sync_version`, `cursor`, `accepted`) are taken from crosspoint's client code only.
 - Build setup preserved: `docs/build-offline.sh` (also /home/claude/build.sh) builds with the symlinked libraries in /home/claude/libs because the PlatformIO registry is unreachable; never run a plain `pio run` there (it removed the x3x4-release libdeps once; restored by the script's offline config, platformio.ini untouched).
 
+## 2026-11-21 (9) — upstream re-check (docs only)
+- witchhunt moved to 4f1eb18c (18 commits: float-free refactors, gray-level plans for sleep pictures, flash tooling). Judged not applicable / not ported, reasons in UPSTREAM_SYNC.md. Other references unchanged.
+

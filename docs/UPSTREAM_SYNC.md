@@ -132,3 +132,11 @@ The previous section said witchhunt's plugin-event commits "belong to crosspoint
 Supersedes the "not ported" notes above. Ported: reading-session log + upload to `/api/v1/stats/sessions`, Sync On Sleep (setting, snapshot, clean-boot/in-place send, server-ahead guard). Not ported: crosspoint's own KOReaderServerType/SyncRequest/SyncEngine layering (our existing CrossPointExtendedSync stays the transport), bookmark delta/cursor protocol (see next entry once checked), FB2 books at sleep. Needs device + server verification.
 Bookmarks (same day): ids already match crosspoint's; delta probe, cursor paging, `accepted` check and the probe gate for reading sessions added (WORK_HISTORY 2026-11-21 (8)). Name labels / visible-text offsets are not ported.
 
+### 2026-11-21 (evening) — witchhunt 79d09ee0 → 4f1eb18c re-check
+18 non-merge commits, 289 files; nothing ported:
+- Float-free refactors (CSS lengths in fixed point, text scale, book progress in billionths, weather units, UI formatting, image ratios, clock drift model; #863–#868): behaviour-preserving, spread over the layout, progress and weather code that we have changed independently (progress is a float 0..1 in EpubReaderActivity/ProgressMapper/KOReaderSync). A partial port would only create merge conflicts; revisit only if a C3 profile shows soft-float time in layout.
+- Gray-level plans for sleep pictures (296351ab, 9eeb1fb8, 3d839d1a, SDK pins faae308c/ff719d02/8663b2cb): compiled out on every board upstream (`grayLevelPlan()` returns nullptr) and needs a display driver with calibrated multi-pass waveforms that our SDK pin lacks. Nothing to run.
+- 2b4c797a (XTC percent on the sleep overlay shown 100x): we have no sleep-screen book overlay, so the bug cannot occur here.
+- Flash tooling (`bin/devices.local`, 035e927c, d632e95b) and serial lab commands (97b7527f, ac5d71cf): host/dev tooling, not firmware features.
+Pin: witchhunt 4f1eb18c. crosspoint ca1a8c1e, paperio a1ba1059, crossink 9914146e, inkmod 9af70eb, papyrix 12b7e6b unchanged.
+
