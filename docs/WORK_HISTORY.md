@@ -153,3 +153,6 @@ Request: add what the host lacked, starting with text input.
 
 ## 2026-11-21 (4) — upstream re-check (docs only)
 - crosspoint 428ce8ce: #4551 and #4479 judged not applicable (UPSTREAM_SYNC.md). Nothing else moved.
+
+## 2026-11-21 (5) — upstream re-check (docs only)
+- crosspoint #4531 and ca1a8c1e, witchhunt plugin events: judged not applicable / not ported (UPSTREAM_SYNC.md).

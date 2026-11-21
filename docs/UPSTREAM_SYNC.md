@@ -114,3 +114,9 @@ Pins fetched: crosspoint 08d9d68d (4 commits since 3331d189), witchhunt c699a618
 Pins: crosspoint 428ce8ce (2 commits since 08d9d68d); witchhunt c699a618, paperio a1ba1059, papyrix 12b7e6b, crossink 9914146e, inkmod 9af70eb unchanged.
 - crosspoint #4551 (clock and battery fixed in Lyra's status strip across built-in themes, `headerBandTopShift`, `HEADER_STATUS_*`): **not applicable** — it rewrites crosspoint's `applyHeaderStatus` / freeink::ui header props; our themes draw their own headers (`drawHeader`) and keep their per-theme clock placement.
 - crosspoint #4479 (navigate installed plugins in the WebUI, plugin-host.js): **not applicable** — our plugins page is our own (`WebPlugins.cpp`, `/plugins`, `/plugins-run`); crosspoint's JS host and endpoints differ.
+
+## Re-check 2026-11-21 (3)
+Pins: crosspoint ca1a8c1e (2 commits since 428ce8ce), witchhunt 79d09ee0 (plugin-event docs/commits), paperio a1ba1059, papyrix 12b7e6b, crossink 9914146e, inkmod 9af70eb unchanged.
+- crosspoint #4531 (Sync On Sleep, reading-session log `/.crosspoint/reading_sessions.jsonl`, bookmarks sync; ~1000 lines in main.cpp, `src/sync/*`, KOReaderSyncActivity): **not ported** — built around crosspoint's own "CrossPoint Sync server" API and its plugin-event machinery; we have KOReader progress sync only, no such server to test against, and a Wi-Fi join on every sleep is a power/timing risk that cannot be checked here. Revisit only if a sync server is chosen as a target.
+- crosspoint ca1a8c1e (restores theme-specific header positions, partly reverting #4551): not applicable, same reason as #4551.
+- witchhunt: plugin device events (edfb2409, b170fa5e) and plugin-event docs — crosspoint plugin API, not ours.
