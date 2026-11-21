@@ -326,6 +326,19 @@ RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
+// Plugin events at sleep entry on a board that cannot hold Wi-Fi + TLS beside two framebuffers (ESP32-C3): the sleep
+// screen is painted, the chip restarts into SEND (this boot sends the queue before the display allocates), which
+// restarts into SLEEP (the sleep that finishes without painting again). Two targets each, so fromTimeout survives.
+constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP_SEND = 2;
+constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT = 3;
+constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP = 4;
+constexpr uint32_t SILENT_REBOOT_TARGET_SLEEP_TIMEOUT = 5;
+// Upper bound for the cold-boot sanity check on silentRebootTarget (RTC_NOINIT is uninitialized on power-up).
+// Must equal the highest target above.
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_SLEEP_TIMEOUT;
+// True in the sleep a clean-boot send restarted into: the events went (or were tried) and the screen painted before the
+// first restart is still on the panel, so this pass neither queues sleep.enter again nor paints.
+static bool sleepEventsSentPass = false;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -809,12 +822,15 @@ void enterDeepSleep(bool fromTimeout) {
   // finishes. Persist the actual reader path and a clean resume guard BEFORE
   // ActivityManager replaces/destroys the reader. Otherwise a stale load-count
   // or missing last-book path can route the next wake to Home.
-  const bool sleepFromReader = activityManager.isReaderActivity();
+  // The sleep a clean-boot send restarted into has no activity: APP_STATE already holds what the first pass saved.
+  const bool sleepFromReader = !sleepEventsSentPass && activityManager.isReaderActivity();
   const std::string sleepBookPath = sleepFromReader ? activityManager.getCurrentBookPath() : std::string{};
-  APP_STATE.lastSleepFromReader = sleepFromReader;
-  if (sleepFromReader && !sleepBookPath.empty()) {
-    APP_STATE.openEpubPath = sleepBookPath;
-    APP_STATE.readerActivityLoadCount = 0;  // normal sleep is not a reader crash
+  if (!sleepEventsSentPass) {
+    APP_STATE.lastSleepFromReader = sleepFromReader;
+    if (sleepFromReader && !sleepBookPath.empty()) {
+      APP_STATE.openEpubPath = sleepBookPath;
+      APP_STATE.readerActivityLoadCount = 0;  // normal sleep is not a reader crash
+    }
   }
 
   const bool isQuickResumeSleep =
@@ -837,7 +853,8 @@ void enterDeepSleep(bool fromTimeout) {
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
   // Sleep may end in a power-off: persist the clock floor so a later cold boot resumes from it.
   trustedtime::note();
-  {
+  bool sendEventsFromCleanBoot = false;
+  if (!sleepEventsSentPass) {
     // sleep.enter: queue it and, when Wi-Fi is already up, deliver before the sleep screen renders (a handler
     // may fetch /sleep.bmp). A handler with "connect": true may bring Wi-Fi up for this (see drainAtSleep).
     plugincat::Vars vars;
@@ -849,14 +866,38 @@ void enterDeepSleep(bool fromTimeout) {
     }
     PluginEventBus::emit("sleep.enter", vars);
     // With Bluetooth still up there is no heap to start Wi-Fi in: the queued events retry on the next drain.
-    if (bluetoothStopped) PluginEventBus::drainAtSleep(powerManager.getBatteryPercentage(), tr(STR_PLUGIN_CONNECTING));
+    if (bluetoothStopped) {
+#if FREEINK_MCU_C3
+      // C3: no room for Wi-Fi + TLS beside the framebuffers. Paint first, then send from a clean boot (below).
+      if (PluginEventBus::wantsCleanBootSend(powerManager.getBatteryPercentage())) {
+        sendEventsFromCleanBoot = true;
+      } else {
+        PluginEventBus::drainAtSleep(powerManager.getBatteryPercentage(), tr(STR_PLUGIN_CONNECTING));
+      }
+#else
+      PluginEventBus::drainAtSleep(powerManager.getBatteryPercentage(), tr(STR_PLUGIN_CONNECTING));
+#endif
+    }
   }
-  activityManager.goToSleep(fromTimeout);
+  if (!sleepEventsSentPass) activityManager.goToSleep(fromTimeout);
 
-  if (resumeWithoutSplash) {
+  if (sleepEventsSentPass) {
+    // The panel already holds the sleep screen, and the frame buffer saved for Quick Resume was written before the restart.
+  } else if (resumeWithoutSplash) {
     saveSleepFrameBuffer();
   } else {
     delay(POST_SLEEP_SCREEN_SETTLE_MS);
+  }
+
+  // The screen is up and the reader closed (its reader.exit queued): the queue goes from a clean boot, which restarts
+  // into this function to finish the sleep.
+  if (sendEventsFromCleanBoot) {
+    silentRebootTarget = fromTimeout ? SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT : SILENT_REBOOT_TARGET_SLEEP_SEND;
+    silentRebootMagic = SILENT_REBOOT_MAGIC;
+    LOG_INF("PEVT", "events wait for a connection: sending them from a clean boot");
+    delay(50);
+    ESP.restart();
+    return;
   }
 
   if (SETTINGS.autoBackupStats != 0) {
@@ -1118,7 +1159,7 @@ void setup() {
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
   const uint32_t snapshotTarget =
-      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_READER) ? silentRebootTarget : 0;
+      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_MAX) ? silentRebootTarget : 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
 
@@ -1227,6 +1268,17 @@ void setup() {
     SETTINGS.saveToFile();
   }
   PluginEventBus::init();
+  if (snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND || snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT) {
+    // Clean boot: no display, fonts or framebuffers yet, so Wi-Fi and TLS have the heap. Send, then on into the sleep.
+    PluginEventBus::sendFromCleanBoot();
+    silentRebootTarget = snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT
+                                                                                    : SILENT_REBOOT_TARGET_SLEEP;
+    silentRebootMagic = SILENT_REBOOT_MAGIC;
+    LOG_INF("PEVT", "events sent from a clean boot; on into the sleep");
+    delay(50);
+    ESP.restart();
+    return;
+  }
   PluginEventBus::setToastSink([](const char* text) {
     GUI.drawPopup(renderer, text);
     renderer.displayBuffer();
@@ -1320,6 +1372,15 @@ void setup() {
   const BootResume resume = isSilentReboot              ? BootResume::Silent
                             : !APP_STATE.showBootScreen ? BootResume::QuickResume
                                                         : BootResume::Splash;
+
+  if (snapshotTarget == SILENT_REBOOT_TARGET_SLEEP || snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_TIMEOUT) {
+    // The sleep a clean-boot send restarted into: the panel still shows the sleep screen painted before the restarts.
+    LOG_INF("MAIN", "Finishing the sleep after a clean-boot event send");
+    setupDisplayAndFonts(true);
+    sleepEventsSentPass = true;
+    enterDeepSleep(snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_TIMEOUT);
+    return;  // not reached: enterDeepSleep() never returns
+  }
 
   BootLog::step("MAIN", "entering setupDisplayAndFonts() from setup()");
   setupDisplayAndFonts(resume != BootResume::Splash);

@@ -30,4 +30,14 @@ void setToastSink(ToastSink sink);
 // 10 s deadline) for that delivery and turns it off again. It never waits longer than the deadline.
 void drainAtSleep(uint16_t batteryPercent, const char* connectingText);
 
+// ESP32-C3 boards (no PSRAM): beside two framebuffers, joining Wi-Fi leaves too little contiguous heap for TLS, so
+// the events go from a clean boot instead (sleep screen painted, restart, send before the display allocates, restart
+// into the sleep).
+// wantsCleanBootSend(): Wi-Fi is down, plugins are on, a queued event's handler declares `connect: true`, the battery
+// is at least 20 % and the last network has a saved password.
+bool wantsCleanBootSend(uint16_t batteryPercent);
+// Joins the last network (10 s deadline), delivers the queue without any popup, turns Wi-Fi off again. Call it before
+// the display and fonts are set up.
+void sendFromCleanBoot();
+
 }  // namespace PluginEventBus

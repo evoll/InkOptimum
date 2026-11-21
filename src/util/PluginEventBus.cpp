@@ -255,6 +255,50 @@ bool connectWanted() {
 }
 }  // namespace
 
+namespace {
+// The saved network to send events on, or nullptr.
+const WifiCredential* sleepNetwork() {
+  WIFI_STORE.loadFromFile();
+  const std::string lastSsid = WIFI_STORE.getLastConnectedSsid();
+  return lastSsid.empty() ? nullptr : WIFI_STORE.findCredential(lastSsid);
+}
+}  // namespace
+
+bool wantsCleanBootSend(const uint16_t batteryPercent) {
+  if (subscriptions.empty() || draining || !SETTINGS.pluginsEnabled) return false;
+  if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) return false;  // drained in place
+  if (batteryPercent < 20 || !connectWanted()) return false;
+  return sleepNetwork() != nullptr;
+}
+
+void sendFromCleanBoot() {
+  if (subscriptions.empty() || draining || !SETTINGS.pluginsEnabled) return;
+  const WifiCredential* cred = sleepNetwork();
+  if (!cred) return;
+  const std::string ssid = cred->ssid;
+  const std::string password = cred->password;
+  LOG_INF("PEVT", "clean boot: joining %s (heap %u, largest %u)", ssid.c_str(),
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), password.c_str());
+  const uint32_t started = millis();
+  while (millis() - started < 10000) {
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) break;
+    delay(100);
+  }
+  const bool online = WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
+  if (online) {
+    const ToastSink saved = toastSink;
+    toastSink = nullptr;  // no screen yet
+    drainIfOnline();
+    toastSink = saved;
+  } else {
+    LOG_INF("PEVT", "clean boot: join timed out, the events wait for the next connection");
+  }
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+}
+
 void drainAtSleep(uint16_t batteryPercent, const char* connectingText) {
   if (subscriptions.empty() || draining || !SETTINGS.pluginsEnabled) return;
   if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {

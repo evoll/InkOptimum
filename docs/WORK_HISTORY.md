@@ -156,3 +156,10 @@ Request: add what the host lacked, starting with text input.
 
 ## 2026-11-21 (5) — upstream re-check (docs only)
 - crosspoint #4531 and ca1a8c1e, witchhunt plugin events: judged not applicable / not ported (UPSTREAM_SYNC.md).
+
+## 2026-11-21 (6) — plugin events from a clean boot on ESP32-C3 (witchhunt edfb2409, device-side part)
+- src/util/PluginEventBus.{h,cpp}: `wantsCleanBootSend(battery)` (Wi-Fi down, plugins on, a queued event's handler has `connect: true`, battery >= 20 %, last network saved) and `sendFromCleanBoot()` (join with a 10 s deadline, drain with no popups, Wi-Fi off).
+- src/main.cpp: silent-reboot targets SLEEP_SEND(_TIMEOUT) and SLEEP(_TIMEOUT) (`SILENT_REBOOT_TARGET_MAX`). On C3 builds (`FREEINK_MCU_C3`) `enterDeepSleep` no longer joins Wi-Fi beside the framebuffers: it queues `sleep.enter`, paints the sleep screen, restarts; the SEND boot (before `setupDisplayAndFonts`) delivers the queue and restarts again; the SLEEP boot sets up the display seamlessly and finishes the sleep without painting or queueing again (`sleepEventsSentPass`). S3 boards (PSRAM) keep the in-place `drainAtSleep`.
+- Reason (witchhunt): on the X3 a block under 8 KB remained after the Wi-Fi join beside two framebuffers, too little for TLS.
+- Limits: a download that replaces /sleep.bmp during the clean-boot send takes effect at the next sleep (witchhunt redraws the screen in that case; not ported). NOT tested on a device — please test on an X3/X4 with a plugin whose device.json has an event with `"connect": true` (e.g. sleep.enter) and watch the serial log lines `PEVT clean boot: joining ...`.
+- Web part of the same commit set (b170fa5e: marking community plugins whose events run) has no counterpart here: our Plugins page has no community "what runs here" judgement.

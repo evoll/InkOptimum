@@ -120,3 +120,10 @@ Pins: crosspoint ca1a8c1e (2 commits since 428ce8ce), witchhunt 79d09ee0 (plugin
 - crosspoint #4531 (Sync On Sleep, reading-session log `/.crosspoint/reading_sessions.jsonl`, bookmarks sync; ~1000 lines in main.cpp, `src/sync/*`, KOReaderSyncActivity): **not ported** — built around crosspoint's own "CrossPoint Sync server" API and its plugin-event machinery; we have KOReader progress sync only, no such server to test against, and a Wi-Fi join on every sleep is a power/timing risk that cannot be checked here. Revisit only if a sync server is chosen as a target.
 - crosspoint ca1a8c1e (restores theme-specific header positions, partly reverting #4551): not applicable, same reason as #4551.
 - witchhunt: plugin device events (edfb2409, b170fa5e) and plugin-event docs — crosspoint plugin API, not ours.
+
+### Correction 2026-11-21 (4) — plugin events
+The previous section said witchhunt's plugin-event commits "belong to crosspoint's plugin API, which we do not have". That was wrong: we have the events (lib/PluginEvents, src/util/PluginEventBus, reader.open/exit/session, sleep.enter, `connect`, drainAtSleep). Re-reviewed:
+- edfb2409 device part: the **clean-boot send on ESP32-C3 is ported** (see WORK_HISTORY 2026-11-21 (6)); the redraw of the sleep screen after a download is not.
+- b170fa5e (web: mark community plugins whose events run): no counterpart — our Plugins page has no community catalog judgement.
+- ca1a8c1e / #4551: touch crosspoint's `BaseTheme::applyHeaderStatus`; we never had #4551's header rewrite, so there is nothing to follow.
+- #4531 (Sync on Sleep, reading sessions, bookmarks sync): depends on a stack we lack (KOReaderServerType, SyncRequest, delta sync, SyncEngine, clipping sync, "CrossPoint Sync server" endpoints `/api/v1/stats/sessions`, `/api/v1/bookmarks/<doc>`). Waiting for a decision on which server to target.
