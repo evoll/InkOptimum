@@ -21,6 +21,7 @@
 
 #include "../../src/BookmarkStore.h"
 #include "../../src/ClippingStore.h"
+#include "../../src/util/ReadingSessionLog.h"
 #include "Fb2.h"
 #include "../../src/InkMODSettings.h"
 #include "KOReaderCredentialStore.h"
@@ -483,6 +484,50 @@ bool decodeHistory(const char* encoded, GlobalReadingStats& stats) {
   return rc == 0 && outLen == stats.readingHistoryBits.size();
 }
 
+// Uploads the reading-session log (crosspoint #4531): batches of 20, the offset advances only over batches the server
+// acknowledged by id. A server without the endpoint (404/405) or one that answers without accepted ids is treated as
+// "not supported" and costs nothing but one request.
+bool syncReadingSessions(freeink::SecureHttpClient& http) {
+  uint8_t mac[6] = {};
+  if (esp_efuse_mac_get_default(mac) != ESP_OK) return true;
+  const std::string base = KOREADER_STORE.getBaseUrl();
+  const int64_t now = static_cast<int64_t>(time(nullptr));
+  for (int batch = 0; batch < 10; ++batch) {
+    const auto pending = ReadingSessionLog::readPending(now > 1600000000 ? now : 0);
+    std::vector<std::string> ids;
+    if (pending.sessions.empty()) {
+      // Only unsendable lines were skipped: still move past them.
+      if (pending.endOffset > 0) ReadingSessionLog::markUploaded(pending.endOffset);
+      return true;
+    }
+    const std::string payload =
+        readingsessions::buildBatch(deviceId(), pending.sessions, mac, now > 1600000000 ? now : 0, ids);
+    if (ids.empty()) {
+      ReadingSessionLog::markUploaded(pending.endOffset);
+      return true;
+    }
+    std::string body;
+    int code = 0;
+    if (!http.begin(base + "/api/v1/stats/sessions")) return false;
+    addAuthHeaders(http);
+    http.addHeader("Content-Type", "application/json");
+    code = http.sendRequest("POST", payload);
+    body = http.getString();
+    if (code < 200 || code >= 300) {
+      LOG_ERR(TAG, "Sessions POST failed: HTTP %d", code);
+      return false;
+    }
+    if (!readingsessions::allAccepted(body, ids)) {
+      LOG_ERR(TAG, "Sessions POST not acknowledged (old server?)");
+      return false;
+    }
+    ReadingSessionLog::markUploaded(pending.endOffset);
+    LOG_INF(TAG, "Uploaded %u reading sessions", static_cast<unsigned>(ids.size()));
+    if (!pending.more) return true;
+  }
+  return true;
+}
+
 bool syncStats(freeink::SecureHttpClient& http) {
   const GlobalReadingStats local = GlobalReadingStats::load();
   JsonDocument up;
@@ -561,6 +606,19 @@ bool syncStats(freeink::SecureHttpClient& http) {
 }
 
 }  // namespace
+
+bool CrossPointExtendedSync::syncWithoutBook() {
+  if (!KOREADER_STORE.usesCrossPointSyncServer() || !KOREADER_STORE.getSyncStats()) return true;
+  freeink::SecureHttpClient http;
+  TlsTrust::apply(http);
+  http.setReuse(true);
+  http.setTimeout(12000);
+  http.setUserAgent("inkMOD-KOSync/1.1-ext");
+  bool ok = syncStats(http);
+  if (!syncReadingSessions(http)) ok = false;
+  http.end();
+  return ok;
+}
 
 CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& documentHash,
                                                              const std::shared_ptr<Epub>& epub,
@@ -734,6 +792,10 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
 
   if (KOREADER_STORE.getSyncStats()) {
     result.statsOk = syncStats(http);
+  }
+  // Session history rides on the statistics toggle: both are reading statistics.
+  if (KOREADER_STORE.getSyncStats()) {
+    if (!syncReadingSessions(http)) result.statsOk = false;
   }
 
   http.end();

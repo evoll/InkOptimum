@@ -508,6 +508,7 @@ STR_AUTO_TURN_STEP_HINT: "Влево/Вправо: 1с  Вверх/Вниз: 5с
 STR_SLEEP_TIMER_VALUE_FORMAT: "%u мин"
 STR_SLEEP_TIMER_STEP_HINT: "Влево/Вправо: 1 мин  Вверх/Вниз: 5 мин"
 STR_READING_STATS: "Статистика чтения"
+STR_SYNC_ON_SLEEP: "Синхронизация при сне"
 STR_EDIT: "Изменить"
 STR_MORE: "Ещё"
 STR_TRACK_READING_STATS: "Отслеживать статистику чтения"

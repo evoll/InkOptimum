@@ -34,6 +34,7 @@ class KOReaderCredentialStore {
   bool syncBookmarks = false;
   bool syncClippings = false;
   bool syncStats = false;
+  bool syncOnSleep = false;
   KOReaderSyncBehavior syncBehavior = KOReaderSyncBehavior::SMART;
 
   // Private constructor for singleton
@@ -96,6 +97,9 @@ class KOReaderCredentialStore {
   bool getSyncClippings() const { return syncClippings; }
   void setSyncStats(bool enabled) { syncStats = enabled; }
   bool getSyncStats() const { return syncStats; }
+  // Off by default: sends the reading position (and statistics) over Wi-Fi after the sleep screen is shown.
+  void setSyncOnSleep(bool enabled) { syncOnSleep = enabled; }
+  bool getSyncOnSleep() const { return syncOnSleep; }
 
   void setSyncBehavior(KOReaderSyncBehavior behavior) { syncBehavior = behavior; }
   KOReaderSyncBehavior getSyncBehavior() const { return syncBehavior; }

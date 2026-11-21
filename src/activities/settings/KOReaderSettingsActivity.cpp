@@ -25,11 +25,11 @@ std::string trimCredentialField(std::string value) {
   return value.substr(start, end - start);
 }
 
-constexpr int MENU_ITEMS = 10;
+constexpr int MENU_ITEMS = 11;
 const StrId menuNames[MENU_ITEMS] = {StrId::STR_USERNAME, StrId::STR_PASSWORD, StrId::STR_SYNC_SERVER_URL,
                                      StrId::STR_DOCUMENT_MATCHING, StrId::STR_SEND_DOCUMENT_METADATA,
                                      StrId::STR_BOOKMARKS, StrId::STR_CLIPPINGS, StrId::STR_READING_STATS,
-                                     StrId::STR_AUTHENTICATE, StrId::STR_KO_PROFILE};
+                                     StrId::STR_SYNC_ON_SLEEP, StrId::STR_AUTHENTICATE, StrId::STR_KO_PROFILE};
 }  // namespace
 
 void KOReaderSettingsActivity::onEnter() {
@@ -147,10 +147,14 @@ void KOReaderSettingsActivity::handleSelection() {
     KOREADER_STORE.saveToFile();
     requestUpdate();
   } else if (selectedIndex == 8) {
+    KOREADER_STORE.setSyncOnSleep(!KOREADER_STORE.getSyncOnSleep());
+    KOREADER_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 9) {
     // Authenticate
     if (!KOREADER_STORE.hasCredentials()) return;
     startActivityForResult(std::make_unique<KOReaderAuthActivity>(renderer, mappedInput), [](const ActivityResult&) {});
-  } else if (selectedIndex == 9) {
+  } else if (selectedIndex == 10) {
     // Server profile: cycle through the profiles created in the web settings.
     KOREADER_PROFILES.activateNext();
     requestUpdate();
@@ -193,8 +197,10 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
         } else if (index == 7) {
           return KOREADER_STORE.getSyncStats() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
         } else if (index == 8) {
-          return KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
+          return KOREADER_STORE.getSyncOnSleep() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
         } else if (index == 9) {
+          return KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
+        } else if (index == 10) {
           const auto& name = KOREADER_PROFILES.activeName();
           return name.empty() ? std::string(tr(STR_NOT_SET)) : name;
         }

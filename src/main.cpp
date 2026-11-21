@@ -82,6 +82,7 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include <TlsTrust.h>
 
 #include "util/PluginEventBus.h"
+#include "util/SleepSync.h"
 #include "util/PluginLocations.h"
 #include "weather/WeatherService.h"
 #include "InkMODState.h"
@@ -881,6 +882,16 @@ void enterDeepSleep(bool fromTimeout) {
   }
   if (!sleepEventsSentPass) activityManager.goToSleep(fromTimeout);
 
+  // Sync On Sleep: the reader has closed (its position snapshot is saved) and the sleep screen is on the panel.
+  // C3 has no heap for Wi-Fi + TLS beside the framebuffers, so it goes through the clean-boot restart as well.
+  if (!sleepEventsSentPass && bluetoothStopped && SleepSync::wanted(powerManager.getBatteryPercentage())) {
+#if FREEINK_MCU_C3
+    sendEventsFromCleanBoot = true;
+#else
+    SleepSync::run();
+#endif
+  }
+
   if (sleepEventsSentPass) {
     // The panel already holds the sleep screen, and the frame buffer saved for Quick Resume was written before the restart.
   } else if (resumeWithoutSplash) {
@@ -1271,6 +1282,7 @@ void setup() {
   if (snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND || snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT) {
     // Clean boot: no display, fonts or framebuffers yet, so Wi-Fi and TLS have the heap. Send, then on into the sleep.
     PluginEventBus::sendFromCleanBoot();
+    SleepSync::run();
     silentRebootTarget = snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_SEND_TIMEOUT ? SILENT_REBOOT_TARGET_SLEEP_TIMEOUT
                                                                                     : SILENT_REBOOT_TARGET_SLEEP;
     silentRebootMagic = SILENT_REBOOT_MAGIC;

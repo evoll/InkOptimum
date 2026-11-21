@@ -41,6 +41,8 @@
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
 #include "DailyReadingStore.h"
+#include "util/ReadingSessionLog.h"
+#include "util/SleepSync.h"
 #include "ClippingListActivity.h"
 #include "ChapterBuildGate.h"
 #include "ClippingSelectionActivity.h"
@@ -1466,6 +1468,7 @@ void EpubReaderActivity::onExit() {
   }
 
   if (epub) emitPluginExitEvents();
+  if (epub) captureSleepSyncSnapshot();
 
   BOOKMARKS.unload();
   section.reset();
@@ -6019,6 +6022,38 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
   return info;
 }
 
+// Sync On Sleep: the position the sleep sync sends later. The book is gone from memory by then, so everything the
+// upload needs is computed now. FB2-backed books are left out (their upload needs the source-section mapping).
+void EpubReaderActivity::captureSleepSyncSnapshot() {
+  if (!SleepSync::enabled() || epub->isFb2Package()) return;
+  const std::string book = epub->getPath();
+  SleepSync::Snapshot snap;
+  snap.document = KOReaderDocumentId::calculate(book);
+  if (snap.document.size() != 32) return;
+  const int page = section ? section->currentPage : nextPageNumber;
+  const int total = section ? section->pageCount : cachedChapterTotalPageCount;
+  InkMODPosition pos = {currentSpineIndex, page, total};
+  if (section && page >= 0 && page < section->pageCount) {
+    const uint16_t paragraphPage = page > 0 ? static_cast<uint16_t>(page - 1) : static_cast<uint16_t>(page);
+    if (const auto p = section->getParagraphIndexForPage(paragraphPage)) {
+      pos.paragraphIndex = *p;
+      pos.hasParagraphIndex = true;
+      snap.paragraph = *p;
+    }
+  }
+  const KOReaderPosition ko = ProgressMapper::toKOReader(epub, pos);
+  snap.xpath = ko.xpath;
+  snap.percentage = ko.percentage;
+  snap.spine = static_cast<uint16_t>(std::max(0, currentSpineIndex));
+  snap.page = static_cast<uint16_t>(std::max(0, page));
+  snap.totalPages = static_cast<uint16_t>(std::max(1, total));
+  const size_t slash = book.find_last_of("/\\");
+  snap.filename = slash == std::string::npos ? book : book.substr(slash + 1);
+  snap.title = epub->getTitle();
+  snap.authors = epub->getAuthor();
+  SleepSync::saveSnapshot(snap);
+}
+
 // reader.exit always; reader.session when at least 10 counted seconds and a trusted start time exist. The counted
 // seconds are the reader's own active-reading counter (page intervals past the idle limit are already excluded).
 void EpubReaderActivity::emitPluginExitEvents() {
@@ -6033,6 +6068,17 @@ void EpubReaderActivity::emitPluginExitEvents() {
   const std::string document = KOReaderDocumentId::calculate(book);
   if (document.size() != 32) return;
   const long duration = static_cast<long>(pluginSessionSeconds);
+  {
+    ReadingSessionLog::Entry entry;
+    entry.document = document;
+    entry.title = epub->getTitle();
+    entry.path = book;
+    entry.startEpoch = pluginSessionStartEpoch;
+    entry.seconds = static_cast<uint32_t>(duration);
+    entry.startBp = startBp;
+    entry.endBp = std::max(startBp, endBp);
+    ReadingSessionLog::append(entry);
+  }
   PluginEventBus::emit("reader.session",
                        {{"book", book},
                         {"document", document},

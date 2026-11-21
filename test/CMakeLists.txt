@@ -150,3 +150,4 @@ add_subdirectory(${REPO_ROOT}/lib/BlePageTurner/test BlePageTurnerTests)
 
 add_subdirectory(xtapp)
 add_subdirectory(reading_daily)
+add_subdirectory(reading_sessions)

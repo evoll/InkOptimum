@@ -25,4 +25,8 @@ class CrossPointExtendedSync {
   // loaded; the implementation only performs this on the CrossPoint server.
   static Result sync(const std::string& documentHash, const std::shared_ptr<Epub>& epub,
                      const std::string& epubPath, GfxRenderer& renderer);
+
+  // Sync On Sleep: only what needs no book in memory (reading-session log and the global statistics, each behind the
+  // Reading Stats toggle). Returns true when nothing failed.
+  static bool syncWithoutBook();
 };

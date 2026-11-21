@@ -1,0 +1,5 @@
+{
+  "name": "ReadingSessions",
+  "version": "1.0.0",
+  "description": "Reading-session log lines and the CrossPoint Sync upload batch (pure logic)"
+}

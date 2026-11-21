@@ -232,6 +232,7 @@ class EpubReaderActivity final : public Activity {
   void applyCoalescedNavigationIfReady();
   float getCurrentBookProgressPercent() const;
   void emitPluginExitEvents();
+  void captureSleepSyncSnapshot();
   void initializeCompletionPromptTrigger();
   bool isAtOrPastCompletionTrigger() const;
   bool shouldQueueCompletionPromptOnChapterExit() const;

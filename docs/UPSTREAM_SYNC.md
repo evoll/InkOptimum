@@ -127,3 +127,7 @@ The previous section said witchhunt's plugin-event commits "belong to crosspoint
 - b170fa5e (web: mark community plugins whose events run): no counterpart — our Plugins page has no community catalog judgement.
 - ca1a8c1e / #4551: touch crosspoint's `BaseTheme::applyHeaderStatus`; we never had #4551's header rewrite, so there is nothing to follow.
 - #4531 (Sync on Sleep, reading sessions, bookmarks sync): depends on a stack we lack (KOReaderServerType, SyncRequest, delta sync, SyncEngine, clipping sync, "CrossPoint Sync server" endpoints `/api/v1/stats/sessions`, `/api/v1/bookmarks/<doc>`). Waiting for a decision on which server to target.
+
+### 2026-11-21 — crosspoint #4531 ported (partly)
+Supersedes the "not ported" notes above. Ported: reading-session log + upload to `/api/v1/stats/sessions`, Sync On Sleep (setting, snapshot, clean-boot/in-place send, server-ahead guard). Not ported: crosspoint's own KOReaderServerType/SyncRequest/SyncEngine layering (our existing CrossPointExtendedSync stays the transport), bookmark delta/cursor protocol (see next entry once checked), FB2 books at sleep. Needs device + server verification.
+

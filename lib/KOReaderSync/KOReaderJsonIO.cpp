@@ -20,6 +20,7 @@ bool save(const KOReaderCredentialStore& store, const char* path) {
   doc["syncBookmarks"] = store.getSyncBookmarks();
   doc["syncClippings"] = store.getSyncClippings();
   doc["syncStats"] = store.getSyncStats();
+  doc["syncOnSleep"] = store.getSyncOnSleep();
   doc["syncBehavior"] = static_cast<uint8_t>(store.getSyncBehavior());
 
   FsFile file;
@@ -86,6 +87,7 @@ bool load(KOReaderCredentialStore& store, const char* json, bool* needsResave) {
   store.setSyncBookmarks(doc["syncBookmarks"] | false);
   store.setSyncClippings(doc["syncClippings"] | false);
   store.setSyncStats(doc["syncStats"] | false);
+  store.setSyncOnSleep(doc["syncOnSleep"] | false);
 
   if (hasSyncBehavior) {
     const uint8_t behavior = doc["syncBehavior"] | static_cast<uint8_t>(KOReaderSyncBehavior::SMART);
