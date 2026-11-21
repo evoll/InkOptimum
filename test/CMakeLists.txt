@@ -149,3 +149,4 @@ add_subdirectory(ble_remote_turn_gate)
 add_subdirectory(${REPO_ROOT}/lib/BlePageTurner/test BlePageTurnerTests)
 
 add_subdirectory(xtapp)
+add_subdirectory(reading_daily)

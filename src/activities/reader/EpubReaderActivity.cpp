@@ -40,6 +40,7 @@
 
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
+#include "DailyReadingStore.h"
 #include "ClippingListActivity.h"
 #include "ChapterBuildGate.h"
 #include "ClippingSelectionActivity.h"
@@ -1451,6 +1452,7 @@ void EpubReaderActivity::onExit() {
       if (hasSessionStartLocalDateTime) {
         stats.recordReadingSpan(sessionStartLocalDateTime, elapsedSecs);
         globalStats.recordReadingSpan(sessionStartLocalDateTime, elapsedSecs);
+        DailyReadingStore::recordSpan(sessionStartLocalDateTime, elapsedSecs);
       }
       if (elapsedSecs >= 120 && !stats.startDateManual && !stats.startDate.isValid() && hasSessionStartLocalDateTime) {
         stats.startDate = sessionStartLocalDateTime.date;

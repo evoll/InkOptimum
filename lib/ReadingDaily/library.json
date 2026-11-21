@@ -1,0 +1,5 @@
+{
+  "name": "ReadingDaily",
+  "version": "1.0.0",
+  "description": "Reading seconds per calendar day (pure logic + serialization)"
+}

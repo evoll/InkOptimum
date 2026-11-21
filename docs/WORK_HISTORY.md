@@ -140,3 +140,9 @@ Request: add what the host lacked, starting with text input.
 
 ## 2026-11-21 — web file manager rename keeps the extension
 - web/pages/files.js: opening the rename dialog selects only the base name of a file (crosspoint #4547); generated header rebuilt. Re-check section in UPSTREAM_SYNC.md (crosspoint 08d9d68d, witchhunt c699a618 pins; verdicts for #4545/#4549).
+
+## 2026-11-21 (2) — reading seconds per day
+- New lib/ReadingDaily (`DailyReadingSeconds`: per-day seconds, midnight splitting, 400-day cap, versioned serialization) with 8 native tests (test/reading_daily).
+- src/activities/reader/DailyReadingStore.{h,cpp}: `/.inkmod/daily_seconds.bin` (tmp + rename), `recordSpan`; EpubReaderActivity calls it next to the other statistics at session end (same thresholds: >= 10 s).
+- ctx.reader: `today_sec` and `days(from, to)` are now real (Env::readerDays, `ReaderDay`); `book_days` stays empty. Test updated. 983 native tests pass; corpus of 57 apps clean.
+- Source: closes the "minutes per day" gap noted in FEATURE_MATRIX (calendar); the calendar screen itself does not show minutes yet.

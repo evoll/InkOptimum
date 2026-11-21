@@ -58,11 +58,15 @@ struct Canvas {
   virtual int lineHeight(int size) = 0;
 };
 
-// Reading statistics for ctx.reader (manifest permission "reader"). Per-day seconds are not kept by this firmware
-// (only read / not read), so days() and book_days() are empty tables.
+// Reading statistics for ctx.reader (manifest permission "reader"). Seconds per day are kept since the daily file was
+// introduced (days() returns what exists); per-book per-day rows are not kept, so book_days() is an empty table.
 struct ReaderSummary {
   uint32_t totalSec = 0, todaySec = 0;
   int streakDays = 0, bestStreakDays = 0;
+};
+struct ReaderDay {
+  std::string date;  // YYYY-MM-DD
+  uint32_t sec = 0;
 };
 struct ReaderBook {
   std::string id, title, author, format;
@@ -97,6 +101,9 @@ struct Env {
   virtual bool qrEncode(const std::string& /*text*/, ImageData& /*out*/) { return false; }  // 1 pixel per module
   virtual bool readerSummary(ReaderSummary& /*out*/) { return false; }
   virtual bool readerBooks(std::vector<ReaderBook>& /*out*/) { return false; }  // recent books with their statistics
+  virtual bool readerDays(const std::string& /*from*/, const std::string& /*to*/, std::vector<ReaderDay>& /*out*/) {
+    return false;
+  }  // dates YYYY-MM-DD, inclusive
   virtual bool readerCurrent(ReaderBook& /*out*/) { return false; }             // the book read last
 };
 

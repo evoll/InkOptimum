@@ -21,6 +21,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/BookReadingStats.h"
+#include "activities/reader/DailyReadingStore.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -252,16 +253,38 @@ struct XtAppActivity::DeviceEnv final : xtapp::Env {
     err = "unsupported_format";
     return false;
   }
-  // ctx.reader: this firmware keeps totals and read / not read per day, not seconds per day.
+  // ctx.reader: totals, streaks and (since daily_seconds.bin) seconds per day; no per-book per-day rows.
   bool readerSummary(xtapp::ReaderSummary& out) override {
     const GlobalReadingStats st =
         GlobalReadingStats::hasSyncedStats() ? GlobalReadingStats::loadAggregated() : GlobalReadingStats::load();
     ReadingStatsDateTime now;
     const bool haveDate = getCurrentLocalReadingStatsDateTime(now) && now.date.isValid();
     out.totalSec = st.totalReadingSeconds;
-    out.todaySec = 0;
+    out.todaySec = haveDate ? DailyReadingStore::load().secondsFor(readingStatsDayIndex(now.date)) : 0;
     out.streakDays = st.currentReadingStreak(haveDate ? &now.date : nullptr);
     out.bestStreakDays = st.displayLongestReadingStreak();
+    return true;
+  }
+  static bool parseIsoDate(const std::string& s, ReadingStatsDate& d) {
+    int y = 0, m = 0, dd = 0;
+    if (s.size() != 10 || sscanf(s.c_str(), "%4d-%2d-%2d", &y, &m, &dd) != 3) return false;
+    d.year = static_cast<uint16_t>(y);
+    d.month = static_cast<uint8_t>(m);
+    d.day = static_cast<uint8_t>(dd);
+    return d.isValid();
+  }
+  bool readerDays(const std::string& from, const std::string& to, std::vector<xtapp::ReaderDay>& out) override {
+    ReadingStatsDate a, b;
+    if (!parseIsoDate(from, a) || !parseIsoDate(to, b)) return false;
+    const uint32_t lo = readingStatsDayIndex(a), hi = readingStatsDayIndex(b);
+    for (const auto& e : DailyReadingStore::load().entries()) {
+      if (e.dayIndex < lo || e.dayIndex > hi || e.seconds == 0) continue;
+      ReadingStatsDate d;
+      if (!readingStatsDateFromDayIndex(e.dayIndex, d)) continue;
+      char buf[16];
+      snprintf(buf, sizeof(buf), "%04u-%02u-%02u", d.year, d.month, d.day);
+      out.push_back({buf, e.seconds});
+    }
     return true;
   }
   static std::string bookCachePath(const std::string& path) {

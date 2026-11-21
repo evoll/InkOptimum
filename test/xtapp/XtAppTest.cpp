@@ -721,6 +721,13 @@ TEST(XtApp, ReaderStatisticsNeedThePermission) {
       o.push_back(b);
       return true;
     }
+    bool readerDays(const std::string& from, const std::string& to, std::vector<ReaderDay>& o) override {
+      if (from == "2026-11-01" && to == "2026-11-14") {
+        o.push_back({"2026-11-03", 1200});
+        o.push_back({"2026-11-09", 60});
+      }
+      return true;
+    }
     bool readerCurrent(ReaderBook& o) override {
       o.id = "/b/one.epub";
       o.title = "One";
@@ -738,7 +745,10 @@ TEST(XtApp, ReaderStatisticsNeedThePermission) {
     assert(#r:all_books() == 1)
     local c = r:current()
     assert(c.percent == 42 and c.id == '/b/one.epub')
-    assert(next(r:days('2026-11-01', '2026-11-14')) == nil and next(r:book_days('a', 'b')) == nil)
+    local d = r:days('2026-11-01', '2026-11-14')
+    assert(#d == 2 and d[1].date == '2026-11-03' and d[1].sec == 1200 and d[2].sec == 60)
+    assert(#r:days('2025-01-01', '2025-01-02') == 0)
+    assert(next(r:book_days('a', 'b')) == nil)
     assert(select(2, r:cover('x')) == 'not_found')
   )";
   {

@@ -61,7 +61,9 @@ failing on any Lua error. Timing, memory and the real display behaviour are unte
 
 Without the permission `ctx.reader` is `nil`. Methods (call with `:`): `summary()` → `{total_sec, today_sec, streak_days, best_streak_days}`;
 `books()` / `all_books()` → recent books `{id (path), title, author, format, read_sec, finished}` (`percent` is omitted: not available here);
-`current()` → the most recent book or `nil`; `days(a,b)` and `book_days(a,b)` → **empty tables**; `cover(id)` → `nil, "not_found"`.
-The field names follow the official host docs (tla `firmware-notes.md`) and what the community Bookworm app reads; the row formats of `days`/`book_days`
-are not documented, and this firmware stores only read / not read per day (no seconds per day), hence empty. `today_sec` is always 0. Statistics come from
-`GlobalReadingStats` and each recent book's `BookReadingStats`. `capabilities.reader` is true. Not tested on a device.
+`current()` → the most recent book or `nil`; `days('YYYY-MM-DD', 'YYYY-MM-DD')` → `{{date, sec}}` ascending, inclusive, **only days with recorded seconds**;
+`book_days(a, b)` → an **empty table** (per-book per-day rows are not stored); `cover(id)` → `nil, "not_found"`.
+Field names follow the official host docs (tla `firmware-notes.md`) and what the community Bookworm app reads (its test stand-in shows the `days` row format).
+`today_sec` and `days()` come from `/.inkmod/daily_seconds.bin`, which is written at the end of each EPUB/FB2/DOCX reading session (reading before this
+file existed is not back-filled; TXT/XTC sessions are not recorded by the firmware at all). Totals and streaks come from `GlobalReadingStats`, books from
+`RecentBooksStore` + `BookReadingStats`. `capabilities.reader` is true. Not tested on a device.

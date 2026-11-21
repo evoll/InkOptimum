@@ -1433,7 +1433,28 @@ int cReaderCurrent(lua_State* L) {  // ctx.reader:current() -> book | nil
   pushReaderBook(L, b);
   return 1;
 }
-int cReaderEmpty(lua_State* L) {  // days() / book_days(): per-day seconds are not recorded here
+int cReaderDays(lua_State* L) {  // ctx.reader:days(from, to) -> {{date = 'YYYY-MM-DD', sec}} ascending
+  size_t fl = 0, tl = 0;
+  const char* from = luaL_checklstring(L, 2, &fl);
+  const char* to = luaL_checklstring(L, 3, &tl);
+  std::vector<ReaderDay> v;
+  if (!S(L)->env->readerDays(std::string(from, fl), std::string(to, tl), v)) {
+    lua_newtable(L);
+    return 1;
+  }
+  lua_createtable(L, static_cast<int>(v.size()), 0);
+  int i = 1;
+  for (const auto& d : v) {
+    lua_createtable(L, 0, 2);
+    lua_pushlstring(L, d.date.data(), d.date.size());
+    lua_setfield(L, -2, "date");
+    lua_pushinteger(L, static_cast<lua_Integer>(d.sec));
+    lua_setfield(L, -2, "sec");
+    lua_rawseti(L, -2, i++);
+  }
+  return 1;
+}
+int cReaderEmpty(lua_State* L) {  // book_days(): per-book per-day rows are not recorded here
   lua_newtable(L);
   return 1;
 }
@@ -1879,7 +1900,7 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
     setFn(L, "books", cReaderBooks);
     setFn(L, "all_books", cReaderBooks);
     setFn(L, "current", cReaderCurrent);
-    setFn(L, "days", cReaderEmpty);
+    setFn(L, "days", cReaderDays);
     setFn(L, "book_days", cReaderEmpty);
     setFn(L, "cover", cReaderNoCover);
     lua_setfield(L, -2, "reader");
