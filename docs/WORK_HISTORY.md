@@ -197,3 +197,10 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 - NOT tested on a device. To check: (1) frame after the first partial refresh following a deep-sleep wake (the panel's previous-frame RAM must survive; if the minute digits ghost or garble, switch the tick to HALF/FULL refresh); (2) minute really changes on time over 10+ minutes and does not skip/lag; (3) battery drain per hour in Eco; (4) power-button wake lands on Home and Eco ticks stop; (5) X3 especially (C3: timer + GPIO wake together).
 - Builds: x3x4-release 5 839 049 B, x4pro-release 5 888 114 B; 993 native tests pass.
 
+
+## 2026-11-22 (12) — touch selection: page-end dwell; Fast AA analysis recorded
+- ClippingSelectionActivity: while dragging a finger selection, holding still (≤8 px) for 1000 ms on the last word of the page loads the next page (`loadPage(currentPage_+1)`); the anchor persists, so one drag selects across a page break (crosspoint behaviour). Dwell state is reset on touch press/release and when the finger leaves the last word. Needs another movement to trigger again.
+- Fast AA (crosspoint #4362, immediate-mode AA for X4 Pro/Classic): analysed, NOT ported. The SDK (995d9bd) supports it, but our HalDisplay/GfxRenderer lack the grayscale-capability layer and the reader has no one-pass path; port = rewrite of renderContents' gray path (20 files). Row in FEATURE_MATRIX updated; deferred.
+- crosspoint 177d0694 = Paper Mono board only (N/A). FEATURE_MATRIX: Crosspoint Sync and SDK rows updated to current state.
+- NOT tested on a device: threshold 1 s / slop 8 px feel; behaviour of the finger over the new page's words after the turn.
+- Builds: x3x4-release and x4pro-release OK.

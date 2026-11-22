@@ -143,3 +143,6 @@ Pin: witchhunt 4f1eb18c. crosspoint ca1a8c1e, paperio a1ba1059, crossink 9914146
 ### 2026-11-22 — re-check
 crosspoint 79ae14ff: only "remove conditional half refresh for EEGO A4" — not our hardware. SDK moved to 995d9bd and was taken (WORK_HISTORY 2026-11-22 (10)). paperio, crossink, inkmod, papyrix, witchhunt (4f1eb18c) unchanged.
 
+
+### 2026-11-22 — re-check 2
+crosspoint 177d0694: Paper Mono board only — N/A. Others unchanged.

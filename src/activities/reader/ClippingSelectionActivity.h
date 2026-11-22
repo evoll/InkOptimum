@@ -59,4 +59,11 @@ class ClippingSelectionActivity final : public Activity {
   bool touchOnWord_ = false;
   bool dragging_ = false;
   size_t pressWord_ = 0;
+  // Dragging onto the last word of the page and holding still for a second turns to the next page, so one drag can
+  // select across a page break (crosspoint's touch selection does the same).
+  static constexpr unsigned long DRAG_PAGE_ADVANCE_HOLD_MS = 1000;
+  static constexpr int DRAG_DWELL_SLOP_PX = 8;
+  unsigned long dwellStartMs_ = 0;
+  int dwellX_ = 0;
+  int dwellY_ = 0;
 };

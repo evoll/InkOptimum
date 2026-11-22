@@ -313,6 +313,7 @@ bool ClippingSelectionActivity::handleDragSelection() {
     const bool wasDragging = dragging_;
     dragging_ = false;
     touchOnWord_ = false;
+    dwellStartMs_ = 0;
     if (wasDragging) {
       requestUpdate();
       return true;
@@ -322,6 +323,7 @@ bool ClippingSelectionActivity::handleDragSelection() {
   if (mappedInput.wasScreenTouchPressed(x, y)) {
     dragging_ = false;
     touchOnWord_ = false;
+    dwellStartMs_ = 0;
     // Footer hints and the Save button keep their tap behaviour.
     const int saveTop = hintsTop - 56;
     if (y < (selecting_ && BoardConfig::isX4Pro() ? saveTop : hintsTop)) {
@@ -347,6 +349,21 @@ bool ClippingSelectionActivity::handleDragSelection() {
     if (cursor_ != w) {
       cursor_ = w;
       requestUpdate();
+    }
+    // Holding still on the last word of the page: continue on the next page.
+    const unsigned long now = millis();
+    if (w + 1 == words_.size() && currentPage_ + 1 < static_cast<int>(section_.pageCount)) {
+      if (dwellStartMs_ == 0 || std::abs(x - dwellX_) > DRAG_DWELL_SLOP_PX ||
+          std::abs(y - dwellY_) > DRAG_DWELL_SLOP_PX) {
+        dwellStartMs_ = now;
+        dwellX_ = x;
+        dwellY_ = y;
+      } else if (now - dwellStartMs_ >= DRAG_PAGE_ADVANCE_HOLD_MS) {
+        dwellStartMs_ = 0;
+        if (loadPage(currentPage_ + 1, false)) requestUpdate();
+      }
+    } else {
+      dwellStartMs_ = 0;
     }
     return true;
   }
