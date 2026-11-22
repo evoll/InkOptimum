@@ -10,7 +10,7 @@ Checked against the working repositories (shallow clones, commits since 2026-10-
 | Kapfilm/Paperio-Reader | `1537aaf` 2026-11-08 | 22 | releases 2.2.3–2.2.7: compact headings, full inline notes, Dropbox, Lyra covers, quotes, power actions |
 | bigbag/papyrix-reader | `a40c17d` 2026-11-07 | 33 | new: sleep image picker, Clock power modes, EPUB CSS rule cache, continuous chapters, mini-apps (2048, Go) |
 | uxjulia/CrossInk | `9914146` 2026-10-04 | 0 | nothing new since v1.6.1 |
-| Free-Ink/freeink-sdk | `3f3e4c1` 2026-11-14 | 142 | pin updated 2026-11-13 from `1e1cec2` to `e637713`, 2026-11-14 to `3f3e4c1`, local patches re-applied; see WORK_HISTORY 2026-11-13 |
+| Free-Ink/freeink-sdk | `995d9bd` 2026-11-21 | 142 | pin updated 2026-11-13 from `1e1cec2` to `e637713`, 2026-11-14 to `3f3e4c1`, 2026-11-22 to `995d9bd`, local patches re-applied; see WORK_HISTORY 2026-11-13 and 2026-11-22 |
 
 ## witchhunt-reader — what is there that we lack (grouped)
 * **Arabic**: shaper (`feat(shaper)` Arabic joining/plan, RTL runs), Arabic runs in the run scan, bidi fallback pieces, "an Arabic-script book is right to left, shaped, installed Arabic family" (`de38b57`), RTL page turns (`864333b`), RTL lists and tables on the right (`94c7bf1`), UI lines in visual order (`c3baa21`, `3899325`), bracket pair resolves only brackets (deviation 13, `f9c85f5`).
@@ -139,4 +139,7 @@ Bookmarks (same day): ids already match crosspoint's; delta probe, cursor paging
 - 2b4c797a (XTC percent on the sleep overlay shown 100x): we have no sleep-screen book overlay, so the bug cannot occur here.
 - Flash tooling (`bin/devices.local`, 035e927c, d632e95b) and serial lab commands (97b7527f, ac5d71cf): host/dev tooling, not firmware features.
 Pin: witchhunt 4f1eb18c. crosspoint ca1a8c1e, paperio a1ba1059, crossink 9914146e, inkmod 9af70eb, papyrix 12b7e6b unchanged.
+
+### 2026-11-22 — re-check
+crosspoint 79ae14ff: only "remove conditional half refresh for EEGO A4" — not our hardware. SDK moved to 995d9bd and was taken (WORK_HISTORY 2026-11-22 (10)). paperio, crossink, inkmod, papyrix, witchhunt (4f1eb18c) unchanged.
 

@@ -183,3 +183,9 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 ## 2026-11-21 (9) — upstream re-check (docs only)
 - witchhunt moved to 4f1eb18c (18 commits: float-free refactors, gray-level plans for sleep pictures, flash tooling). Judged not applicable / not ported, reasons in UPSTREAM_SYNC.md. Other references unchanged.
 
+## 2026-11-22 (10) — Free-Ink SDK pin 3f3e4c1 → 995d9bd
+- `freeink-sdk/` replaced with Free-Ink/freeink-sdk main `995d9bd` (2026-11-21; 36 commits over `3f3e4c1`): new Seeed reTerminal E1001 (UC8179) driver, EEGO A4 / Picco / UC8279C display work, text anti-aliasing overlay and per-display AA LUT, SSD1677/SSD2677 LUT changes (X3/X4/X4 Pro panels: check text sharpness and ghosting), SD card reads with size checks, bounds/null guards, list rows with a value-slot icon (`ListItem::valueIcon` is a pointer now), BoardConfig additions, InputManager change, SecureHttpClient header limits.
+- Our 6 local file patches (`FtFont.h/.cpp` sfnt tables, `SDCardManager/library.json`, `SecureClient.h/.cpp`, `SecureHttpClient.h` peer check / TLS 1.2) were re-applied by diff on the new tree: all hunks applied (offsets only), no conflicts; `libs/assets/Icons/lucide` still not vendored.
+- Builds: x3x4-release 5 836 429 B, x4pro-release 5 885 618 B (limit 6 553 600). Not tested on a device: the display LUT changes touch the panels we run, so page turns, ghosting and text sharpness on X3, X4 and X4 Pro are the first things to look at.
+- crosspoint 79ae14ff (EEGO A4 half-refresh removal): nothing for our boards. Other references unchanged.
+

@@ -96,15 +96,18 @@
 #if FREEINK_DEVICE_METALIO_EINK4
 #include "MetalioEInk4Board.h"
 #endif
+#ifndef FREEINK_DEVICE_E1001
+#define FREEINK_DEVICE_E1001 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_M5 || \
       FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER ||               \
       FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 ||         \
       FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
-      FREEINK_DEVICE_PICCO)
+      FREEINK_DEVICE_PICCO || FREEINK_DEVICE_E1001)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, SILKSCREEN, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, METALIO_EINK4, PICCO) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, SILKSCREEN, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, METALIO_EINK4, PICCO, E1001) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/Silkscreen/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -116,7 +119,7 @@
   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_LILYGO ||        \
    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO ||  \
    FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
-   FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_PICCO || FREEINK_DEVICE_E1001)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_C61 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
@@ -206,6 +209,12 @@
 #define FREEINK_DRIVER_PAPER_MONO 0
 #endif
 // EEGO Reader A4: UC8279C (768x552), UC81xx KW-family sibling of the UC8279 X4 driver.
+// Seeed reTerminal E1001: 7.5" 800x480 UC8179, own compact driver (not the X4-family one).
+#if FREEINK_DEVICE_E1001
+#define FREEINK_DRIVER_UC8179_E1001 1
+#else
+#define FREEINK_DRIVER_UC8179_E1001 0
+#endif
 #if FREEINK_DEVICE_EEGO_A4
 #define FREEINK_DRIVER_UC8279C 1
 #else
@@ -364,7 +373,7 @@
 #define FREEINK_CAP_RTC                                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4 || \
-   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || FREEINK_DEVICE_E1001)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -483,6 +492,7 @@ enum class Board : uint8_t {
   Picco,        // Onyx Picco / BOOX Tiles: ESP32-S3 (16MB flash, 8MB octal PSRAM), SSD1677/2677 800x480 portrait,
                 // capacitive touch, 2-ch I2C frontlight, 4-bit SDMMC, ADC battery. RE'd from retail
                 // firmware.
+  SeeedE1001,   // Seeed reTerminal E1001: ESP32-S3, UC8179 7.5" 800x480 SPI panel, 3 keys, microSD over SPI
   DeLink [[deprecated("renamed to Board::Silkscreen")]] = Silkscreen,
 };
 
@@ -1871,6 +1881,48 @@ constexpr BoardProfile PICCO = {
 static_assert(PICCO.displayWidth / 8 * PICCO.displayHeight == 48000,
               "Picco framebuffer must be 48,000 bytes (800/8 x 480)");
 
+// --- Seeed reTerminal E1001: ESP32-S3R8 (8 MB PSRAM, 32 MB flash), UC8179 7.5" 800x480 ---
+// Pins CONFIRMED on retail units with a bring-up sketch, then in daily use by the MicroSlate
+// firmware (3.0.x releases): full refresh 1.6 s; microSD over SPI (shared SCK7/MOSI9, MISO8, CS14,
+// power-enable 16 HIGH); I2C0 SDA19/SCL20 has the SHT40 0x44 + PCF8563 0x51; I2C1 SDA39/SCL40 has the
+// charger 0x6B; battery ADC GPIO1 (x2 divider, divider enable GPIO21 HIGH). Three active-low keys on
+// GPIO3 / GPIO4 / GPIO5. No touch, no frontlight. Panel mount is NO_FLIP.
+//   * The battery-divider enable is carried as a power "latch" (driven HIGH first thing in boot).
+//   * Keys: DigitalConfirmPowerHold. GPIO3 (green) = confirm click / sleep hold, GPIO4 = up, GPIO5 = down.
+//   * Not covered: the SHT40 (no EnvironmentSensor backend) and the charger on I2C1.
+constexpr BoardProfile SEEED_E1001 = {
+    Board::SeeedE1001,
+    "seeed_e1001",
+    InputStyle::DigitalConfirmPowerHold,  // green key: click confirms, hold sleeps (as on the Sticky)
+    DisplayController::UC8179,
+    800,
+    480,
+    // SCK7 MOSI9 CS10 DC11 RST12 BUSY13; the panel rail is always on.
+    {7, 9, 10, 11, 12, 13, PIN_UNASSIGNED},
+    4000000,  // displaySpiHz: probe-verified at 2 MHz; 4 MHz is the conservative first step up
+    // SD over SPI, sharing SCK/MOSI with the panel: {sclk, miso, mosi, cs, powerEnable, separateSpi, spiHz}.
+    {7, 8, 9, 14, 16, false, 10000000},
+    // {back, confirm, left, right, up, down, power, powerActiveHigh}
+    // Bench-verified pins: KEY0=GPIO3 (green) = confirm + power (click / hold), KEY1=GPIO4 up, KEY2=GPIO5 down.
+    {PIN_UNASSIGNED, 3, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 5, 3, false},
+    1,  // batteryAdc: GPIO1 through a 10k/10k divider
+    PIN_UNASSIGNED,
+    2.0f,
+    PIN_UNASSIGNED,
+    NO_TOUCH,
+    NO_FRONTLIGHT,
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,
+    NO_SDMMC,
+    NO_GAUGE,
+    NO_MIC,
+    // I2C0 SDA19/SCL20: PCF8563 RTC (0x51); the SHT40 (0x44) has no backend here.
+    {19, 20, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
+    1.0f,  // uiScale: button/keyboard device
+    // latch0 = GPIO21, the battery-divider enable: must be HIGH for the ADC reading to mean anything.
+    {21, PIN_UNASSIGNED}};
+
 // --- Xteink X4 Pro — ESP32-S3, 800x480 EPD + GT911 touch + warm/cold frontlight ---
 // Recovered from the OEM flash dump (x4pro_flash_dump.bin); full evidence and confidence
 // levels in docs/xteink-x4pro-support.md. This is a DISTINCT device from the C3
@@ -2158,13 +2210,16 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
                              FREEINK_DEVICE_ONEPAGE ? panelBytes(ONEPAGE) : 0u),
                         cmax(FREEINK_DEVICE_WS397 ? panelBytes(WS_EPAPER_397) : 0u,
                              cmax(FREEINK_DEVICE_METALIO_EINK4 ? panelBytes(METALIO_EINK4) : 0u,
-                                  FREEINK_DEVICE_PICCO ? panelBytes(PICCO) : 0u)))))));
+                                  cmax(FREEINK_DEVICE_PICCO ? panelBytes(PICCO) : 0u,
+                                       FREEINK_DEVICE_E1001 ? panelBytes(SEEED_E1001) : 0u))))))));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
 #if FREEINK_DEVICE_METALIO_EINK4
 constexpr BoardProfile DEFAULT_DEVICE = METALIO_EINK4;
+#elif FREEINK_DEVICE_E1001
+constexpr BoardProfile DEFAULT_DEVICE = SEEED_E1001;
 #elif FREEINK_DEVICE_WS397
 constexpr BoardProfile DEFAULT_DEVICE = WS_EPAPER_397;
 #elif FREEINK_DEVICE_PICCO
@@ -2362,6 +2417,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = PICCO;
       break;
 #endif
+#if FREEINK_DEVICE_E1001
+    case Board::SeeedE1001:
+      ACTIVE = SEEED_E1001;
+      break;
+#endif
     default:
       return false;
   }
@@ -2388,6 +2448,7 @@ inline bool isMetalioEInk4() { return ACTIVE.board == Board::MetalioEInk4; }
 inline bool isOnePage() { return ACTIVE.board == Board::OnePage; }
 inline bool isWsEpaper397() { return ACTIVE.board == Board::WsEpaper397; }
 inline bool isPicco() { return ACTIVE.board == Board::Picco; }
+inline bool isSeeedE1001() { return ACTIVE.board == Board::SeeedE1001; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }
@@ -2417,6 +2478,25 @@ inline bool latchConflictsWithBus(int8_t pin) {
   return false;
 }
 
+// Release any pad hold left by deep sleep and drive `pin` to `level` as an output.
+// Picco: the level and mode are set while the hold still freezes the pad, so a
+// held pin goes straight to `level`. Releasing first lets it float and dip LOW
+// before reaching `level`, which drops the keep-alive latch and cuts power on wake.
+inline void driveReleasingHold(int8_t pin, uint8_t level) {
+  if (pin < 0) return;
+  const auto g = static_cast<gpio_num_t>(pin);
+#if FREEINK_DEVICE_PICCO
+  gpio_set_level(g, level);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+  gpio_hold_dis(g);
+#else
+  gpio_hold_dis(g);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+#endif
+}
+
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
 // Sticky) must call this first thing in setup() or the board powers off when
 // the user releases the power button. Releasing the pins (driving them LOW)
@@ -2436,23 +2516,17 @@ inline void holdPowerRails() {
 #endif
       continue;
     }
-    // A previous power-off may have latched the pin LOW with gpio_hold_en —
-    // a state that survives a reset and a USB-powered deep-sleep wake, and
-    // silently defeats the digitalWrite below. Release it first.
-    gpio_hold_dis(static_cast<gpio_num_t>(pin));
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    // A sleep or power-off hold survives a reset and a USB-powered deep-sleep
+    // wake; a latch held HIGH must not dip while that hold is released.
+    driveReleasingHold(pin, HIGH);
   }
   // Charger enable (see PowerConfig::chargeEnable). Held with gpio_hold_en so the
   // level survives esp_sleep_config_gpio_isolate() and deep sleep (PowerManager
   // calls gpio_deep_sleep_hold_en() before sleeping) — the charger must stay
   // enabled whether the firmware is awake or asleep.
   if (const int8_t ce = ACTIVE.power.chargeEnable; ce >= 0 && !latchConflictsWithBus(ce)) {
-    const auto g = static_cast<gpio_num_t>(ce);
-    gpio_hold_dis(g);
-    pinMode(ce, OUTPUT);
-    digitalWrite(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
-    gpio_hold_en(g);
+    driveReleasingHold(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(ce));
   }
 #if FREEINK_DEVICE_PICCO
   // Picco: the GPIO0 enable carried as sd.powerEnable also feeds peripherals the
@@ -2471,13 +2545,9 @@ inline void holdPowerRails() {
 // SDCardManager::begin() does this itself; apps that skip SD should call this
 // once before display.begin(). No-op on boards without a switched SD rail.
 inline void releaseSdRail() {
-  if (ACTIVE.sd.powerEnable >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
-    pinMode(ACTIVE.sd.powerEnable, OUTPUT);
-    // Drive the enable to its ON level: HIGH for active-high rails, LOW for the
-    // active-low ones (X4 Pro's GPIO5 powers the card while held LOW).
-    digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
-  }
+  // ON level: HIGH for active-high rails, LOW for the active-low ones (X4 Pro's
+  // GPIO5 powers the card while held LOW).
+  driveReleasingHold(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   if (ACTIVE.sd.cs >= 0) {
     pinMode(ACTIVE.sd.cs, OUTPUT);
     digitalWrite(ACTIVE.sd.cs, HIGH);
