@@ -698,6 +698,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       currentTextBlock->setBlockStyle(combinedStyle);
       // The reused block may have been created on the other side of a heading boundary.
       currentTextBlock->setHyphenationEnabled(blockHyphenationEnabled());
+      currentTextBlock->setHeading(headingBig_);
 
       flushPendingAnchor();
       return;
@@ -721,6 +722,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
 
   wordsExtractedInBlock = 0;
   paragraphTopSpacingApplied = false;
+  currentTextBlock->setHeading(headingBig_);
   currentTextBlock->setLetterSpacing(vertical_ ? 0 : LetterSpacing::pixels());
   // A new paragraph inside an open <bdi>/<bdo>/dir element stays inside it.
   for (const auto& elem : bidiStack_) {
@@ -2204,6 +2206,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
     self->enterBlockCssStyle(cssStyle);
     self->headingDepth = std::min(self->headingDepth, self->depth);
+    self->headingBig_ = HeadingFont::get() != 0 && name[0] != '\0' && (name[1] >= '1' && name[1] <= '3');
     auto headerBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Center, self->viewportWidth);
     headerBlockStyle.textAlignDefined = true;
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
@@ -2943,6 +2946,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Leaving heading: the block opened after it hyphenates again
   if (self->headingDepth == self->depth) {
     self->headingDepth = INT_MAX;
+    self->headingBig_ = false;
   }
 
   // Leaving bold tag
@@ -3164,8 +3168,9 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   line->setVertical(vertical_);
 
   // A line carrying ruby gets the annotation's height above it: the half-size reading sits over the base.
-  const int rubyExtra = line->hasRuby() ? renderer.getLineHeight(fontId) / 2 : 0;
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression + rubyExtra;
+  const int lineFont = lineFontId(line->isHeading());
+  const int rubyExtra = line->hasRuby() ? renderer.getLineHeight(lineFont) / 2 : 0;
+  const int lineHeight = renderer.getLineHeight(lineFont) * lineCompression + rubyExtra;
 
   if (!currentPage) {
     if (!startNewPage("line layout")) {
@@ -3221,7 +3226,7 @@ void ChapterHtmlSlimParser::makePages() {
   }
   inlineAnchorIds.clear();
 
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  const int lineHeight = renderer.getLineHeight(lineFontId(currentTextBlock->isHeading())) * lineCompression;
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();

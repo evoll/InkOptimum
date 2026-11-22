@@ -9,6 +9,7 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1, VISUAL = 2 }
 #include <EpdFontFamily.h>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -62,5 +63,10 @@ class GfxRenderer {
                 EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                 BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO) const {
     drawn.push_back({x, y, text, style});
+  }
+  // Heading fonts are never loaded in these tests.
+  const std::map<int, EpdFontFamily>& getFontMap() const {
+    static const std::map<int, EpdFontFamily> none;
+    return none;
   }
 };

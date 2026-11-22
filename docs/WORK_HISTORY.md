@@ -204,3 +204,14 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 - crosspoint 177d0694 = Paper Mono board only (N/A). FEATURE_MATRIX: Crosspoint Sync and SDK rows updated to current state.
 - NOT tested on a device: threshold 1 s / slop 8 px feel; behaviour of the finger over the new page's words after the turn.
 - Builds: x3x4-release and x4pro-release OK.
+
+## 2026-11-23 (13) — larger h1–h3 headings (witchhunt/Paperio idea), deferred item 1
+- Design: no per-block font id in the cache. A line is flagged "heading" (bit 1 of the TextBlock vertical byte, so the line record size is unchanged; reader accepts 0..3). The heading font is one global (`lib/Epub/Epub/HeadingFont.h`: `set/get/resolve/layoutKey`), published by the SD font system.
+- lib/EpdFont/SdCardFontManager: second slot `loadHeadingFont` (bitmap `.cpfont` or vector TTF/OTF via a second `VectorState`): smallest size ≥ 1.25× the body point size, else the family's largest; never the same size; `unloadHeadingFont`; `unloadAll` drops it. `loadVectorFamily/unloadVector` now take the slot.
+- src/SdCardFontSystem: `ensureLoaded` = `ensureBodyLoaded` + `syncHeadingFont` (follows SETTINGS.largeHeadings; bitmap sizes only when the largest heap block ≥ 70 KB; a failed try is not repeated for the same family@size); release/preview reset it.
+- Parser (ChapterHtmlSlimParser): `headingBig_` set on h1–h3 open (only when a heading font is loaded), cleared with `headingDepth`; `startNewTextBlock` marks the new/reused block; `addLineToPage`/`makePages` use the heading font's line height. ParsedText::layoutAndExtractLines measures with the heading font, marks the resulting TextBlocks; TextBlock::render draws with `HeadingFont::resolve` (falls back to the body font if the heading font is gone).
+- Section cache v83: the header font id is `HeadingFont::layoutKey(fontId)` (changes when the heading font is loaded/dropped → cache rebuilt); book-wide page-count signature includes the heading font id.
+- New setting "Larger headings" (`largeHeadings`, default on, Reader category; en/ru).
+- Known limits: headings inside table cells are measured with the body line height; h4–h6 unchanged; TXT/FB2 headings follow the same parser path only where they go through ChapterHtmlSlimParser.
+- NOT tested on a device. To check: (1) heading size/spacing in a book with SD font (bitmap and TTF); (2) page numbers/progress after the cache rebuild; (3) RAM on C3 with the second bitmap size (heading font is skipped below 70 KB largest block); (4) toggling the setting rebuilds the section; (5) dictionary/selection on heading words (positions come from the stored x offsets).
+- Tests: 993 native pass (GfxRenderer stubs got `getFontMap`).

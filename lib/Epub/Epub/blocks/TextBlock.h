@@ -72,12 +72,16 @@ class TextBlock final : public Block {
   // Set by the page's builder; kept in the cache.
   void setVertical(const bool vertical) { vertical_ = vertical; }
   bool isVertical() const { return vertical_; }
+  // A line of an h1-h3 heading: laid out and drawn in the heading font (HeadingFont.h) while one is loaded.
+  void setHeading(const bool heading) { heading_ = heading; }
+  bool isHeading() const { return heading_; }
   bool isEmpty() override { return words.empty(); }
   size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines
   void render(const GfxRenderer& renderer, int fontId, int x, int y, bool foregroundBlack = true) const;
  private:
   bool vertical_ = false;
+  bool heading_ = false;
  public:
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;

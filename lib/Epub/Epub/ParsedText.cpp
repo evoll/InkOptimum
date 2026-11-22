@@ -1,3 +1,4 @@
+#include "HeadingFont.h"
 #include "ParsedText.h"
 #include "LetterSpacing.h"
 #include "WordSpacing.h"
@@ -642,7 +643,7 @@ void ParsedText::shapeIndicWords(const GfxRenderer& renderer, const int fontId) 
   }
 }
 
-void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
+void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int bodyFontId, const uint16_t viewportWidth,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                                        const bool includeLastLine, const size_t maxLines,
                                        const size_t trailingLinesToKeep, const bool paragraphContinuation) {
@@ -650,6 +651,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   if (words.empty()) {
     return;
   }
+  const int fontId = heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId;
 
   if (!blockStyle.directionDefined && hasRtlWord) {
     const size_t wordsToScan = std::min(words.size(), RTL_PARAGRAPH_PROBE_WORDS);
@@ -1743,8 +1745,10 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
   }
 
-  processLine(std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
-                                          std::move(outBoundaries), std::move(outSuffixX),
-                                          std::move(outGuideDotXOffset), std::move(outBackgroundBlack), blockStyle,
-                                          std::move(outRuby), std::move(outDisplay)));
+  auto lineBlock = std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
+                                               std::move(outBoundaries), std::move(outSuffixX),
+                                               std::move(outGuideDotXOffset), std::move(outBackgroundBlack), blockStyle,
+                                               std::move(outRuby), std::move(outDisplay));
+  lineBlock->setHeading(heading_ && fontId != 0 && fontId == HeadingFont::get());
+  processLine(std::move(lineBlock));
 }

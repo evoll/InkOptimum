@@ -100,6 +100,9 @@ class ParsedText {
   void addSpacelessCjkWord(const std::string& word, EpdFontFamily::Style style, bool attachToPrevious,
                            bool backgroundBlack);
 
+ private:
+  bool heading_ = false;
+
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool forceParagraphIndents = false,
                       const bool hyphenationEnabled = false, const bool bionicReadingEnabled = false,
@@ -123,6 +126,9 @@ class ParsedText {
   // Bidi markup. bidiOpen: an element with `cp` (U+202A-202E, U+2066-2068) starts; it attaches to the next word added.
   // bidiClose: the element ends (isolate: PDI, else PDF); it attaches to the last word, or cancels an empty element.
   void setLetterSpacing(const int px) { letterSpacingPx_ = px; }
+  // An h1-h3 block: its lines use the heading font (HeadingFont.h) when one is loaded.
+  void setHeading(const bool heading) { heading_ = heading; }
+  bool isHeading() const { return heading_; }
   void bidiOpen(uint32_t cp);
   void bidiClose(bool isolate);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

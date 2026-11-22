@@ -516,6 +516,8 @@ class InkMODSettings {
   // flashing full cleanup. Default stays full for upgrade compatibility.
   uint8_t refreshAction = REFRESH_ACTION_FULL;
   uint8_t hyphenationEnabled = 0;
+  // Headings (h1-h3) in a larger size of the SD reading font, when the family has one and memory allows.
+  uint8_t largeHeadings = 1;
 
   // Reader screen margin settings
   uint8_t screenMargin = 5;

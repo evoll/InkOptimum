@@ -1,3 +1,4 @@
+#include "HeadingFont.h"
 #include "Epub/LayoutQuirks.h"
 #include "Section.h"
 #include "FlowContext.h"
@@ -34,7 +35,7 @@ constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
 // the anti-giant-gap guard. Existing section caches contain already-positioned
 // word x-coordinates, so they must be rebuilt or the Justify setting will keep
 // showing the pre-fix ragged-right layout.
-constexpr uint8_t SECTION_FILE_VERSION = 82;  // v82: an inline id in a paragraph is recorded at the page of that paragraph (witchhunt c67fb6b7); v81: headings are not hyphenated (crosspoint #4442); v80: layout flags are a mixed-radix byte (letter spacing); upstream upstream 1.1.10 FB2 dialogue gaps (_layout65) merged; v79: bidi line pieces (TextBlock display forms); v78: Indic words shaped into glyph keys; v77: vertical-rl sections (page block extent, TextBlock flag, request in the header); v76: CJK lines justify flush; v75: whole-em grid in Chinese and Japanese books; v74: CJK punctuation widths and CJK-Latin gap, marks laid out as words of their own; v73: ornament mode packed into the image-rendering header byte; v72: SD-font layout rounds each glyph advance to a pixel (matches drawing); v71: CJK tokenization + ruby in TextBlock; v70: inkMOD 1.1.10 layout changes (ParsedText, ChapterHtmlSlimParser) merged
+constexpr uint8_t SECTION_FILE_VERSION = 83;  // v83: h1-h3 lines carry a heading flag (TextBlock vertical byte bit 1) and the header font id folds in the heading font;  v82: an inline id in a paragraph is recorded at the page of that paragraph (witchhunt c67fb6b7); v81: headings are not hyphenated (crosspoint #4442); v80: layout flags are a mixed-radix byte (letter spacing); upstream upstream 1.1.10 FB2 dialogue gaps (_layout65) merged; v79: bidi line pieces (TextBlock display forms); v78: Indic words shaped into glyph keys; v77: vertical-rl sections (page block extent, TextBlock flag, request in the header); v76: CJK lines justify flush; v75: whole-em grid in Chinese and Japanese books; v74: CJK punctuation widths and CJK-Latin gap, marks laid out as words of their own; v73: ornament mode packed into the image-rendering header byte; v72: SD-font layout rounds each glyph advance to a pixel (matches drawing); v71: CJK tokenization + ruby in TextBlock; v70: inkMOD 1.1.10 layout changes (ParsedText, ChapterHtmlSlimParser) merged
                                               // v69: a block's bold/italic/underline reach the blocks nested inside it
                                               // v68: an <img> whose entry name has no extension is laid out as an image
                                               // v67: text declared at font-size < 10% of the body (watermark spans) is dropped
@@ -320,7 +321,8 @@ bool Section::writeSectionFileHeader(const int fontId, const float lineCompressi
                                    sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   return serialization::tryWritePod(file, SECTION_CACHE_MAGIC) &&
-         serialization::tryWritePod(file, SECTION_FILE_VERSION) && serialization::tryWritePod(file, fontId) &&
+         serialization::tryWritePod(file, SECTION_FILE_VERSION) &&
+         serialization::tryWritePod(file, HeadingFont::layoutKey(fontId)) &&
          serialization::tryWritePod(file, lineCompression) && serialization::tryWritePod(file, extraParagraphSpacing) &&
          serialization::tryWritePod(file, forceParagraphIndents) &&
          serialization::tryWritePod(file, paragraphAlignment) && serialization::tryWritePod(file, viewportWidth) &&
@@ -443,7 +445,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
       return false;
     }
 
-    if (fontId != fileFontId || lineCompression != fileLineCompression ||
+    if (HeadingFont::layoutKey(fontId) != fileFontId || lineCompression != fileLineCompression ||
         extraParagraphSpacing != fileExtraParagraphSpacing || forceParagraphIndents != fileForceParagraphIndents ||
         paragraphAlignment != fileParagraphAlignment || viewportWidth != fileViewportWidth ||
         viewportHeight != fileViewportHeight || hyphenationEnabled != fileHyphenationEnabled ||

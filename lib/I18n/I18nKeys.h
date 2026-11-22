@@ -161,6 +161,7 @@ enum class StrId : uint16_t {
   STR_PUBLISHER_PAGE_NUMBERS,
   STR_PARA_ALIGNMENT,
   STR_HYPHENATION,
+  STR_LARGE_HEADINGS,
   STR_TIME_TO_SLEEP,
   STR_SHOW_HIDDEN_FILES,
   STR_HIDE_FILE_EXTENSION,
@@ -1036,7 +1037,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x1EA08F9Au;
+constexpr uint32_t I18N_KEY_HASH = 0x7F4FEA5Du;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

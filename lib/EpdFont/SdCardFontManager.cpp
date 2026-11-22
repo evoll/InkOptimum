@@ -94,7 +94,9 @@ SdCardFontManager::~SdCardFontManager() {
   }
 #if INKMOD_VECTOR_FONTS
   delete vector_;
+  delete headingVector_;
 #endif
+  delete headingBitmap_.font;
 }
 
 // FNV-1a continuation: seeds with contentHash, then hashes family name + point size.
@@ -127,7 +129,7 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
   }
 
   if (family.vector) {
-    if (!loadVectorFamily(family, renderer, selected->pointSize)) return false;
+    if (!loadVectorFamily(family, renderer, selected->pointSize, vector_, vectorFontId_)) return false;
     loadedFamilyName_ = family.name;
     loadedPointSize_ = selected->pointSize;
     return true;
@@ -168,7 +170,7 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
 }
 
 bool SdCardFontManager::loadVectorFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
-                                         const uint8_t pointSize) {
+                                         const uint8_t pointSize, VectorState*& slot, int& fontIdSlot) {
 #if INKMOD_VECTOR_FONTS
   auto* state = new (std::nothrow) VectorState();
   if (!state) {
@@ -196,8 +198,8 @@ bool SdCardFontManager::loadVectorFamily(const SdCardFontFamilyInfo& family, Gfx
     return false;
   }
   renderer.insertFont(fontId, state->font.family());
-  vector_ = state;
-  vectorFontId_ = fontId;
+  slot = state;
+  fontIdSlot = fontId;
   LOG_DBG("SDMGR", "Loaded TTF family %s size=%u id=%d", family.name.c_str(), pointSize, fontId);
   return true;
 #else
@@ -208,21 +210,71 @@ bool SdCardFontManager::loadVectorFamily(const SdCardFontFamilyInfo& family, Gfx
 #endif
 }
 
-void SdCardFontManager::unloadVector(GfxRenderer& renderer) {
+void SdCardFontManager::unloadVector(GfxRenderer& renderer, VectorState*& slot, int& fontIdSlot) {
 #if INKMOD_VECTOR_FONTS
-  if (vector_) {
-    renderer.removeFont(vectorFontId_);
-    delete vector_;
-    vector_ = nullptr;
+  if (slot) {
+    renderer.removeFont(fontIdSlot);
+    delete slot;
+    slot = nullptr;
   }
 #else
   (void)renderer;
+  (void)slot;
 #endif
-  vectorFontId_ = 0;
+  fontIdSlot = 0;
+}
+
+bool SdCardFontManager::loadHeadingFont(const SdCardFontFamilyInfo& family, GfxRenderer& renderer) {
+  unloadHeadingFont(renderer);
+  if (loadedFamilyName_ != family.name || loadedPointSize_ == 0) return false;
+
+  // Smallest size that is clearly bigger than the body (>= 1.25x, rounded up); the largest the family has otherwise.
+  const unsigned wanted = (static_cast<unsigned>(loadedPointSize_) * 5u + 3u) / 4u;
+  const SdCardFontFileInfo* chosen = nullptr;
+  const SdCardFontFileInfo* largest = nullptr;
+  for (const auto& f : family.files) {
+    if (f.style != 0) continue;
+    if (!largest || f.pointSize > largest->pointSize) largest = &f;
+    if (f.pointSize >= wanted && (!chosen || f.pointSize < chosen->pointSize)) chosen = &f;
+  }
+  if (!chosen) chosen = largest;
+  if (!chosen || chosen->pointSize <= loadedPointSize_) return false;
+
+  if (family.vector) {
+    return loadVectorFamily(family, renderer, chosen->pointSize, headingVector_, headingVectorFontId_);
+  }
+
+  auto* font = new (std::nothrow) SdCardFont();
+  if (!font) return false;
+  if (!font->load(chosen->path.c_str())) {
+    delete font;
+    return false;
+  }
+  const int fontId = computeFontId(font->contentHash(), family.name.c_str(), chosen->pointSize);
+  if (renderer.getFontMap().count(fontId) != 0) {
+    delete font;
+    return false;
+  }
+  renderer.registerSdCardFont(fontId, font);
+  EpdFontFamily fontFamily(font->getEpdFont(0), font->getEpdFont(1), font->getEpdFont(2), font->getEpdFont(3));
+  renderer.insertFont(fontId, fontFamily);
+  headingBitmap_ = {font, fontId, chosen->pointSize};
+  LOG_DBG("SDMGR", "Loaded heading font %s size=%u id=%d", chosen->path.c_str(), chosen->pointSize, fontId);
+  return true;
+}
+
+void SdCardFontManager::unloadHeadingFont(GfxRenderer& renderer) {
+  unloadVector(renderer, headingVector_, headingVectorFontId_);
+  if (headingBitmap_.font) {
+    renderer.removeFont(headingBitmap_.fontId);  // also drops the renderer's SD-font registration
+    delete headingBitmap_.font;
+  }
+  headingBitmap_ = {nullptr, 0, 0};
 }
 
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
-  unloadVector(renderer);
+  unloadHeadingFont(renderer);
+  unloadVector(renderer, vector_, vectorFontId_);
   renderer.clearSdCardFonts();
   for (auto& lf : loaded_) {
     renderer.removeFont(lf.fontId);

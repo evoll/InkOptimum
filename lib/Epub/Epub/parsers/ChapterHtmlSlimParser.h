@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../HeadingFont.h"
 #include <Epub/FootnotePreviews.h>
 #include <expat.h>
 
@@ -62,6 +63,10 @@ class ChapterHtmlSlimParser {
   // Depth of the open h1-h6, INT_MAX outside one. Blocks started inside it are not hyphenated: a title
   // split mid-word across lines reads badly (crosspoint #4442).
   int headingDepth = INT_MAX;
+  // Inside an h1-h3 while a heading font is loaded: new blocks are marked as heading blocks.
+  bool headingBig_ = false;
+  // The font a line of this kind is measured and drawn with.
+  int lineFontId(const bool heading) const { return heading ? HeadingFont::resolve(renderer, fontId) : fontId; }
   bool blockHyphenationEnabled() const { return hyphenationEnabled && headingDepth == INT_MAX; }
   int italicUntilDepth = INT_MAX;
   int underlineUntilDepth = INT_MAX;

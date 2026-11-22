@@ -7,6 +7,10 @@
 
 #include <new>
 
+#include <Epub/HeadingFont.h>
+
+#include <MemoryBudget.h>
+
 #include "InkMODSettings.h"
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
@@ -41,6 +45,7 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
   }
 
   applyUiFont(renderer);
+  syncHeadingFont(renderer);
 
   LOG_DBG("SDFS", "SD font system ready (%s)", registryDirty_.load() ? "font scan deferred" : "fonts discovered");
 }
@@ -81,6 +86,33 @@ void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
 }
 
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+  ensureBodyLoaded(renderer);
+  syncHeadingFont(renderer);
+}
+
+void SdCardFontSystem::syncHeadingFont(GfxRenderer& renderer) {
+  if (!SETTINGS.largeHeadings || manager_.currentFamilyName().empty()) {
+    manager_.unloadHeadingFont(renderer);
+    headingAttemptKey_.clear();
+    HeadingFont::set(0);
+    return;
+  }
+  const std::string key = manager_.currentFamilyName() + "@" + std::to_string(manager_.currentPointSize());
+  if (manager_.headingFontId() == 0 && key != headingAttemptKey_) {
+    headingAttemptKey_ = key;
+    const auto* family = registry_.findFamily(manager_.currentFamilyName());
+    // A bitmap size keeps its tables in RAM: only take it when the heap has clear room beside the body font.
+    constexpr uint32_t kBitmapHeadroom = 70 * 1024;
+    if (family && (family->vector || MemoryBudget::snapshot().maxAllocHeap >= kBitmapHeadroom)) {
+      if (manager_.loadHeadingFont(*family, renderer)) {
+        LOG_DBG("SDFS", "Heading font loaded for %s", key.c_str());
+      }
+    }
+  }
+  HeadingFont::set(manager_.headingFontId());
+}
+
+void SdCardFontSystem::ensureBodyLoaded(GfxRenderer& renderer) {
   // If the web server (or another task) installed/deleted fonts, re-discover.
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
@@ -152,6 +184,8 @@ void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) {
   // for a low-memory operation. In release LOG_DBG is compiled out entirely.
   LOG_DBG("SDFS", "Releasing SD card font before low-memory operation: %s", manager_.currentFamilyName().c_str());
   manager_.unloadAll(renderer);
+  headingAttemptKey_.clear();
+  HeadingFont::set(0);
 }
 
 int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEnum*/) const {
@@ -188,6 +222,8 @@ int SdCardFontSystem::loadPreviewFamily(const std::string& familyName, GfxRender
     }
   }
 
+  HeadingFont::set(0);  // loadFamily replaces whatever was resident, the heading size included
+  headingAttemptKey_.clear();
   if (!manager_.loadFamily(*family, renderer, targetPointSize, previewSizeStep)) return 0;
   return manager_.getFontId(familyName);
 }

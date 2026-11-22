@@ -4,6 +4,7 @@
 #include <BlePageTurner.h>
 
 #include <Epub/FlowContext.h>
+#include <Epub/HeadingFont.h>
 #include <Epub/LetterSpacing.h>
 #include <Epub/WordSpacing.h>
 #include <Epub/LayoutQuirks.h>
@@ -227,6 +228,7 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
   uint32_t hash = 2166136261U;
   hashLayoutValue(hash, FB2_LAYOUT_SEMANTICS_GENERATION);
   hashLayoutValue(hash, fontId);
+  hashLayoutValue(hash, HeadingFont::get());
   const float lineCompression = SETTINGS.getReaderLineCompression();
   hashLayoutValue(hash, lineCompression);
   hashLayoutValue(hash, SETTINGS.extraParagraphSpacing);

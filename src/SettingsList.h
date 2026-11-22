@@ -436,6 +436,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_HYPHENATION, &InkMODSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER));
+    add(SettingInfo::Toggle(StrId::STR_LARGE_HEADINGS, &InkMODSettings::largeHeadings, "largeHeadings",
+                            StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_TEXT_AA, &InkMODSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER));
     add(SettingInfo::Enum(StrId::STR_HIGHLIGHT_STYLE, &InkMODSettings::savedHighlightStyle,

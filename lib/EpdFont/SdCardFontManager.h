@@ -22,6 +22,14 @@ class SdCardFontManager {
   // Returns true on success.
   bool loadFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t targetPointSize, uint8_t sizeStep);
 
+  // Second, larger size of the already loaded family for h1-h3 headings (target = ~1.25x the body size, never the
+  // same size). Loaded only when `family` is the family loadFamily() just loaded; a failure leaves the manager as it
+  // was (headings simply use the body font). Returns true when a heading font is now resident.
+  bool loadHeadingFont(const SdCardFontFamilyInfo& family, GfxRenderer& renderer);
+  void unloadHeadingFont(GfxRenderer& renderer);
+  // Font ID of the loaded heading size, 0 when none.
+  int headingFontId() const { return headingVectorFontId_ != 0 ? headingVectorFontId_ : headingBitmap_.fontId; }
+
   // Unload everything, unregister from renderer.
   void unloadAll(GfxRenderer& renderer);
 
@@ -46,10 +54,14 @@ class SdCardFontManager {
 
   // TrueType/OpenType family (PSRAM boards): state lives in the .cpp so this header stays light.
   struct VectorState;
-  bool loadVectorFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize);
-  void unloadVector(GfxRenderer& renderer);
+  bool loadVectorFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize,
+                        VectorState*& slot, int& fontIdSlot);
+  void unloadVector(GfxRenderer& renderer, VectorState*& slot, int& fontIdSlot);
   VectorState* vector_ = nullptr;
   int vectorFontId_ = 0;
+  VectorState* headingVector_ = nullptr;
+  int headingVectorFontId_ = 0;
+  LoadedFont headingBitmap_{nullptr, 0, 0};
 
   std::string loadedFamilyName_;
   uint8_t loadedPointSize_ = 0;

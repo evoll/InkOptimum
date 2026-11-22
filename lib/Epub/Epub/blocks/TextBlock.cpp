@@ -1,3 +1,4 @@
+#include "../HeadingFont.h"
 #include "TextBlock.h"
 
 #include "../LetterSpacing.h"
@@ -116,8 +117,9 @@ int TextBlock::drawRuby(const GfxRenderer& renderer, const int fontId, const siz
   return pad;
 }
 
-void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y,
+void TextBlock::render(const GfxRenderer& renderer, const int bodyFontId, const int x, const int y,
                        const bool foregroundBlack) const {
+  const int fontId = heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId;
   // Validate iterator bounds before rendering
   const bool hasBionic = !wordBionicBoundary.empty();
   const bool hasGuideDots = !wordGuideDotXOffset.empty();
@@ -341,7 +343,7 @@ bool TextBlock::serialize(FsFile& file) const {
          serialization::tryWritePod(file, blockStyle.textIndentDefined) &&
          serialization::tryWritePod(file, blockStyle.isRtl) &&
          serialization::tryWritePod(file, blockStyle.directionDefined) &&
-         serialization::tryWritePod(file, static_cast<uint8_t>(vertical_ ? 1 : 0));
+         serialization::tryWritePod(file, static_cast<uint8_t>((vertical_ ? 1 : 0) | (heading_ ? 2 : 0)));
 }
 
 std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
@@ -478,7 +480,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     return nullptr;
   }
   uint8_t verticalFlag = 0;
-  if (!serialization::tryReadPod(file, verticalFlag) || verticalFlag > 1) {
+  if (!serialization::tryReadPod(file, verticalFlag) || verticalFlag > 3) {
     LOG_ERR("TXB", "Deserialization failed: invalid vertical flag");
     return nullptr;
   }
@@ -492,6 +494,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     return nullptr;
   }
 
-  textBlock->vertical_ = verticalFlag != 0;
+  textBlock->vertical_ = (verticalFlag & 1) != 0;
+  textBlock->heading_ = (verticalFlag & 2) != 0;
   return std::unique_ptr<TextBlock>(textBlock);
 }

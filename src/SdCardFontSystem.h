@@ -84,6 +84,11 @@ class SdCardFontSystem {
  private:
   mutable SdCardFontRegistry registry_;
   SdCardFontManager manager_;
+  // Loads, keeps or drops the larger heading size to match SETTINGS.largeHeadings and the loaded body font, and
+  // publishes it to HeadingFont. A failed attempt is not repeated for the same body font.
+  void syncHeadingFont(GfxRenderer& renderer);
+  void ensureBodyLoaded(GfxRenderer& renderer);
+  std::string headingAttemptKey_;
   mutable std::mutex discoverMutex_;
   mutable std::atomic<bool> registryDirty_{false};
   std::unique_ptr<SdCardFont> uiFont_;
