@@ -384,6 +384,10 @@ class InkMODSettings {
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // Clock app power saving: after 15 s without input the device sleeps and wakes once a minute to redraw the face.
+  uint8_t clockPowerSaving = 0;
+  // Face shown by the Clock app (0 big digits, 1 digits with date, 2 analog); remembered across restarts.
+  uint8_t clockFace = 0;
   // When set, a manual clock sync also looks the UTC offset up by IP address (see lib/TimezoneDetect).
   uint8_t clockAutoOffset = 0;
   // Show the Weather entry on the home screen (the screen itself is also reachable from Settings).

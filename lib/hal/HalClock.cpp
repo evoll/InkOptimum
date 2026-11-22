@@ -178,6 +178,24 @@ void HalClock::begin() {
   getTime(h, m);
 }
 
+bool HalClock::readSecond(uint8_t& second) const {
+  if (_useSdkRtc && _useHardwareRtc) {
+    Rtc::DateTime dt{};
+    if (!_sdkRtc.now(dt)) return false;
+    second = dt.second;
+    return true;
+  }
+  if (!_useHardwareRtc) return false;
+  Wire.beginTransmission(I2C_ADDR_DS3231);
+  Wire.write(DS3231_SEC_REG);
+  if (Wire.endTransmission(false) != 0) return false;
+  Wire.requestFrom(I2C_ADDR_DS3231, (uint8_t)1);
+  if (Wire.available() < 1) return false;
+  const uint8_t raw = Wire.read();
+  second = bcdToDec(raw & 0x7F);
+  return second < 60;
+}
+
 bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {
   if (!_available) return false;
 

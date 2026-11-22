@@ -83,6 +83,8 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 
 #include "util/PluginEventBus.h"
 #include "util/SleepSync.h"
+#include "util/ClockStandby.h"
+#include "activities/apps/ClockFace.h"
 #include "util/PluginLocations.h"
 #include "weather/WeatherService.h"
 #include "InkMODState.h"
@@ -1003,6 +1005,83 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+
+// ---- Clock power saving (Apps > Clock > Eco) ---------------------------------------------------------------------
+namespace ClockStandby {
+namespace {
+constexpr int kWakeLeadMs = 1500;  // wake this long before the minute boundary: boot and the RTC read take ~0.5 s
+constexpr int kBatteryFloorPercent = 8;
+
+// Draws the clock face for the current RTC minute (full screen, no button hints). False when there is no valid time.
+bool paintFrame(const bool fullRefresh) {
+  halClock.invalidateCache();
+  char buf[9] = {};
+  int hour = 0;
+  int minute = 0;
+  if (!halClock.formatTime(buf, sizeof(buf), SETTINGS.clockUtcOffsetQ, false) ||
+      sscanf(buf, "%d:%d", &hour, &minute) != 2) {
+    return false;
+  }
+  char date[13] = {};
+  const bool hasDate = halClock.formatDate(date, sizeof(date), SETTINGS.clockUtcOffsetQ);
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  renderer.clearScreen();
+  const int height = renderer.getScreenHeight();
+  ClockFace::draw(renderer, std::clamp<int>(SETTINGS.clockFace, 0, ClockFace::kFaceCount - 1),
+                  SETTINGS.clockFormat == 1, hour, minute, hasDate ? date : nullptr, 24, height - 48);
+  renderer.displayBuffer(fullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
+  return true;
+}
+
+[[noreturn]] void sleepUntilNextMinute() {
+  // Seconds come from the chip, read as late as possible so the display time does not shift the wake.
+  uint8_t second = 0;
+  const bool armed = halClock.readSecond(second) && powerManager.getBatteryPercentage() >= kBatteryFloorPercent;
+  if (armed) {
+    esp_sleep_enable_timer_wakeup(sleepMicros(second, kWakeLeadMs));
+  } else {
+    LOG_INF("CLK", "standby: no second / low battery, sleeping without a wake timer");
+  }
+  putTiltSensorToSleepForDeepSleep();
+  display.deepSleep();
+  Storage.prepareForDeepSleep();
+  powerManager.startDeepSleep(gpio);
+  for (;;) delay(1000);  // startDeepSleep() does not return
+}
+}  // namespace
+
+[[noreturn]] void enter() {
+  deepSleepInProgress = true;  // no heap-defrag restart may run while the device goes down
+  {
+    RenderLock lock;  // the activity's render task must not draw while the standby frame goes out
+    const bool ok = paintFrame(true);
+    LOG_INF("CLK", "standby: frame %s", ok ? "painted" : "FAILED");
+  }
+  sleepUntilNextMinute();
+}
+
+bool onTimerWake() {
+  if (!halClock.isAvailable() || halClock.needsPeriodicNTPSync() || !halClock.hasValidDateTime()) return false;
+  setupDisplayAndFonts(true);  // the panel still holds the last frame: no reset, no splash
+  // The timer fires ~1.5 s early; wait for the boundary so the minute that is drawn is the new one. A wake far from
+  // the boundary (RTC timer drift) just draws what the chip says and the next sleep re-aligns.
+  uint8_t second = 0;
+  if (halClock.readSecond(second) && second >= 56) {
+    delay(static_cast<uint32_t>((60 - second) * 1000 + 150));
+  }
+  uint8_t h = 0, m = 0;
+  halClock.invalidateCache();
+  const bool tenth = halClock.getTime(h, m) && (m % 10 == 0);
+  deepSleepInProgress = true;
+  if (!paintFrame(tenth)) {
+    deepSleepInProgress = false;
+    return false;
+  }
+  sleepUntilNextMinute();
+}
+
+}  // namespace ClockStandby
+
 // Devices without a battery-backed RTC (X4) lose track of time on every real power
 // loss. If we don't already have a valid time (i.e. this is a cold boot, not a
 // resume from deep sleep, where the ESP32's internal clock is preserved), briefly
@@ -1209,6 +1288,11 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  // Clock power saving: a timer wake is always the minute tick of the Clock app's standby (nothing else arms a timer).
+  if (rawResetReason == ESP_RST_DEEPSLEEP && rawWakeupCause == ESP_SLEEP_WAKEUP_TIMER && SETTINGS.clockPowerSaving) {
+    if (ClockStandby::onTimerWake()) return;  // not reached: it sleeps again
+    LOG_ERR("CLK", "standby tick failed, continuing with a normal boot");
+  }
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
   // Wi-Fi transmit power (Settings > System): applied each time the station interface starts, which is the

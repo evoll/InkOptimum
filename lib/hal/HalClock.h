@@ -52,6 +52,12 @@ class HalClock {
   // Returns false if no clock source is available, or the software clock hasn't been synced yet.
   bool getTime(uint8_t& hour, uint8_t& minute) const;
 
+  // Seconds (0-59) read straight from a hardware RTC (X3 DS3231, X4 Pro/Classic BM8563). False on the software clock
+  // or when the chip does not answer. Used to align the power-saving clock's wake-ups to the minute.
+  bool readSecond(uint8_t& second) const;
+  // Makes the next getTime()/getDate() read the chip instead of the cached value (the cache lives 10 s).
+  void invalidateCache() const { _lastPollMs = 0; }
+
   // Format time into a caller-provided buffer.
   // 24h mode produces "HH:MM" (needs >=6 bytes); 12h mode produces "H:MM AM"/"HH:MM PM" (needs >=9 bytes).
   // utcOffsetQuarterHoursBiased: biased quarter-hour offset (48 = UTC+0, 0 = UTC-12, 104 = UTC+14).

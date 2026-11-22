@@ -948,6 +948,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &InkMODSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_CLOCK_POWER_SAVING, &InkMODSettings::clockPowerSaving, "clockPowerSaving",
+                            StrId::STR_CAT_SYSTEM));
+    // Persistence helper (hidden from the menu): the face the Clock app shows.
+    add(SettingInfo::Value(StrId::STR_CLOCK_FACE, &InkMODSettings::clockFace, {0, 2, 1}, "clockFace"));
     // Persistence flag for NTP debounce. Resetting from the web UI forces a re-sync
     // on next WiFi connect, which is useful when crossing time zones.
     add(SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &InkMODSettings::clockHasBeenSynced, "clockHasBeenSynced",

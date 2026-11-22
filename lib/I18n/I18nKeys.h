@@ -890,6 +890,9 @@ enum class StrId : uint16_t {
   STR_APP_BUILTIN,
   STR_CLOCK_NOT_SET,
   STR_CLOCK_FACE,
+  STR_CLOCK_POWER_SAVING,
+  STR_CLOCK_ECO_ON,
+  STR_CLOCK_ECO_OFF,
   STR_APP_PLUGIN,
   STR_APP_XTAPP,
   STR_APP_XTAPP_LOCKED,
@@ -1033,7 +1036,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x902C3529u;
+constexpr uint32_t I18N_KEY_HASH = 0x1EA08F9Au;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }
