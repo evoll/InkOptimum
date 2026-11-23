@@ -231,3 +231,6 @@ Source: https://github.com/guloff/folio-firmware, `c14fb8d`. Docs only: FEATURE_
 * Sync On Sleep for FB2 (`captureSleepSyncSnapshot`, `koreaderDocumentFor`); bookmark names in CrossPoint extended sync (`CrossPointExtendedSync.cpp`, crosspoint idea); UI fallback font by size 10/11/12 pt (`SdCardFontSystem`, SettingsActivity).
 * XtApp: manifest `lockscreen`, `ctx.lockscreen`, `ctx.lock`, `ctx.system` (stock Licorice API shape), settings field `lockscreenApp`, `XtAppLocator`, in-place app switching, sleep screen hook (`SleepActivity`), `ctx.net:websocket` (own API; device worker = links2004 WebSockets polled in `XtAppActivity::loop`). Tests: XtApp suite +8 (1000/1000 native tests pass). Never decrypts official .xtapp.
 * Checked: native tests only; device build results in the delivery message. Device verification pending.
+
+## 2026-11-23 (17) — companion app plan (docs only)
+`docs/COMPANION_APP.md`: Flutter app for Windows/Linux/macOS/Android/iOS with FolioLink-level features for our firmware. Finding: the firmware web server already has most data endpoints but no authorization; plan starts with firmware pairing/token API v1. Source of ideas: Folio (guloff/folio-firmware) API/BLE protocol. No code written.
