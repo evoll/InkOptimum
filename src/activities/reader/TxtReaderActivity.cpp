@@ -641,6 +641,7 @@ void TxtReaderActivity::render(RenderLock&&) {
 }
 
 void TxtReaderActivity::renderPage() {
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   const int lineHeight = getReaderLineHeight(renderer, cachedFontId);
   const int contentWidth = viewportWidth;
 

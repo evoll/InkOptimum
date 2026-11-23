@@ -518,6 +518,8 @@ class InkMODSettings {
   uint8_t hyphenationEnabled = 0;
   // Headings (h1-h3) in a larger size of the SD reading font, when the family has one and memory allows.
   uint8_t largeHeadings = 1;
+  // X4 Pro / X4 Classic: text anti-aliasing in one panel pass (crosspoint #4362); off = the earlier two-step path.
+  uint8_t fastTextAa = 1;
 
   // Reader screen margin settings
   uint8_t screenMargin = 5;

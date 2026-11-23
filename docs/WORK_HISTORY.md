@@ -215,3 +215,10 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 - Known limits: headings inside table cells are measured with the body line height; h4–h6 unchanged; TXT/FB2 headings follow the same parser path only where they go through ChapterHtmlSlimParser.
 - NOT tested on a device. To check: (1) heading size/spacing in a book with SD font (bitmap and TTF); (2) page numbers/progress after the cache rebuild; (3) RAM on C3 with the second bitmap size (heading font is skipped below 70 KB largest block); (4) toggling the setting rebuilds the section; (5) dictionary/selection on heading words (positions come from the stored x offsets).
 - Tests: 993 native pass (GfxRenderer stubs got `getFontMap`).
+
+## 2026-11-23 (14) — Fast AA (crosspoint #4362), deferred item 2
+- Re-analysis corrected the earlier estimate (20 files): in crosspoint #4362 the firmware side is `ReaderRefreshScope` (setReaderRefresh(true) while a page is presented) plus the SDK driver work already present in our SDK 995d9bd. Our reader already stages anti-aliasing as `displayGrayscaleBaseIntermediate(FAST)` + tiled strips + `displayGrayBuffer`; with the reading waveform on, the SDK driver skips the separate BW base frame and composes text AA in one pass (X4ProTextAa), falling back by itself when it is not ready.
+- Added: `HalDisplay::setReaderRefresh`, `ReaderUtils::ReaderRefreshScope` (RAII; only X4 Pro/Classic and only with `fastTextAa`), used in EpubReaderActivity::renderContents (not for pages with images: they keep the two-step path) and TxtReaderActivity::renderPage. XTC unchanged (no text AA).
+- Setting "Fast text smoothing" (`fastTextAa`, default on, X4 Pro/Classic only, Reader category; en/ru).
+- NOT tested on a device. To check on X4 Pro and X4 Classic: text sharpness/ghosting after several page turns, refresh-page cycle, turning pages after an image page, sleep/wake, night/inverted mode, the toggle off.
+- Builds x4pro, x4classic, x3x4 OK.

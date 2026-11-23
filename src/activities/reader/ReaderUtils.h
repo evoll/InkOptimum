@@ -317,4 +317,16 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.cleanupGrayscaleWithFrameBuffer();
 }
 
+// Book page presentation: lets the panel use its reading waveform (one-pass text anti-aliasing on X4 Pro / X4 Classic,
+// crosspoint #4362 "immediate mode AA"). `enable` is false for pages where the classic two-step path must stay
+// (images); the user can turn the whole thing off with SETTINGS.fastTextAa.
+struct ReaderRefreshScope {
+  explicit ReaderRefreshScope(const bool enable = true) {
+    display.setReaderRefresh(enable && SETTINGS.fastTextAa && (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()));
+  }
+  ~ReaderRefreshScope() { display.setReaderRefresh(false); }
+  ReaderRefreshScope(const ReaderRefreshScope&) = delete;
+  ReaderRefreshScope& operator=(const ReaderRefreshScope&) = delete;
+};
+
 }  // namespace ReaderUtils

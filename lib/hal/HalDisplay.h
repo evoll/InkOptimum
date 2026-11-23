@@ -69,6 +69,10 @@ class HalDisplay {
   void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
   bool supportsStripGrayscale() const;
 
+  // True while book pages are presented: panels with a reading waveform (X4 Pro / X4 Classic text anti-aliasing in
+  // one pass, no separate black-and-white base frame) switch to it. Only a flag; no bus traffic.
+  void setReaderRefresh(bool reading);
+
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;
   uint16_t getDisplayHeight() const;

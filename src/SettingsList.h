@@ -436,6 +436,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_HYPHENATION, &InkMODSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER));
+    if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {
+      add(SettingInfo::Toggle(StrId::STR_FAST_TEXT_AA, &InkMODSettings::fastTextAa, "fastTextAa",
+                              StrId::STR_CAT_READER));
+    }
     add(SettingInfo::Toggle(StrId::STR_LARGE_HEADINGS, &InkMODSettings::largeHeadings, "largeHeadings",
                             StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_TEXT_AA, &InkMODSettings::textAntiAliasing, "textAntiAliasing",

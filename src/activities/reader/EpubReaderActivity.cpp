@@ -5238,6 +5238,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
   // illustrations on every other page keep their original EPUB/FB2 layout.
   const int contentBottom = renderer.getScreenHeight() - orientedMarginBottom;
   const bool pageHasImages = page->hasImages();
+  // Text-only pages present anti-aliased text in one panel pass on X4 Pro / Classic (see ReaderRefreshScope).
+  const ReaderUtils::ReaderRefreshScope readerRefresh(!pageHasImages);
   int pageRenderY = orientedMarginTop;
   const bool firstBookPage = currentSpineIndex == 0 && section && section->currentPage == 0;
   const bool imageOnlyPage = pageHasImages && !page->elements.empty() &&
