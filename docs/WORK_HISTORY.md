@@ -222,3 +222,12 @@ Decision (user): a CrossPoint Sync server exists and will be tested on the devic
 - Setting "Fast text smoothing" (`fastTextAa`, default on, X4 Pro/Classic only, Reader category; en/ru).
 - NOT tested on a device. To check on X4 Pro and X4 Classic: text sharpness/ghosting after several page turns, refresh-page cycle, turning pages after an image page, sleep/wake, night/inverted mode, the toggle off.
 - Builds x4pro, x4classic, x3x4 OK.
+
+## 2026-11-23 (15) — Folio (guloff/folio-firmware) added to the reference set
+Source: https://github.com/guloff/folio-firmware, `c14fb8d`. Docs only: FEATURE_MATRIX section 3a + header + next-steps item 6, UPSTREAM_SYNC entry. No code taken.
+
+## 2026-11-23 (16) — deferred items 3–4 (prefetch depth, small items, XtApp)
+* Prefetch depth 3 (EpubReaderActivity: `prefetchTriedSpines`, `PREFETCH_DEPTH`) — own work, from the Paperio/witchhunt prefetch idea.
+* Sync On Sleep for FB2 (`captureSleepSyncSnapshot`, `koreaderDocumentFor`); bookmark names in CrossPoint extended sync (`CrossPointExtendedSync.cpp`, crosspoint idea); UI fallback font by size 10/11/12 pt (`SdCardFontSystem`, SettingsActivity).
+* XtApp: manifest `lockscreen`, `ctx.lockscreen`, `ctx.lock`, `ctx.system` (stock Licorice API shape), settings field `lockscreenApp`, `XtAppLocator`, in-place app switching, sleep screen hook (`SleepActivity`), `ctx.net:websocket` (own API; device worker = links2004 WebSockets polled in `XtAppActivity::loop`). Tests: XtApp suite +8 (1000/1000 native tests pass). Never decrypts official .xtapp.
+* Checked: native tests only; device build results in the delivery message. Device verification pending.

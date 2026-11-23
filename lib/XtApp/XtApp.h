@@ -31,6 +31,10 @@ struct Manifest {
   int apiMinor = 8;
   std::vector<std::string> permissions;
   bool encrypted = false;  // carries dek_wrap_* fields: an official, vendor-key package
+  // Optional `lockscreen` block: the app can draw the screen shown while the device sleeps (entry = lockscreen.lua).
+  bool lockscreenEnabled = false;
+  std::string lockscreenEntry = "lockscreen.lua";
+  int lockscreenIntervalSec = 30;
 };
 
 // `locale` picks display_names[locale] over display_name. False + err on invalid JSON or a missing app_id.
@@ -105,6 +109,11 @@ struct Env {
     return false;
   }  // dates YYYY-MM-DD, inclusive
   virtual bool readerCurrent(ReaderBook& /*out*/) { return false; }             // the book read last
+  // Lock screen / sleep screen app (ctx.lockscreen, ctx.system.set_as_lockscreen_app): the app id that draws it.
+  virtual std::string lockscreenApp() { return ""; }
+  virtual bool setLockscreenApp(const std::string& /*appId, empty = clear*/) { return false; }
+  // ctx.system.can_open / open: whether an installed app has this app id (or folder name).
+  virtual bool appInstalled(const std::string& /*appId*/) { return false; }
 };
 
 struct Event {
@@ -148,7 +157,14 @@ class App {
   App& operator=(const App&) = delete;
 
   // Parses the manifest, creates the sandbox, loads the entry script, restores ctx.state and calls on_load.
-  bool start(const std::string& manifestJson);
+  // Mode::Lockscreen runs the manifest's lockscreen entry instead (it gets ctx.lock and no ctx.lockscreen); the host
+  // draws once, shows the result and then honours lockInterval() / lockFlushOnce().
+  enum class Mode { Normal, Lockscreen };
+  bool start(const std::string& manifestJson, Mode mode = Mode::Normal);
+  uint32_t lockIntervalSec() const;  // ctx.lock:set_interval, else the manifest's interval_sec
+  bool takeLockFlush();               // ctx.lock:flush_once was called since the last call
+  // ctx.system.open(id): the app asks the host to switch to another installed app. Handed out once.
+  bool takeOpenRequest(std::string& appId);
 
   void draw();                      // on_draw(ctx, g)
   bool input(const Event& ev);      // on_input(ctx, ev); true when the app claimed the event
@@ -186,6 +202,22 @@ class App {
   bool takeNetRequest(NetRequest& out);
   bool takeNetCancel(int& id);
   void netDone(int id, NetResponse&& resp);
+  // ctx.net:websocket({url=ws://|wss://}, {on_open, on_message, on_close, on_error}) -> ws (ws:send(text), ws:close()).
+  // The host connects (Wi-Fi first) for each takeWsOpen(), reports wsEvent() ("open", "message", "close", "error") and
+  // drains takeWsOut() (text frames to send, or a close request). One socket at a time.
+  struct WsOpen {
+    int id = 0;
+    std::string url;
+    uint32_t timeoutMs = 15000;
+  };
+  struct WsOut {
+    int id = 0;
+    bool close = false;
+    std::string data;
+  };
+  bool takeWsOpen(WsOpen& out);
+  bool takeWsOut(WsOut& out);
+  void wsEvent(int id, const std::string& type, const std::string& data);
   uint32_t keepWifiMs() const { return keepWifiMs_; }  // last ctx.net:keep_wifi(ms) argument
 
   // --- used by the Lua bindings (public to keep the C callbacks simple) ---

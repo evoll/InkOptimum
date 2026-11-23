@@ -18,8 +18,20 @@ Copy an app **folder** to the SD card as `/XTApps/<name>/` with at least `manife
 * Apps declaring the `net` permission (the network API is not implemented) — refused at start with a message.
 * `ctx.layers:create(w,h)` -> offscreen layer (`width`, `height`, `draw(fn(g))`, `release`), drawn with `g:image`.
   Limits: 1-bit shapes only (**text drawn into a layer is skipped**), no nesting, shares the 1.5 MB image budget.
-* Not provided yet: `ctx.lockscreen`, `ctx.system`, `ctx.net:websocket`, BLE,
-  TTF/pattern capabilities, image transforms.
+* Not provided yet: BLE, TTF/pattern capabilities, image transforms.
+
+## Lock screen, system and websocket (added 2026-11-23)
+
+* `ctx.system{can_open(id), open(id), set_as_lockscreen_app(...)}`: `open` switches to another installed app in place;
+  `set_as_lockscreen_app` asks the user to confirm and stores the app id in `lockscreenApp` (settings JSON).
+* `ctx.lockscreen` exists only for apps whose manifest has a `lockscreen` block. Lockscreen entry runs with `ctx.lock`
+  (`set_interval`, `flush_once`); the device draws it once as the **sleep screen** (`SleepActivity` -> `XtAppActivity::drawLockscreen`);
+  if the app is missing/fails or heap < 80 KB, the normal sleep screen is used. The interval is ignored while asleep.
+  There is no UI yet to clear `lockscreenApp` other than the app calling the API or editing the settings file.
+* `ctx.net:websocket({url='ws://|wss://', timeout_ms}, {on_open,on_message,on_close,on_error}) -> ws | nil, err`;
+  `ws:send(text)`, `ws:close()`. One socket at a time ("busy"); needs the `net` permission and an already connected
+  Wi-Fi (otherwise `on_error(ctx,'wifi')`). The official signature is not documented, this is our own design.
+  Binary frames are delivered as strings; sending is text only.
 
 ## What is implemented
 

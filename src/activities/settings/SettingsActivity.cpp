@@ -452,6 +452,10 @@ void SettingsActivity::openEnumOptionPicker(const SettingInfo& setting) {
         const bool quickResumeTimeoutChanged = selectedSetting.valuePtr == &InkMODSettings::quickResumeSleepScreen;
         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         applyUiTextSize(renderer);
+        {
+          RenderLock lock(*this);
+          sdFontSystem.applyUiFont(renderer);
+        }
         SETTINGS.saveToFile();
         rebuildSettingsLists();
         // Changing With flash alters the number and order of rows in this
@@ -693,6 +697,10 @@ void SettingsActivity::loop() {
             mappedInput.suppressTouchContact();
             toggleCurrentSetting();
             applyUiTextSize(renderer);
+        {
+          RenderLock lock(*this);
+          sdFontSystem.applyUiFont(renderer);
+        }
             requestUpdate();
           }
         }
@@ -743,6 +751,10 @@ void SettingsActivity::loop() {
     } else {
       toggleCurrentSetting();
       applyUiTextSize(renderer);
+        {
+          RenderLock lock(*this);
+          sdFontSystem.applyUiFont(renderer);
+        }
       requestUpdate();
       return;
     }

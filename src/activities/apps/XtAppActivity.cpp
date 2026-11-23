@@ -26,7 +26,11 @@
 #include "activities/ActivityResult.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
+#include <WebSocketsClient.h>
+
+#include "InkMODSettings.h"
 #include "network/XtAppNet.h"
+#include "util/XtAppLocator.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -323,6 +327,14 @@ struct XtAppActivity::DeviceEnv final : xtapp::Env {
     out = toReaderBook(books.front());
     return true;
   }
+  std::string lockscreenApp() override { return SETTINGS.lockscreenApp; }
+  bool setLockscreenApp(const std::string& id) override {
+    if (id.size() >= sizeof(SETTINGS.lockscreenApp)) return false;
+    strncpy(SETTINGS.lockscreenApp, id.c_str(), sizeof(SETTINGS.lockscreenApp) - 1);
+    SETTINGS.lockscreenApp[sizeof(SETTINGS.lockscreenApp) - 1] = '\0';
+    return SETTINGS.saveToFile();
+  }
+  bool appInstalled(const std::string& id) override { return !XtAppLocator::findDir(id).empty(); }
   bool qrEncode(const std::string& text, xtapp::ImageData& out) override {
     int version = 4;
     const size_t len = text.size();
@@ -359,6 +371,30 @@ struct XtAppActivity::GfxCanvas final : xtapp::Canvas {
 };
 
 
+bool XtAppActivity::drawLockscreen(GfxRenderer& renderer) {
+  if (!SETTINGS.lockscreenApp[0]) return false;
+  const std::string dir = XtAppLocator::findDir(SETTINGS.lockscreenApp);
+  if (dir.empty()) return false;
+  std::string manifest;
+  if (!readWhole(dir + "/manifest.json", manifest, kMaxManifest)) return false;
+  DeviceEnv env(dir);
+  GfxCanvas canvas(renderer);
+  xtapp::Limits lim;
+  lim.memoryBytes = std::clamp<size_t>(ESP.getMaxAllocHeap() / 2, 64 * 1024, 512 * 1024);
+  if (ESP.getMaxAllocHeap() < 80 * 1024) return false;  // not enough heap for a Lua state on the C3
+  bool ok = false;
+  {
+    xtapp::App app(env, canvas, lim);
+    if (app.start(manifest, xtapp::App::Mode::Lockscreen) && !app.failed()) {
+      renderer.clearScreen();
+      app.draw();
+      ok = !app.failed();
+      app.leave();
+    }
+  }
+  return ok;
+}
+
 // ---- network jobs ---------------------------------------------------------------------------------------------
 
 struct XtAppActivity::NetJob {
@@ -393,8 +429,12 @@ void XtAppActivity::onEnter() {
   savedOrientation_ = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
-  env_ = std::make_unique<DeviceEnv>(appDir_);
   canvas_ = std::make_unique<GfxCanvas>(renderer);
+  startApp();
+}
+
+void XtAppActivity::startApp() {
+  env_ = std::make_unique<DeviceEnv>(appDir_);
 
   std::string manifest;
   if (!startError_.empty()) {
@@ -411,7 +451,8 @@ void XtAppActivity::onEnter() {
   requestUpdate();
 }
 
-void XtAppActivity::onExit() {
+void XtAppActivity::stopApp() {
+  closeWebsocket();
   for (auto& j : netJobs_) j->cancel.store(true);
   for (int i = 0; i < 300; ++i) {  // up to ~15 s for workers to notice the cancel flag
     bool pending = false;
@@ -421,15 +462,19 @@ void XtAppActivity::onExit() {
   }
   netJobs_.clear();
   waitingNet_.clear();
-  if (wifiByUs_) {
-    WiFi.disconnect(false);
-    WiFi.mode(WIFI_OFF);
-    wifiByUs_ = false;
-  }
   {
     std::lock_guard<std::mutex> lock(luaMutex_);
     if (app_) app_->leave();
     app_.reset();
+  }
+}
+
+void XtAppActivity::onExit() {
+  stopApp();
+  if (wifiByUs_) {
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_OFF);
+    wifiByUs_ = false;
   }
   renderer.setOrientation(savedOrientation_);
   Activity::onExit();
@@ -524,6 +569,89 @@ void XtAppActivity::pumpNetwork() {
   }
 }
 
+// ---- ctx.net:websocket ----------------------------------------------------------------------------------------
+
+struct XtAppActivity::WsState {
+  struct Ev {
+    std::string type, data;
+  };
+  WebSocketsClient client;
+  int id = 0;
+  bool open = false;
+  std::deque<Ev> events;  // filled by the client callback (same thread as loop())
+};
+
+void XtAppActivity::closeWebsocket() {
+  if (!ws_) return;
+  ws_->client.disconnect();
+  ws_.reset();
+}
+
+void XtAppActivity::pumpWebsocket() {  // called from loop() with luaMutex_ held
+  xtapp::App::WsOpen o;
+  if (app_->takeWsOpen(o)) {
+    if (WiFi.status() != WL_CONNECTED || ws_) {
+      app_->wsEvent(o.id, "error", ws_ ? "busy" : "wifi");
+    } else {
+      // url: ws[s]://host[:port]/path
+      const bool tls = o.url.compare(0, 6, "wss://") == 0;
+      std::string rest = o.url.substr(tls ? 6 : 5);
+      std::string path = "/";
+      const size_t slash = rest.find('/');
+      if (slash != std::string::npos) {
+        path = rest.substr(slash);
+        rest.resize(slash);
+      }
+      int port = tls ? 443 : 80;
+      const size_t colon = rest.rfind(':');
+      if (colon != std::string::npos) {
+        port = atoi(rest.c_str() + colon + 1);
+        rest.resize(colon);
+      }
+      ws_ = std::make_unique<WsState>();
+      ws_->id = o.id;
+      WsState* st = ws_.get();
+      st->client.onEvent([st](WStype_t type, uint8_t* payload, size_t length) {
+        switch (type) {
+          case WStype_CONNECTED: st->open = true; st->events.push_back({"open", ""}); break;
+          case WStype_TEXT:
+          case WStype_BIN:
+            if (st->events.size() < 64) st->events.push_back({"message", std::string(reinterpret_cast<char*>(payload), length)});
+            break;
+          case WStype_DISCONNECTED: st->events.push_back({st->open ? "close" : "error", st->open ? "" : "connect"}); break;
+          case WStype_ERROR: st->events.push_back({"error", "connect"}); break;
+          default: break;
+        }
+      });
+      st->client.setReconnectInterval(0);
+      if (tls) st->client.beginSSL(rest.c_str(), static_cast<uint16_t>(port), path.c_str());
+      else st->client.begin(rest.c_str(), static_cast<uint16_t>(port), path.c_str());
+    }
+  }
+  xtapp::App::WsOut out;
+  while (app_->takeWsOut(out)) {
+    if (!ws_ || ws_->id != out.id) continue;
+    if (out.close) ws_->client.disconnect();
+    else if (ws_->open) ws_->client.sendTXT(out.data.c_str(), out.data.size());
+  }
+  if (!ws_) return;
+  ws_->client.loop();
+  bool gone = false;
+  while (!ws_->events.empty()) {
+    auto ev = std::move(ws_->events.front());
+    ws_->events.pop_front();
+    app_->wsEvent(ws_->id, ev.type, ev.data);
+    if (ev.type == "close" || ev.type == "error") {
+      gone = true;
+      break;
+    }
+  }
+  if (gone) {
+    ws_->client.disconnect();
+    ws_.reset();
+  }
+}
+
 void XtAppActivity::loop() {
   const bool failed = !startError_.empty() || !app_ || app_->failed();
   if (failed) {
@@ -599,7 +727,8 @@ void XtAppActivity::loop() {
 
     haveText = app_->takeTextRequest(textReq);
     if (!haveText) app_->tick();
-    keepAwake_ = app_->hasTickHandler() || !netJobs_.empty();
+    pumpWebsocket();
+    keepAwake_ = app_->hasTickHandler() || !netJobs_.empty() || ws_;
     std::string t;
     if (app_->takeToast(t)) {
       toast_ = t;
@@ -645,6 +774,24 @@ void XtAppActivity::loop() {
     return;
   }
   if (exitRequested) {
+    // ctx.system.open(id): continue in another installed app instead of going back to the list.
+    std::string openId;
+    {
+      std::lock_guard<std::mutex> lock(luaMutex_);
+      if (app_) app_->takeOpenRequest(openId);
+    }
+    if (!openId.empty()) {
+      const std::string dir = XtAppLocator::findDir(openId);
+      if (!dir.empty()) {
+        stopApp();
+        appDir_ = dir;
+        startError_.clear();
+        startApp();
+        fullRefresh_ = true;
+        requestUpdate();
+        return;
+      }
+    }
     ActivityResult r;
     r.isCancelled = true;
     setResult(std::move(r));

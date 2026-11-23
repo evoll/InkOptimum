@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <vector>
 #include <Arduino.h>
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
@@ -9,6 +10,7 @@
 #include <ReaderWork.h>
 
 #include <atomic>
+#include <vector>
 #include <optional>
 #include <string>
 
@@ -123,7 +125,11 @@ class EpubReaderActivity final : public Activity {
   // current page is on screen, only on the last pages of a chapter, and any button press cancels it.
   void prefetchNextSection(uint16_t viewportWidth, uint16_t viewportHeight);
   std::atomic<bool> prefetchActive{false};
-  int prefetchTriedSpine = -1;  // one attempt per spine; reset when the layout changes the cache key
+  // Spines already attempted (ready, built or failed): one attempt each; a cancelled attempt is forgotten.
+  std::vector<int> prefetchTriedSpines;
+  // Chapters prepared ahead: the next one when the reader is on the last pages of a chapter, then the two after it
+  // one per page turn once the previous one is ready.
+  static constexpr int PREFETCH_DEPTH = 3;
   static constexpr int PREFETCH_PAGES_BEFORE_END = 2;
   std::atomic<int32_t> coalescedPageDelta{0};
   std::atomic<int32_t> coalescedSpineDelta{0};

@@ -45,6 +45,8 @@ struct BookmarkWire {
   int si = -1;
   int pc = -1;
   int pp = -1;
+  std::string name;      // user label ("favourite page"); sent with the delta protocol only
+  bool hasName = false;  // a fetched item carried a name
   bool deleted = false;
 };
 
@@ -223,6 +225,7 @@ BookmarkWire encodeBookmark(const Bookmark& bm, const std::shared_ptr<Epub>& epu
   out.id = sha256Id16(out.xpath);
   out.percentage = ko.percentage;
   out.summary = bm.snippet;
+  out.name = bm.name;
   out.si = bm.spineIndex;
   out.pc = pageCount;
   out.pp = page;
@@ -255,7 +258,12 @@ bool upsertRemoteBookmark(BookmarkStore& store, const BookmarkWire& remote, cons
   const uint16_t para = pos.hasParagraphIndex ? pos.paragraphIndex : UINT16_MAX;
   const auto result = store.addBookmark(static_cast<uint16_t>(pos.spineIndex), progress, pageCount, chapter.c_str(), para,
                                         remote.summary.c_str());
-  return result != BookmarkStore::AddResult::LimitReached;
+  if (result == BookmarkStore::AddResult::LimitReached) return false;
+  // The new bookmark is the last one. A server label fills an empty name only; a local name is never overwritten.
+  if (remote.hasName && !remote.name.empty() && store.getBookmarks().back().name[0] == '\0') {
+    store.renameBookmarkAt(store.getBookmarks().size() - 1, remote.name);
+  }
+  return true;
 }
 
 std::string clippingId(const Clipping& clip) {
@@ -308,6 +316,10 @@ bool fetchBookmarks(freeink::SecureHttpClient& http, const std::string& document
       b.pc = item["pc"].isNull() ? -1 : item["pc"].as<int>();
       b.pp = item["pp"].isNull() ? -1 : item["pp"].as<int>();
       b.deleted = (item["deleted"] | 0) != 0;
+      if (item["name"].is<const char*>()) {
+        b.name = item["name"].as<const char*>();
+        b.hasName = b.name.size() < BOOKMARK_NAME_MAX;  // longer than we can store: ignore
+      }
       if (!b.id.empty()) out.push_back(std::move(b));
     }
     const bool more = doc["more"] | false;
@@ -340,6 +352,7 @@ bool putBookmarks(freeink::SecureHttpClient& http, const std::string& documentHa
       if (b.si >= 0) o["si"] = b.si;
       if (b.pc >= 0) o["pc"] = b.pc;
       if (b.pp >= 0) o["pp"] = b.pp;
+      if (delta) o["name"] = b.name;  // an empty name clears the server's label
     }
     std::string payload;
     serializeJson(doc, payload);
@@ -700,6 +713,16 @@ CrossPointExtendedSync::Result CrossPointExtendedSync::sync(const std::string& d
             removeBookmarkById(localStore, r.id, epub, epubPath, renderer);
           } else if (!containsId(currentIds, r.id)) {
             if (upsertRemoteBookmark(localStore, r, epub, epubPath)) currentIds.push_back(r.id);
+          } else if (r.hasName && !r.name.empty()) {
+            // Known bookmark: take the server's label only where the local one is empty.
+            const auto& items = localStore.getBookmarks();
+            for (size_t i = 0; i < items.size(); ++i) {
+              if (items[i].name[0] != '\0') continue;
+              if (encodeBookmark(items[i], epub, epubPath, renderer).id == r.id) {
+                localStore.renameBookmarkAt(i, r.name);
+                break;
+              }
+            }
           }
         }
 

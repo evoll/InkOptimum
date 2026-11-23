@@ -97,6 +97,10 @@ struct MemEnv : Env {
     out.gray.assign(441, 0);  // all black modules
     return true;
   }
+  std::string lock;
+  std::string lockscreenApp() override { return lock; }
+  bool setLockscreenApp(const std::string& id) override { lock = id; return true; }
+  bool appInstalled(const std::string& id) override { return id == "other"; }
 };
 
 const char* kManifest = R"({"app_id":"t","display_name":"T","entry":"index.lua","api":"2.2"})";
@@ -193,6 +197,40 @@ TEST(XtApp, NetworkRequestRoundTrip) {
   fx.app->netDone(r.id, std::move(resp));
   fx.app->draw();
   EXPECT_EQ(fx.cv.lastText, "201:true:ok!:text/plain");
+}
+
+TEST(XtApp, WebsocketOpenSendMessageClose) {
+  Fixture fx;
+  ASSERT_TRUE(fx.start(R"(
+    log = ''
+    ws = ctx.net:websocket({url = 'wss://example.org:8443/feed'}, {
+      on_open = function(c) log = log .. 'O'; assert(ws:send('hello')) end,
+      on_message = function(c, m) log = log .. '[' .. m .. ']' end,
+      on_close = function(c) log = log .. 'C' end,
+    })
+    assert(ws and ws.id and ws.send and ws.close)
+    local none, why = ctx.net:websocket({url = 'http://x'}, {})
+    assert(none == nil and why == 'invalid_argument')
+    local two, busy = ctx.net:websocket({url = 'ws://a/b'}, {})
+    assert(two == nil and busy == 'busy')
+    function on_draw() g:text(0, 0, log) end
+  )", R"({"app_id":"w","permissions":["net"]})"));
+  ASSERT_FALSE(fx.app->failed()) << fx.app->error();
+  App::WsOpen o;
+  ASSERT_TRUE(fx.app->takeWsOpen(o));
+  EXPECT_EQ(o.url, "wss://example.org:8443/feed");
+  EXPECT_FALSE(fx.app->takeWsOpen(o));
+  fx.app->wsEvent(o.id, "open", "");
+  App::WsOut out;
+  ASSERT_TRUE(fx.app->takeWsOut(out));
+  EXPECT_EQ(out.data, "hello");
+  EXPECT_FALSE(out.close);
+  fx.app->wsEvent(o.id, "message", "pong");
+  fx.app->wsEvent(o.id, "close", "");
+  fx.app->draw();
+  EXPECT_EQ(fx.cv.lastText, "O[pong]C");
+  EXPECT_FALSE(fx.app->failed());
+  // after close the slot is free again
 }
 
 TEST(XtApp, NetworkCancelDropsTheCallback) {
@@ -455,6 +493,83 @@ TEST(XtApp, ConfirmDialogRoundTrip) {
   fx.app->draw();
   EXPECT_EQ(fx.cv.lastText, "true");
   EXPECT_FALSE(fx.app->pendingConfirm(c));
+}
+
+TEST(XtAppLockscreen, ManifestBlockAndSetDefault) {
+  Fixture fx;
+  const char* m = R"({"app_id":"lk","display_name":"Lock","api":"2.9","lockscreen":{"enabled":true,"entry":"lockscreen.lua","interval_sec":45}})";
+  ASSERT_TRUE(fx.start(R"(
+    function on_load(c)
+      c.lockscreen:set_default()
+      before = c.lockscreen:is_default()
+    end
+    function on_draw() g:text(0, 0, tostring(before) .. tostring(ctx.lockscreen:is_default()) .. tostring(ctx.capabilities.lockscreen)) end
+  )", m));
+  App::Confirm c;
+  ASSERT_TRUE(fx.app->pendingConfirm(c));
+  EXPECT_NE(c.text.find("Lock"), std::string::npos);
+  fx.app->answerConfirm(true);
+  EXPECT_EQ(fx.env.lock, "lk");
+  fx.app->draw();
+  EXPECT_EQ(fx.cv.lastText, "falsetruetrue");
+}
+
+TEST(XtAppLockscreen, DeclinedLeavesNothing) {
+  Fixture fx;
+  const char* m = R"({"app_id":"lk","lockscreen":{"enabled":true}})";
+  ASSERT_TRUE(fx.start("function on_load(c) c.system.set_as_lockscreen_app() end", m));
+  App::Confirm c;
+  ASSERT_TRUE(fx.app->pendingConfirm(c));
+  fx.app->answerConfirm(false);
+  EXPECT_EQ(fx.env.lock, "");
+}
+
+TEST(XtAppLockscreen, NoBlockMeansNoLockscreenTable) {
+  Fixture fx;
+  ASSERT_TRUE(fx.start("function on_draw() g:text(0,0,tostring(ctx.lockscreen)) end"));
+  fx.app->draw();
+  EXPECT_EQ(fx.cv.lastText, "nil");
+}
+
+TEST(XtAppLockscreen, LockModeRunsTheLockEntryWithCtxLock) {
+  MemEnv env;
+  MemCanvas cv;
+  env.pkg["index.lua"] = "function on_draw() g:text(0,0,'main') end";
+  env.pkg["lockscreen.lua"] = R"(
+    function on_load(c) c.lock:set_interval(120); c.lock:flush_once() end
+    function on_draw(c) g:text(0, 0, c.lock.reason .. tostring(c.lockscreen)) end
+  )";
+  App app(env, cv);
+  ASSERT_TRUE(app.start(R"({"app_id":"lk","lockscreen":{"enabled":true,"interval_sec":45}})", App::Mode::Lockscreen));
+  app.draw();
+  EXPECT_EQ(cv.lastText, "idlenil");
+  EXPECT_EQ(app.lockIntervalSec(), 120u);
+  EXPECT_TRUE(app.takeLockFlush());
+  EXPECT_FALSE(app.takeLockFlush());
+}
+
+TEST(XtAppLockscreen, LockModeRefusesAnAppWithoutTheBlock) {
+  MemEnv env;
+  MemCanvas cv;
+  App app(env, cv);
+  EXPECT_FALSE(app.start(kManifest, App::Mode::Lockscreen));
+}
+
+TEST(XtApp, SystemCanOpenAndOpen) {
+  Fixture fx;
+  ASSERT_TRUE(fx.start(R"(
+    function on_load(c)
+      a = c.system:can_open('other'); b = c.system.can_open('nope')
+      c.system:open('other')
+    end
+    function on_draw() g:text(0,0,tostring(a)..tostring(b)) end
+  )"));
+  fx.app->draw();
+  EXPECT_EQ(fx.cv.lastText, "truefalse");
+  std::string id;
+  ASSERT_TRUE(fx.app->takeOpenRequest(id));
+  EXPECT_EQ(id, "other");
+  EXPECT_TRUE(fx.app->quitRequested());
 }
 
 // ---- corpus: every open-source community app must load, draw and survive a scripted session.

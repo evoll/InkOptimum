@@ -93,6 +93,7 @@ class SdCardFontSystem {
   mutable std::atomic<bool> registryDirty_{false};
   std::unique_ptr<SdCardFont> uiFont_;
   std::string uiFontLoadedFamily_;
+  uint8_t uiFontLoadedPt_ = 0;  // point size of the loaded UI glyph font (follows the interface text size)
 };
 
 // Global SD card font system instance (defined in main.cpp).

@@ -30,13 +30,21 @@ class XtAppActivity final : public Activity {
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return keepAwake_; }
 
+  // Sleep screen: runs the configured lockscreen app once and draws its frame into the renderer buffer (no display
+  // call). false when none is configured / it cannot run; the caller then draws its normal sleep screen.
+  static bool drawLockscreen(GfxRenderer& renderer);
+
  private:
   struct DeviceEnv;
   struct GfxCanvas;
 
   void drawMessage(const char* title, const std::string& text) const;
   void drawOverlays();
+  void startApp();  // creates the Env and runs the app in appDir_
+  void stopApp();   // cancels network jobs, leave()s and drops the app
   void pumpNetwork();
+  void pumpWebsocket();  // ctx.net:websocket: one links2004 client polled from loop()
+  void closeWebsocket();
   void failWaitingNet(const char* error);
   void feedKey(const char* key, bool& exitRequested);
 
@@ -49,6 +57,8 @@ class XtAppActivity final : public Activity {
   GfxRenderer::Orientation savedOrientation_ = GfxRenderer::Orientation::Portrait;
   std::deque<xtapp::NetRequest> waitingNet_;
   std::vector<std::shared_ptr<NetJob>> netJobs_;
+  struct WsState;
+  std::unique_ptr<WsState> ws_;
   bool wifiAsked_ = false;
   bool wifiByUs_ = false;
   uint32_t keepWifiUntil_ = 0;

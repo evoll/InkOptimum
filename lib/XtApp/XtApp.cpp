@@ -61,6 +61,18 @@ bool parseManifest(const std::string& json, Manifest& out, std::string* err, con
     }
   }
   out.encrypted = root.get("dek_wrap_alg") != nullptr;
+  if (const JValue* ls = root.get("lockscreen")) {
+    if (ls->type == JValue::Type::Obj) {
+      const JValue* en = ls->get("enabled");
+      out.lockscreenEnabled = en ? (en->type == JValue::Type::Bool ? en->b : en->type == JValue::Type::Int && en->i != 0)
+                                 : true;
+      out.lockscreenEntry = ls->str("entry", "lockscreen.lua");
+      if (const JValue* iv = ls->get("interval_sec")) {
+        const int64_t v = iv->type == JValue::Type::Int ? iv->i : iv->type == JValue::Type::Num ? static_cast<int64_t>(iv->n) : 30;
+        out.lockscreenIntervalSec = static_cast<int>(std::clamp<int64_t>(v, 1, 86400));
+      }
+    }
+  }
   return true;
 }
 
@@ -135,6 +147,12 @@ struct App::Impl {
   bool confirmPending = false;
   Confirm confirm;
   int confirmRef = LUA_NOREF;
+  bool confirmSetsLockscreen = false;  // the pending confirm is the "set as lock screen" question, not a Lua one
+  // Lock screen
+  bool lockMode = false;
+  uint32_t lockInterval = 30;
+  bool lockFlush = false;
+  std::string openRequest;
   std::map<std::string, bool> loadedModules;
   // ctx.input:text / :edit
   bool textPending = false;    // requested, not yet handed to the host
@@ -153,6 +171,13 @@ struct App::Impl {
   std::vector<NetRequest> netQueue;  // not yet handed to the host
   std::vector<int> netCancelled;
   int nextNetId = 1;
+  // ctx.net:websocket (one socket at a time)
+  int wsId = 0;
+  int wsRef = LUA_NOREF;  // handlers table
+  bool wsHandedOut = false;
+  std::vector<App::WsOpen> wsOpenQ;
+  std::vector<App::WsOut> wsOutQ;
+  int nextWsId = 1;
   size_t imageBytes = 0;  // decoded images alive in Lua (capped: they live outside the Lua heap)
 };
 
@@ -544,6 +569,59 @@ int cConfirm(lua_State* L) {  // ctx.dialog:confirm({title=, text=}, fn(ctx, boo
   s->confirmRef = luaL_ref(L, LUA_REGISTRYINDEX);
   s->confirmPending = true;
   s->app->redraw_ = true;
+  return 0;
+}
+
+// ---------------------------------------------------------------- system, lock screen
+// Both `ctx.system.f()` and `ctx.system:f()` styles are accepted: a leading table argument is the receiver.
+int firstArg(lua_State* L) { return lua_istable(L, 1) ? 2 : 1; }
+
+int cLockSetDefault(lua_State* L) {  // ctx.lockscreen:set_default() / ctx.system.set_as_lockscreen_app()
+  auto* s = S(L);
+  if (!s->app->manifest_.lockscreenEnabled) return luaL_error(L, "this app declares no lockscreen");
+  s->confirm = {};
+  s->confirm.title = "Set as lock screen";
+  s->confirm.text = "Show \"" + s->app->manifest_.displayName + "\" when the device locks? Change it back in Settings > Sleep screen.";
+  if (s->confirmRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, s->confirmRef);
+  s->confirmRef = LUA_NOREF;
+  s->confirmSetsLockscreen = true;
+  s->confirmPending = true;
+  s->app->redraw_ = true;
+  return 0;
+}
+int cLockIsDefault(lua_State* L) {
+  auto* s = S(L);
+  lua_pushboolean(L, s->env->lockscreenApp() == s->app->manifest_.appId);
+  return 1;
+}
+int cLockClearDefault(lua_State* L) {
+  auto* s = S(L);
+  if (s->env->lockscreenApp() == s->app->manifest_.appId) s->env->setLockscreenApp("");
+  lua_pushboolean(L, s->env->lockscreenApp() != s->app->manifest_.appId);
+  return 1;
+}
+int cSysCanOpen(lua_State* L) {
+  const char* id = luaL_checkstring(L, firstArg(L));
+  lua_pushboolean(L, S(L)->env->appInstalled(id));
+  return 1;
+}
+int cSysOpen(lua_State* L) {
+  auto* s = S(L);
+  const char* id = luaL_checkstring(L, firstArg(L));
+  if (!s->env->appInstalled(id)) return fRetNilErr(L, "not_found");
+  s->openRequest = id;
+  s->app->quit_ = true;  // the host opens it once this app is left
+  lua_pushboolean(L, 1);
+  return 1;
+}
+int cLockSetInterval(lua_State* L) {  // ctx.lock:set_interval(sec)
+  auto* s = S(L);
+  const int sec = argInt(L, lua_istable(L, 1) ? 2 : 1);
+  s->lockInterval = static_cast<uint32_t>(std::clamp(sec, 1, 86400));
+  return 0;
+}
+int cLockFlushOnce(lua_State* L) {
+  S(L)->lockFlush = true;
   return 0;
 }
 
@@ -1595,6 +1673,70 @@ int cNetRequest(lua_State* L) {  // ctx.net:request({url, method, body, headers,
   return 1;
 }
 
+int cWsSend(lua_State* L) {  // ws:send(text) -> true | nil, err
+  auto* s = S(L);
+  luaL_checktype(L, 1, LUA_TTABLE);
+  size_t n;
+  const char* d = luaL_checklstring(L, 2, &n);
+  lua_getfield(L, 1, "id");
+  const int id = static_cast<int>(lua_tointeger(L, -1));
+  lua_pop(L, 1);
+  if (id != s->wsId || s->wsRef == LUA_NOREF) return fRetNilErr(L, "closed");
+  if (n > 64 * 1024) return fRetNilErr(L, "too_large");
+  if (s->wsOutQ.size() >= 32) return fRetNilErr(L, "busy");
+  s->wsOutQ.push_back({id, false, std::string(d, n)});
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+int cWsClose(lua_State* L) {  // ws:close()
+  auto* s = S(L);
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_getfield(L, 1, "id");
+  const int id = static_cast<int>(lua_tointeger(L, -1));
+  lua_pop(L, 1);
+  if (id != s->wsId || s->wsRef == LUA_NOREF) return 0;
+  s->wsOutQ.push_back({id, true, ""});
+  return 0;
+}
+
+bool validWsUrl(const std::string& u) {
+  if (u.size() < 6 || u.size() > 2048) return false;
+  if (u.compare(0, 5, "ws://") != 0 && u.compare(0, 6, "wss://") != 0) return false;
+  for (const unsigned char c : u) {
+    if (c <= 0x20 || c == 0x7F) return false;
+  }
+  return true;
+}
+
+int cNetWebsocket(lua_State* L) {  // ctx.net:websocket({url, timeout_ms}, handlers) -> ws | nil, err
+  auto* s = S(L);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  luaL_checktype(L, 3, LUA_TTABLE);
+  lua_getfield(L, 2, "url");
+  if (!lua_isstring(L, -1)) return luaL_error(L, "bad extra argument (string expected)");
+  App::WsOpen o;
+  o.url = lua_tostring(L, -1);
+  lua_pop(L, 1);
+  if (!validWsUrl(o.url)) return fRetNilErr(L, "invalid_argument");
+  lua_getfield(L, 2, "timeout_ms");
+  if (lua_isnumber(L, -1)) o.timeoutMs = static_cast<uint32_t>(std::clamp(lua_tonumber(L, -1), 1000.0, 120000.0));
+  lua_pop(L, 1);
+  if (s->wsRef != LUA_NOREF) return fRetNilErr(L, "busy");
+  o.id = s->nextWsId++;
+  lua_pushvalue(L, 3);
+  s->wsRef = luaL_ref(L, LUA_REGISTRYINDEX);
+  s->wsId = o.id;
+  s->wsHandedOut = false;
+  s->wsOpenQ.push_back(o);
+  lua_createtable(L, 0, 3);
+  lua_pushinteger(L, o.id);
+  lua_setfield(L, -2, "id");
+  setFn(L, "send", cWsSend);
+  setFn(L, "close", cWsClose);
+  return 1;
+}
+
 int cNetKeepWifi(lua_State* L) {  // ctx.net:keep_wifi(ms)
   if (!lua_isnumber(L, 2)) return luaL_error(L, "bad argument #1 to 'keep_wifi' (number expected)");
   S(L)->app->keepWifiMs_ = static_cast<uint32_t>(std::clamp(lua_tonumber(L, 2), 0.0, 3600000.0));
@@ -1743,11 +1885,13 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
     lua_pushboolean(L, 1);
     lua_setfield(L, -2, k);
   }
-  for (const char* k : {"image_transform", "pattern", "ttf", "frontlight", "ui",
-                        "lockscreen", "ui_ttf_fonts", "ui_image_transform"}) {
+  for (const char* k : {"image_transform", "pattern", "ttf", "frontlight", "ui", "ui_ttf_fonts",
+                        "ui_image_transform"}) {
     lua_pushboolean(L, 0);
     lua_setfield(L, -2, k);
   }
+  lua_pushboolean(L, m.lockscreenEnabled ? 1 : 0);
+  lua_setfield(L, -2, "lockscreen");
   lua_setfield(L, -2, "capabilities");
 
   const int sw = im->cv->width(), sh = im->cv->height();
@@ -1838,6 +1982,39 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
   setFn(L, "confirm", cConfirm);
   lua_setfield(L, -2, "dialog");
 
+  lua_newtable(L);  // system
+  setFn(L, "can_open", cSysCanOpen);
+  setFn(L, "open", cSysOpen);
+  if (m.lockscreenEnabled && !im->lockMode) setFn(L, "set_as_lockscreen_app", cLockSetDefault);
+  lua_setfield(L, -2, "system");
+
+  if (m.lockscreenEnabled && !im->lockMode) {  // an app that declares a lockscreen block gets ctx.lockscreen
+    lua_newtable(L);
+    setFn(L, "set_default", cLockSetDefault);
+    setFn(L, "is_default", cLockIsDefault);
+    setFn(L, "clear_default", cLockClearDefault);
+    setFn(L, "set_wallpaper", cLockSetDefault);
+    setFn(L, "is_wallpaper", cLockIsDefault);
+    setFn(L, "clear_wallpaper", cLockClearDefault);
+    lua_setfield(L, -2, "lockscreen");
+  }
+  if (im->lockMode) {  // the lockscreen entry gets ctx.lock instead
+    lua_newtable(L);
+    lua_pushinteger(L, 0);
+    lua_setfield(L, -2, "elapsed_sec");
+    lua_pushinteger(L, static_cast<lua_Integer>(im->lockInterval));
+    lua_setfield(L, -2, "interval_sec");
+    lua_pushstring(L, "idle");
+    lua_setfield(L, -2, "reason");
+    lua_pushstring(L, "");
+    lua_setfield(L, -2, "base_page");
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "clear_background");
+    setFn(L, "set_interval", cLockSetInterval);
+    setFn(L, "flush_once", cLockFlushOnce);
+    lua_setfield(L, -2, "lock");
+  }
+
   lua_newtable(L);  // input
   lua_createtable(L, 0, 2);
   lua_pushboolean(L, 1);
@@ -1909,6 +2086,7 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
   lua_newtable(L);
   setFn(L, "request", cNetRequest);
   setFn(L, "keep_wifi", cNetKeepWifi);
+  setFn(L, "websocket", cNetWebsocket);
   lua_setfield(L, -2, "net");
 
   lua_newtable(L);  // json
@@ -1959,12 +2137,22 @@ void buildGlobals(lua_State* L, App::Impl* im, const Manifest& m, const std::str
 
 }  // namespace
 
-bool App::start(const std::string& manifestJson) {
+bool App::start(const std::string& manifestJson, const Mode mode) {
   std::string err;
   if (!parseManifest(manifestJson, manifest_, &err)) {
     error_ = err;
     failed_ = true;
     return false;
+  }
+  if (mode == Mode::Lockscreen) {
+    if (!manifest_.lockscreenEnabled) {
+      error_ = "The app declares no lockscreen block";
+      failed_ = true;
+      return false;
+    }
+    manifest_.entry = manifest_.lockscreenEntry;
+    impl_->lockMode = true;
+    impl_->lockInterval = static_cast<uint32_t>(manifest_.lockscreenIntervalSec);
   }
   if (manifest_.encrypted) {
     error_ = "Official encrypted .xtapp package: its code is locked to the vendor firmware key and cannot run here.";
@@ -2194,7 +2382,27 @@ bool App::pendingConfirm(Confirm& out) const {
   return true;
 }
 
+uint32_t App::lockIntervalSec() const { return impl_->lockInterval; }
+bool App::takeLockFlush() {
+  const bool f = impl_->lockFlush;
+  impl_->lockFlush = false;
+  return f;
+}
+bool App::takeOpenRequest(std::string& appId) {
+  if (impl_->openRequest.empty()) return false;
+  appId = std::move(impl_->openRequest);
+  impl_->openRequest.clear();
+  return true;
+}
+
 void App::answerConfirm(bool yes) {
+  if (impl_->confirmSetsLockscreen) {
+    impl_->confirmSetsLockscreen = false;
+    impl_->confirmPending = false;
+    if (yes) impl_->env->setLockscreenApp(manifest_.appId);
+    redraw_ = true;
+    return;
+  }
   if (!impl_->confirmPending || !impl_->L || failed_) {
     impl_->confirmPending = false;
     return;
@@ -2282,6 +2490,54 @@ bool App::takeNetCancel(int& id) {
   id = impl_->netCancelled.back();
   impl_->netCancelled.pop_back();
   return true;
+}
+
+bool App::takeWsOpen(WsOpen& out) {
+  if (impl_->wsOpenQ.empty()) return false;
+  out = impl_->wsOpenQ.front();
+  impl_->wsOpenQ.erase(impl_->wsOpenQ.begin());
+  impl_->wsHandedOut = true;
+  return true;
+}
+
+bool App::takeWsOut(WsOut& out) {
+  if (impl_->wsOutQ.empty()) return false;
+  out = std::move(impl_->wsOutQ.front());
+  impl_->wsOutQ.erase(impl_->wsOutQ.begin());
+  return true;
+}
+
+void App::wsEvent(int id, const std::string& type, const std::string& data) {
+  if (failed_ || !impl_->L || id != impl_->wsId || impl_->wsRef == LUA_NOREF) return;
+  lua_State* L = impl_->L;
+  const bool last = type == "close" || type == "error";
+  const int ref = impl_->wsRef;
+  if (last) {  // the socket is gone after this event: free the slot first so the handler may open a new one
+    impl_->wsRef = LUA_NOREF;
+    impl_->wsId = 0;
+    impl_->wsOutQ.clear();
+  }
+  lua_pushcfunction(L, msgHandler);
+  lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+  lua_getfield(L, -1, ("on_" + type).c_str());
+  lua_remove(L, -2);
+  if (last) luaL_unref(L, LUA_REGISTRYINDEX, ref);
+  if (!lua_isfunction(L, -1)) {
+    lua_pop(L, 2);
+    return;
+  }
+  lua_getglobal(L, "ctx");
+  lua_pushlstring(L, data.data(), data.size());
+  impl_->callStart = impl_->env->millis();
+  impl_->budgetMs = impl_->limits.callbackMs;
+  if (lua_pcall(L, 2, 0, -4) != LUA_OK) {
+    error_ = std::string("websocket callback: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "(error)");
+    failed_ = true;
+    lua_pop(L, 2);
+    return;
+  }
+  lua_pop(L, 1);
+  redraw_ = true;
 }
 
 void App::netDone(int id, NetResponse&& resp) {

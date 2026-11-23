@@ -571,6 +571,8 @@ class InkMODSettings {
   char sdFontFamilyName[64] = "Bookerly";
   // SD font family that supplies interface glyphs (CJK) at the UI size; empty = borrow the reading font.
   char uiFontFamily[64] = "";
+  // Mini app (XTApps manifest app_id) that draws the sleep screen through its lockscreen entry; empty = normal sleep screen.
+  char lockscreenApp[48] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
   // Hide file extensions in the file browser right-side value column (0 = show, 1 = hide)

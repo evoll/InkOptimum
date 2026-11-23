@@ -196,6 +196,7 @@ bool JsonSettingsIO::saveSettings(const InkMODSettings& s, const char* path) {
   doc["fontFamily"] = s.fontFamily;
   // SD card font family name — not in SettingsList, save manually
   if (s.uiFontFamily[0] != '\0') doc["uiFontFamily"] = s.uiFontFamily;
+  if (s.lockscreenApp[0] != '\0') doc["lockscreenApp"] = s.lockscreenApp;
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
@@ -397,6 +398,9 @@ bool JsonSettingsIO::loadSettings(InkMODSettings& s, const char* json, bool* nee
   const char* ufn = doc["uiFontFamily"] | "";
   strncpy(s.uiFontFamily, ufn, sizeof(s.uiFontFamily) - 1);
   s.uiFontFamily[sizeof(s.uiFontFamily) - 1] = '\0';
+  const char* lsa = doc["lockscreenApp"] | "";
+  strncpy(s.lockscreenApp, lsa, sizeof(s.lockscreenApp) - 1);
+  s.lockscreenApp[sizeof(s.lockscreenApp) - 1] = '\0';
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
   s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';

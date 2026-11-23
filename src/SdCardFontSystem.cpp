@@ -54,11 +54,17 @@ void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
   const std::string wanted = SETTINGS.uiFontFamily;
   if (wanted.empty() && uiFontLoadedFamily_.empty()) return;  // nothing to load or drop: no need to scan the card
   refreshIfDirty();
-  if (wanted == uiFontLoadedFamily_ && (wanted.empty() || uiFont_)) return;
+  // The glyph font follows the interface text size: 10 pt standard, 11 pt medium, 12 pt large (the built-in Inter
+  // sizes), so CJK/other-script UI text keeps the proportions of the Latin text beside it.
+  const uint8_t wantedPt = SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_LARGE    ? 12
+                           : SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_MEDIUM ? 11
+                                                                                        : 10;
+  if (wanted == uiFontLoadedFamily_ && (wanted.empty() || (uiFont_ && uiFontLoadedPt_ == wantedPt))) return;
 
   renderer.setDedicatedUiGlyphFont(nullptr);  // before the font goes away
   uiFont_.reset();
   uiFontLoadedFamily_.clear();
+  uiFontLoadedPt_ = 0;
   if (wanted.empty()) return;
 
   const auto* family = registry_.findFamily(wanted);
@@ -68,7 +74,7 @@ void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
     LOG_DBG("SDFS", "UI font family unusable: %s", wanted.c_str());
     return;
   }
-  const auto* file = family->findClosestFile(10);  // built-in UI body text is 10 pt
+  const auto* file = family->findClosestFile(wantedPt);  // matches the built-in UI body size
   if (!file) return;
   if (ESP.getMaxAllocHeap() < 48 * 1024) {
     LOG_ERR("SDFS", "Not enough heap for the UI font %s", wanted.c_str());
@@ -81,6 +87,7 @@ void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
   }
   uiFont_ = std::move(font);
   uiFontLoadedFamily_ = wanted;
+  uiFontLoadedPt_ = wantedPt;
   renderer.setDedicatedUiGlyphFont(uiFont_.get());
   LOG_DBG("SDFS", "UI glyph font: %s (%u pt)", wanted.c_str(), file->pointSize);
 }

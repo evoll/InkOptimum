@@ -146,3 +146,6 @@ crosspoint 79ae14ff: only "remove conditional half refresh for EEGO A4" — not 
 
 ### 2026-11-22 — re-check 2
 crosspoint 177d0694: Paper Mono board only — N/A. Others unchanged.
+
+### 2026-11-23 — Folio added to the comparison
+guloff/folio-firmware `c14fb8d` (1.1.1, 2026-10-24, CrossPoint 1.6.5 fork for X4 Pro + iOS app FolioLink, MIT). Not tracked before. Compared by README/FOLIO.md/commit list/directories: details in `docs/FEATURE_MATRIX.md` section 3a. Ours already covers: markers, dashboard/quote sleep, sleep image picker, per-book text, BLE remote, FB2 (native), Ed25519 signing. Gaps: wake/book PIN, shelves + auto status, personal vocabulary, reading heatmap on home, font fallback chain; phone protocol (`/api/inklink`, BLE sync) is out of scope. Nothing was copied into the code in this step.

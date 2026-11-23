@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <new>
 
+#include "../apps/XtAppActivity.h"
 #include "../home/RecentBookProgress.h"
 #include "../reader/BookStatsView.h"
 #include "../reader/EpubReaderActivity.h"
@@ -604,6 +605,12 @@ void SleepActivity::onEnter() {
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   } else {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+  }
+
+  // A mini app chosen with ctx.system.set_as_lockscreen_app draws the sleep screen; on any failure fall through.
+  if (SETTINGS.lockscreenApp[0] && XtAppActivity::drawLockscreen(renderer)) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+    return;
   }
 
   switch (sleepMode) {

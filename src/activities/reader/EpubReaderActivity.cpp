@@ -5165,9 +5165,25 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 void EpubReaderActivity::prefetchNextSection(const uint16_t viewportWidth, const uint16_t viewportHeight) {
   if (!epub || !section || epub->isFb2Package()) return;
   if (bleturner::holdsHeap()) return;  // never builds next to the radio
-  const int nextSpine = currentSpineIndex + 1;
-  if (nextSpine >= epub->getSpineItemsCount() || prefetchTriedSpine == nextSpine) return;
-  if (section->pageCount == 0 || section->currentPage + PREFETCH_PAGES_BEFORE_END < static_cast<int>(section->pageCount)) {
+  prefetchTriedSpines.erase(std::remove_if(prefetchTriedSpines.begin(), prefetchTriedSpines.end(),
+                                           [&](const int s) { return s <= currentSpineIndex; }),
+                            prefetchTriedSpines.end());
+  const auto tried = [&](const int s) {
+    return std::find(prefetchTriedSpines.begin(), prefetchTriedSpines.end(), s) != prefetchTriedSpines.end();
+  };
+  // First chapter ahead that still needs an attempt; the one right after this chapter only near its end.
+  int nextSpine = -1;
+  for (int k = 1; k <= PREFETCH_DEPTH; ++k) {
+    const int s = currentSpineIndex + k;
+    if (s >= epub->getSpineItemsCount()) break;
+    if (tried(s)) continue;
+    nextSpine = s;
+    break;
+  }
+  if (nextSpine < 0) return;
+  if (nextSpine == currentSpineIndex + 1 &&
+      (section->pageCount == 0 ||
+       section->currentPage + PREFETCH_PAGES_BEFORE_END < static_cast<int>(section->pageCount))) {
     return;
   }
   // Only for the full-quality layout of the selected font: that is the variant the chapter
@@ -5190,11 +5206,11 @@ void EpubReaderActivity::prefetchNextSection(const uint16_t viewportWidth, const
                            SETTINGS.forceParagraphIndents, SETTINGS.paragraphAlignment, viewportWidth,
                            viewportHeight, config.hyphenationEnabled, config.embeddedStyle, config.imageRendering,
                            config.bionicReadingEnabled, config.guideReadingEnabled)) {
-    prefetchTriedSpine = nextSpine;  // already prepared
+    prefetchTriedSpines.push_back(nextSpine);  // already prepared
     return;
   }
 
-  prefetchTriedSpine = nextSpine;
+  prefetchTriedSpines.push_back(nextSpine);
   LOG_INF("ERS", "Preparing next chapter %d in the background (free=%u maxAlloc=%u)", nextSpine, heap.freeHeap,
           heap.maxAllocHeap);
   next.noFramebufferScratch = true;
@@ -5214,7 +5230,8 @@ void EpubReaderActivity::prefetchNextSection(const uint16_t viewportWidth, const
   }
   if (cancelled) {
     // Input arrived; try again when the reader is back on the last pages.
-    prefetchTriedSpine = -1;
+    prefetchTriedSpines.erase(std::remove(prefetchTriedSpines.begin(), prefetchTriedSpines.end(), nextSpine),
+                              prefetchTriedSpines.end());
     LOG_DBG("ERS", "Background chapter preparation cancelled by input");
   } else if (!built) {
     LOG_DBG("ERS", "Background chapter preparation not completed (images=%u lowMemory=%u)",
@@ -6028,11 +6045,23 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
 
 // Sync On Sleep: the position the sleep sync sends later. The book is gone from memory by then, so everything the
 // upload needs is computed now. FB2-backed books are left out (their upload needs the source-section mapping).
+namespace {
+// The id KOReader sync files this book under: the original file (an FB2 is read through a synthetic package), by
+// content or by file name as the sync settings say.
+std::string koreaderDocumentFor(const std::string& book) {
+  const std::string source = Fb2::resolveOriginalPath(book);
+  return KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME
+             ? KOReaderDocumentId::calculateFromFilename(source)
+             : KOReaderDocumentId::calculate(source);
+}
+}  // namespace
+
 void EpubReaderActivity::captureSleepSyncSnapshot() {
-  if (!SleepSync::enabled() || epub->isFb2Package()) return;
+  if (!SleepSync::enabled()) return;
   const std::string book = epub->getPath();
+  const bool fb2 = epub->isFb2Package();
   SleepSync::Snapshot snap;
-  snap.document = KOReaderDocumentId::calculate(book);
+  snap.document = koreaderDocumentFor(book);
   if (snap.document.size() != 32) return;
   const int page = section ? section->currentPage : nextPageNumber;
   const int total = section ? section->pageCount : cachedChapterTotalPageCount;
@@ -6047,12 +6076,20 @@ void EpubReaderActivity::captureSleepSyncSnapshot() {
   }
   const KOReaderPosition ko = ProgressMapper::toKOReader(epub, pos);
   snap.xpath = ko.xpath;
+  if (fb2) {
+    // Never publish the synthetic package's XPath: KOReader opens the original FB2 (same rule as the sync screen).
+    int sourceOrdinal = currentSpineIndex + 1;
+    Fb2::getOriginalSectionOrdinal(epub->getCachePath(), currentSpineIndex, sourceOrdinal);
+    snap.xpath = ProgressMapper::generateFb2SourceXPath(epub, epub->getCachePath(), pos, sourceOrdinal);
+    if (snap.xpath.empty()) return;
+  }
   snap.percentage = ko.percentage;
   snap.spine = static_cast<uint16_t>(std::max(0, currentSpineIndex));
   snap.page = static_cast<uint16_t>(std::max(0, page));
   snap.totalPages = static_cast<uint16_t>(std::max(1, total));
-  const size_t slash = book.find_last_of("/\\");
-  snap.filename = slash == std::string::npos ? book : book.substr(slash + 1);
+  const std::string sourceBook = Fb2::resolveOriginalPath(book);
+  const size_t slash = sourceBook.find_last_of("/\\");
+  snap.filename = slash == std::string::npos ? sourceBook : sourceBook.substr(slash + 1);
   snap.title = epub->getTitle();
   snap.authors = epub->getAuthor();
   SleepSync::saveSnapshot(snap);
@@ -6069,7 +6106,7 @@ void EpubReaderActivity::emitPluginExitEvents() {
 
   if (pluginSessionSeconds < 10 || pluginSessionStartEpoch <= 0) return;
   const int startBp = std::clamp(pluginSessionStartBp, 0, 10000);
-  const std::string document = KOReaderDocumentId::calculate(book);
+  const std::string document = koreaderDocumentFor(book);
   if (document.size() != 32) return;
   const long duration = static_cast<long>(pluginSessionSeconds);
   {
