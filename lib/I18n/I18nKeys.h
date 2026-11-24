@@ -94,6 +94,7 @@ enum class StrId : uint16_t {
   STR_HOTSPOT_MODE,
   STR_CONNECT_WIFI_HINT,
   STR_OPEN_URL_HINT,
+  STR_COMPANION_PAIR_CODE,
   STR_OR_HTTP_PREFIX,
   STR_SCAN_QR_HINT,
   STR_CALIBRE_WIRELESS,
@@ -1038,7 +1039,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0xA7394440u;
+constexpr uint32_t I18N_KEY_HASH = 0x9572C4B3u;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

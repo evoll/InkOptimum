@@ -234,3 +234,6 @@ Source: https://github.com/guloff/folio-firmware, `c14fb8d`. Docs only: FEATURE_
 
 ## 2026-11-23 (17) — companion app plan (docs only)
 `docs/COMPANION_APP.md`: Flutter app for Windows/Linux/macOS/Android/iOS with FolioLink-level features for our firmware. Finding: the firmware web server already has most data endpoints but no authorization; plan starts with firmware pairing/token API v1. Source of ideas: Folio (guloff/folio-firmware) API/BLE protocol. No code written.
+
+## 2026-11-24 (18) — companion app, stage 0 (firmware pairing + tokens)
+New: `lib/CompanionAuth/CompanionAuth.{h,cpp}` (own design, uses `xtapp::sha256`), `src/network/CompanionApi.{h,cpp}`, `test/companion_auth` (9 tests). Changed: `InkMODWebServer.cpp` (routes, Authorization header collected, reset on stop), `InkMODWebServerActivity.cpp` (code on screen, repaint, mDNS service `_inkoptimum._tcp`), i18n `STR_COMPANION_PAIR_CODE` (en, ru; regenerated), `test/CMakeLists.txt`, docs/COMPANION_APP.md. Protocol shape inspired by Folio's pairing (guloff/folio-firmware), not copied. Device verification pending.

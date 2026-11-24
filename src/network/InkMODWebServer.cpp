@@ -2,6 +2,7 @@
 
 #include <Memory.h>
 
+#include "CompanionApi.h"
 #include "MultipartRoute.h"
 #include <PluginItems.h>
 #include "util/UrlUtils.h"
@@ -312,6 +313,7 @@ void InkMODWebServer::begin() {
   server->on("/style.css", HTTP_GET, [this] { handleStyleCss(); });
   server->on("/logo.png", HTTP_GET, [this] { handleLogo(); });
 
+  companionapi::registerRoutes(*server);
   server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
   server->on("/api/diagnostics", HTTP_GET, [this] { handleDiagnostics(); });
   server->on("/api/files", HTTP_GET, [this] { handleFileListData(); });
@@ -419,8 +421,9 @@ void InkMODWebServer::begin() {
 
   // Collect WebDAV headers and register handler
   // Host is collected for the hotspot's captive-portal check.
-  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout", "Host", "If-None-Match"};
-  server->collectHeaders(davHeaders, 8);
+  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout", "Host", "If-None-Match",
+                             "Authorization"};
+  server->collectHeaders(davHeaders, 9);
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -465,6 +468,7 @@ void InkMODWebServer::abortWsUpload(const char* tag) {
 }
 
 void InkMODWebServer::stop() {
+  companionapi::reset();
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
     return;

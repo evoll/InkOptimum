@@ -1,4 +1,5 @@
 #include "InkMODWebServerActivity.h"
+#include "network/CompanionApi.h"
 #include "util/TaskWatchdog.h"
 
 #include <DNSServer.h>
@@ -50,6 +51,7 @@ void stopDnsServer() {
 void restartMdns(const char* hostname, const char* tag) {
   MDNS.end();
   if (MDNS.begin(hostname)) {
+    MDNS.addService("inkoptimum", "tcp", 80);  // companion apps look for _inkoptimum._tcp
     LOG_DBG(tag, "mDNS started: http://%s.local/", hostname);
   } else {
     LOG_DBG(tag, "WARNING: mDNS failed to start");
@@ -337,6 +339,11 @@ void InkMODWebServerActivity::stopWebServer() {
 void InkMODWebServerActivity::loop() {
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
+    {  // companion pairing: repaint when the code appears or expires
+      bool changed = false;
+      companionapi::codeToShow(changed);
+      if (changed) requestUpdate();
+    }
     // Handle DNS requests for captive portal (AP mode only)
     if (isApMode && dnsServer) {
       dnsServer->processNextRequest();
@@ -537,6 +544,13 @@ void InkMODWebServerActivity::renderServerRunning() const {
     // Also show hostname URL
     std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
+  }
+
+  bool codeChanged = false;
+  const std::string pairCode = companionapi::codeToShow(codeChanged);
+  if (!pairCode.empty()) {
+    const std::string line = std::string(tr(STR_COMPANION_PAIR_CODE)) + " " + pairCode;
+    renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() - 110, line.c_str(), true, EpdFontFamily::BOLD);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
