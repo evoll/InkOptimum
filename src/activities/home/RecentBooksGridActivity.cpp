@@ -1,3 +1,4 @@
+#include "util/ShelfFile.h"
 #include "RecentBooksGridActivity.h"
 
 #include <Arduino.h>
@@ -499,6 +500,7 @@ void RecentBooksGridActivity::promptDeleteBook(const RecentBook& book) {
       return;
     }
 
+    ShelfFile::onPathDeleted(path.c_str());
     RECENT_BOOKS.removeByPath(path);
     reloadAfterBookAction();
   };

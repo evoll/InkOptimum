@@ -257,5 +257,5 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 - `src/util/ShelfFile` persistence; `ShelvesActivity` (Apps → Shelves; list, open shelf, long-press menu, missing books pruned on open); `shelf_flow::addBook` (choose shelf or create new, toast).
 - `FileBrowserAction::AddToShelf = 13` wired into FileBrowser, RecentBooks, RecentBooksGrid; i18n strings STR_SHELVES etc. (en/ru).
 - Correction: file-browser 'Pin as Favorite' is for sleep images, not books.
-- Not done: hooking ShelfFile::onPathRenamed/onPathDeleted into rename/delete (missing books are pruned on shelf open instead).
+- ShelfFile::onPathRenamed/onPathDeleted hooked into FileBrowser rename/delete (files and folders), RecentBooks(+Grid) delete and move-to-Read; missing books are also pruned on shelf open.
 - Pending device verification.

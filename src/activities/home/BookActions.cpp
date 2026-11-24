@@ -1,3 +1,4 @@
+#include "util/ShelfFile.h"
 #include "BookActions.h"
 
 #include <Epub.h>
@@ -138,6 +139,7 @@ bool toggleEpubCompleted(const std::string& fullPath, const std::string& display
       return true;
     }
 
+    ShelfFile::onPathRenamed(fullPath.c_str(), dstPath.c_str());
     BookMoveUtils::migrateMovedEpubState(fullPath, dstPath, oldCachePath, title, author,
                                          !SETTINGS.removeReadBooksFromRecents);
   }

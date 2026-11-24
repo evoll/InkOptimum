@@ -1,3 +1,4 @@
+#include "util/ShelfFile.h"
 #include "RecentBooksActivity.h"
 
 #include <Arduino.h>
@@ -181,6 +182,7 @@ void RecentBooksActivity::promptDeleteBook(const RecentBook& book) {
       return;
     }
 
+    ShelfFile::onPathDeleted(path.c_str());
     RECENT_BOOKS.removeByPath(path);
     reloadAfterBookAction();
   };

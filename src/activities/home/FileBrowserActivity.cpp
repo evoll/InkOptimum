@@ -1,3 +1,4 @@
+#include "util/ShelfFile.h"
 #include "FileBrowserActivity.h"
 
 #include <Arduino.h>
@@ -360,6 +361,7 @@ void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const st
       LOG_ERR("FileBrowser", "Failed to delete file: %s", fullPath.c_str());
     }
 
+    ShelfFile::onPathDeleted(fullPath.c_str());
     LOG_DBG("FileBrowser", "Deleted successfully");
     if (isPinnedSleepFavorite(fullPath)) {
       unpinSleepFavorite();
@@ -397,6 +399,7 @@ void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, con
       return;
     }
 
+    ShelfFile::onPathDeleted((dirPath + "/").c_str());
     LOG_DBG("FileBrowser", "Deleted successfully");
     for (const auto& metadataPath : metadataPaths) {
       BookActions::clearFileMetadata(metadataPath);
@@ -487,6 +490,9 @@ void FileBrowserActivity::promptRenamePath(const std::string& fullPath, const st
                              requestUpdate();
                              return;
                            }
+                           ShelfFile::onPathRenamed(
+                               (isDirectory ? stripTrailingSlash(fullPath) + "/" : fullPath).c_str(),
+                               (isDirectory ? stripTrailingSlash(newPath) + "/" : newPath).c_str());
 
                            bool sleepImageStateChanged = false;
                            if (APP_STATE.favoriteSleepImagePath == fullPath) {
