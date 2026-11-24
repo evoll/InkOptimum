@@ -22,6 +22,7 @@ enum class FileBrowserAction : int {
   Rename = 10,
   SetTimeoutSleepOverlay = 11,
   BookInfo = 12,
+  AddToShelf = 13,
 };
 
 class FileBrowserActionActivity final : public Activity {

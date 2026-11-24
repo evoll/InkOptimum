@@ -15,6 +15,7 @@
 #include <cstdio>
 
 #include "BookActions.h"
+#include "activities/shelves/ShelfFlow.h"
 #include "util/BookArchiveUtils.h"
 #include "InkMODSettings.h"
 #include "FileBrowserActionActivity.h"
@@ -580,6 +581,9 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
                   }
                   reloadAfterBookAction();
                 });
+            return;
+          case FileBrowserAction::AddToShelf:
+            shelf_flow::addBook(*this, renderer, mappedInput, book.path);
             return;
           case FileBrowserAction::ToggleCompleted: {
             bool completed = false;

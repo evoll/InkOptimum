@@ -14,6 +14,7 @@
 
 #include "BookActions.h"
 #include "BookInfoActivity.h"
+#include "activities/shelves/ShelfFlow.h"
 #include "BookmarkStore.h"
 #include "InkMODSettings.h"
 #include "InkMODState.h"
@@ -568,6 +569,7 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
                              case FileBrowserAction::SetSleepOverlay:
                              case FileBrowserAction::SetTimeoutSleepOverlay:
                              case FileBrowserAction::BookInfo:
+                             case FileBrowserAction::AddToShelf:
                                return;
                            }
                          });
@@ -674,6 +676,9 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
 
         const auto action = static_cast<FileBrowserAction>(std::get<FileBrowserActionResult>(result.data).action);
         switch (action) {
+          case FileBrowserAction::AddToShelf:
+            shelf_flow::addBook(*this, renderer, mappedInput, fullPath);
+            return;
           case FileBrowserAction::BookInfo:
             startActivityForResult(std::make_unique<BookInfoActivity>(renderer, mappedInput, fullPath),
                                    [this](const ActivityResult&) { requestUpdate(true); });

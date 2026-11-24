@@ -15,6 +15,7 @@
 #include "activities/apps/ClockActivity.h"
 #include "activities/apps/LcpLoansActivity.h"
 #include "activities/apps/ReadingCalendarActivity.h"
+#include "activities/shelves/ShelvesActivity.h"
 #include "activities/apps/XtAppActivity.h"
 #include "InkMODSettings.h"
 #include "MappedInputManager.h"
@@ -123,6 +124,7 @@ void AppsActivity::loadItems() {
   addBuiltIn(ACTION_WEATHER, tr(STR_WEATHER), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_CLOCK, tr(STR_CLOCK_DISABLED), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_READING_STATS, tr(STR_READING_STATS), tr(STR_APP_BUILTIN));
+  addBuiltIn(ACTION_SHELVES, tr(STR_SHELVES), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_READING_CALENDAR, tr(STR_READING_CALENDAR), tr(STR_APP_BUILTIN));
   if (BookmarkStore::hasAnyBookmarks()) addBuiltIn(ACTION_BOOKMARKS, tr(STR_BOOKMARKS), tr(STR_APP_BUILTIN));
   if (OPDS_STORE.hasServers()) addBuiltIn(ACTION_OPDS, tr(STR_OPDS_BROWSER), tr(STR_APP_BUILTIN));
@@ -202,6 +204,11 @@ void AppsActivity::openSelected() {
       selected_ = std::min(selected_, std::max(0, static_cast<int>(items_.size()) - 1));
       requestUpdate();
     });
+    return;
+  }
+  if (item.builtIn && item.action == ACTION_SHELVES) {
+    startActivityForResult(std::make_unique<ShelvesActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
   if (item.builtIn && item.action == ACTION_READING_CALENDAR) {

@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "BookActions.h"
+#include "activities/shelves/ShelfFlow.h"
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
@@ -261,6 +262,9 @@ void RecentBooksActivity::showBookActionMenu(const size_t bookIndex, const bool 
                   }
                   reloadAfterBookAction();
                 });
+            return;
+          case FileBrowserAction::AddToShelf:
+            shelf_flow::addBook(*this, renderer, mappedInput, book.path);
             return;
           case FileBrowserAction::ToggleCompleted: {
             bool completed = false;

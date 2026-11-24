@@ -250,3 +250,12 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 
 ## 2026-11-24 (21) — year heat map in Reading calendar
 `src/activities/apps/ReadingCalendarActivity.{h,cpp}`: year view (Confirm on the current month toggles; Left/Right change the year), i18n `STR_CAL_YEAR_VIEW`/`STR_CAL_MONTH_VIEW` (en, ru). Idea: Folio's reading heat map. Docs: FEATURE_MATRIX, RECONCILIATION. Device verification pending.
+
+## 2026-11-24 (22) — user shelves
+
+- `lib/Shelves` ShelfStore (create/rename/remove, add/remove book, renamePath/forgetPath, JSON serialize/load; limits 16 shelves, 200 books, 40-byte names) + 7 native tests.
+- `src/util/ShelfFile` persistence; `ShelvesActivity` (Apps → Shelves; list, open shelf, long-press menu, missing books pruned on open); `shelf_flow::addBook` (choose shelf or create new, toast).
+- `FileBrowserAction::AddToShelf = 13` wired into FileBrowser, RecentBooks, RecentBooksGrid; i18n strings STR_SHELVES etc. (en/ru).
+- Correction: file-browser 'Pin as Favorite' is for sleep images, not books.
+- Not done: hooking ShelfFile::onPathRenamed/onPathDeleted into rename/delete (missing books are pruned on shelf open instead).
+- Pending device verification.
