@@ -1,4 +1,5 @@
 #include "DictionaryActivity.h"
+#include "util/VocabLog.h"
 
 #include <BoardConfig.h>
 #include <FontCacheManager.h>
@@ -505,7 +506,9 @@ bool DictionaryActivity::loadDictionaryArticle(const uint8_t dictionaryIndex) {
                                  sizeof(article_));
     lookupMs += millis() - tAlt;
   }
-  if (!found) {
+  if (found) {
+    VocabLog::append(selectedLookupWord_, matchedWord_);
+  } else {
     snprintf(matchedWord_, sizeof(matchedWord_), "%s", selectedLookupWord_);
     snprintf(article_, sizeof(article_), "%s", tr(STR_DICTIONARY_WORD_NOT_FOUND));
   }

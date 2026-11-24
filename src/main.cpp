@@ -1821,6 +1821,9 @@ void loop() {
     return;
   }
   const unsigned long activityDuration = millis() - activityStartTime;
+  // Time blocked inside a screen (a synchronous download, say) is not idle time (crosspoint #4538); ordinary short
+  // passes are not touched.
+  if (activityDuration >= 1000) lastActivityTime += activityDuration;
 
 #ifdef SIMULATOR
   runSimulatorSmokeTestTick();

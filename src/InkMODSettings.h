@@ -520,6 +520,7 @@ class InkMODSettings {
   uint8_t largeHeadings = 1;
   // X4 Pro / X4 Classic: text anti-aliasing in one panel pass (crosspoint #4362); off = the earlier two-step path.
   uint8_t fastTextAa = 1;
+  uint8_t vocabularyLog = 0;  // append every found dictionary word to /.crosspoint/vocab.jsonl
 
   // Reader screen margin settings
   uint8_t screenMargin = 5;

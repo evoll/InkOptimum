@@ -240,3 +240,10 @@ New: `lib/CompanionAuth/CompanionAuth.{h,cpp}` (own design, uses `xtapp::sha256`
 
 ## 2026-11-24 (19) — references refreshed, reconciliation against code
 All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6b, sdk a7eb4cc, tla 04d46f0, witchhunt db99b55; inkmod 9af70eb already merged). Report: `docs/RECONCILIATION_2026-11-24.md`; `UPSTREAM_SYNC.md` entry; `FEATURE_MATRIX.md` prefetch row corrected. Docs only, no code changed.
+
+## 2026-11-24 (20) — checks and small items from the reconciliation
+* Sleep PNG cache key now includes an FNV hash of the first/last 256 bytes (`SleepActivity.cpp`; crosspoint #4542 idea).
+* `Section::createSectionFile` clears glyph caches when a build ends (crosspoint #4469).
+* `main.cpp`: activity passes >= 1 s do not count as idle (crosspoint #4538).
+* Vocabulary log: `src/util/VocabLog.{h,cpp}`, setting `vocabularyLog` (+ i18n `STR_VOCABULARY_LOG`), hook in `DictionaryActivity`, `GET /api/v1/vocab` in `CompanionApi.cpp` (source of the idea: Folio `vocab.jsonl`, crosspoint #4294).
+* Checked and found not applicable / already present: see `docs/RECONCILIATION_2026-11-24.md` section 5.

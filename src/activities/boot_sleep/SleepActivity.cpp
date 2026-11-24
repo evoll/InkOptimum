@@ -60,11 +60,25 @@ static std::string sleepPngCachePath(const std::string& imagePath, bool adaptive
   FsFile f;
   if (!Storage.openFileForRead("SLP", imagePath, f)) return std::string();
   const uint32_t size = static_cast<uint32_t>(f.size());
+  // A replacement of the same byte size must not replay the old picture: fold the first and last 256 bytes
+  // (PNG header/IHDR and the IEND/CRC tail, which differ for different pictures) into the key (FNV-1a).
+  uint32_t h = 2166136261u;
+  uint8_t buf[256];
+  for (int part = 0; part < 2; part++) {
+    if (part == 1) {
+      if (size <= sizeof(buf)) break;
+      f.seekSet(size - sizeof(buf));
+    }
+    const int n = f.read(buf, sizeof(buf));
+    for (int i = 0; i < n; i++) h = (h ^ buf[i]) * 16777619u;
+  }
   f.close();
   const size_t slash = imagePath.find_last_of('/');
   const std::string dir = slash == std::string::npos ? std::string() : imagePath.substr(0, slash + 1);
   const std::string name = slash == std::string::npos ? imagePath : imagePath.substr(slash + 1);
-  return dir + "." + name + "." + std::to_string(size) + (adaptive ? ".t1" : ".t0") + ".pxc";
+  char hex[9];
+  snprintf(hex, sizeof(hex), "%08x", static_cast<unsigned>(h));
+  return dir + "." + name + "." + std::to_string(size) + "." + hex + (adaptive ? ".t1" : ".t0") + ".pxc";
 }
 
 // Replays the cache into the framebuffer (current render mode). false = missing/invalid, caller decodes.

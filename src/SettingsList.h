@@ -440,6 +440,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
       add(SettingInfo::Toggle(StrId::STR_FAST_TEXT_AA, &InkMODSettings::fastTextAa, "fastTextAa",
                               StrId::STR_CAT_READER));
     }
+    add(SettingInfo::Toggle(StrId::STR_VOCABULARY_LOG, &InkMODSettings::vocabularyLog, "vocabularyLog",
+                            StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_LARGE_HEADINGS, &InkMODSettings::largeHeadings, "largeHeadings",
                             StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_TEXT_AA, &InkMODSettings::textAntiAliasing, "textAntiAliasing",

@@ -11,6 +11,7 @@
 
 #include "AppVersion.h"
 #include "InkMODState.h"
+#include "util/VocabLog.h"
 
 namespace companionapi {
 namespace {
@@ -125,6 +126,31 @@ void handleRevoke(WebServer& s) {
   sendJson(s, 200, doc);
 }
 
+void handleVocab(WebServer& s) {
+  if (!authorized(s)) return sendError(s, 401, "unauthorized");
+  HalFile f;
+  if (!Storage.openFileForRead("VOCAB", VocabLog::PATH, f)) {
+    s.sendHeader("Cache-Control", "no-store");
+    s.send(200, "application/x-ndjson", "");
+    return;
+  }
+  const uint32_t size = static_cast<uint32_t>(f.size());
+  uint32_t offset = static_cast<uint32_t>(s.arg("offset").toInt());
+  if (offset > size) offset = size;
+  f.seek(offset);
+  s.sendHeader("Cache-Control", "no-store");
+  s.sendHeader("X-Vocab-Size", String(size));
+  s.setContentLength(size - offset);
+  s.send(200, "application/x-ndjson", "");
+  uint8_t buf[512];
+  for (;;) {
+    const int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    s.sendContent(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+  }
+  f.close();
+}
+
 }  // namespace
 
 bool authorized(WebServer& s) {
@@ -138,6 +164,7 @@ void registerRoutes(WebServer& s) {
   s.on("/api/v1/info", HTTP_GET, [&s] { handleInfo(s); });
   s.on("/api/v1/pair/start", HTTP_POST, [&s] { handlePairStart(s); });
   s.on("/api/v1/pair/confirm", HTTP_POST, [&s] { handlePairConfirm(s); });
+  s.on("/api/v1/vocab", HTTP_GET, [&s] { handleVocab(s); });
   s.on("/api/v1/devices", HTTP_GET, [&s] { handleDevices(s); });
   s.on("/api/v1/devices/revoke", HTTP_POST, [&s] { handleRevoke(s); });
 }

@@ -509,6 +509,14 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   struct BidiMemoryRelease {
     ~BidiMemoryRelease() { BidiLine::releaseBuildMemory(); }
   } bidiMemoryRelease;
+  // Glyph caches that grew beside the parser's allocations go back when the build ends, so the next page's
+  // prewarm can reuse that heap (crosspoint #4469).
+  struct FontCacheRelease {
+    GfxRenderer& r;
+    ~FontCacheRelease() {
+      if (auto* fcm = r.getFontCacheManager()) fcm->clearCache();
+    }
+  } fontCacheRelease{renderer};
   const auto localPath = epub->getSpineItem(spineIndex).href;
   const auto tmpHtmlPath = epub->getCachePath() + "/.tmp_" + std::to_string(spineIndex) + ".html";
   // Real EPUBs cache each inflated XHTML spine source on SD.  Re-inflating
