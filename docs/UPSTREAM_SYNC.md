@@ -149,3 +149,6 @@ crosspoint 177d0694: Paper Mono board only — N/A. Others unchanged.
 
 ### 2026-11-23 — Folio added to the comparison
 guloff/folio-firmware `c14fb8d` (1.1.1, 2026-10-24, CrossPoint 1.6.5 fork for X4 Pro + iOS app FolioLink, MIT). Not tracked before. Compared by README/FOLIO.md/commit list/directories: details in `docs/FEATURE_MATRIX.md` section 3a. Ours already covers: markers, dashboard/quote sleep, sleep image picker, per-book text, BLE remote, FB2 (native), Ed25519 signing. Gaps: wake/book PIN, shelves + auto status, personal vocabulary, reading heatmap on home, font fallback chain; phone protocol (`/api/inklink`, BLE sync) is out of scope. Nothing was copied into the code in this step.
+
+### 2026-11-24 — repositories refreshed, code reconciliation
+Fetched and checked out: crosspoint `92e8714` (+49 since `fa17b9c`), inkmod `9af70eb` (already merged earlier; checkout was stale), Paperio `a1ba105` (+14, 2.3.0–2.3.2), papyrix `12b7e6b` (+10), freeink-sdk `a7eb4cc` (+2 relevant over our pin `995d9bd`), touch-licorice-apps `04d46f0` (+7, store apps only), witchhunt `db99b55` (shallow clone; ~1000 commits since `abbade9`), CrossInk `9914146` / x4pro-emu `7df1a46` / Folio `c14fb8d` unchanged. Details and verdicts: `docs/RECONCILIATION_2026-11-24.md`.

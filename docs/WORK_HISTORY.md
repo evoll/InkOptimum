@@ -237,3 +237,6 @@ Source: https://github.com/guloff/folio-firmware, `c14fb8d`. Docs only: FEATURE_
 
 ## 2026-11-24 (18) — companion app, stage 0 (firmware pairing + tokens)
 New: `lib/CompanionAuth/CompanionAuth.{h,cpp}` (own design, uses `xtapp::sha256`), `src/network/CompanionApi.{h,cpp}`, `test/companion_auth` (9 tests). Changed: `InkMODWebServer.cpp` (routes, Authorization header collected, reset on stop), `InkMODWebServerActivity.cpp` (code on screen, repaint, mDNS service `_inkoptimum._tcp`), i18n `STR_COMPANION_PAIR_CODE` (en, ru; regenerated), `test/CMakeLists.txt`, docs/COMPANION_APP.md. Protocol shape inspired by Folio's pairing (guloff/folio-firmware), not copied. Device verification pending.
+
+## 2026-11-24 (19) — references refreshed, reconciliation against code
+All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6b, sdk a7eb4cc, tla 04d46f0, witchhunt db99b55; inkmod 9af70eb already merged). Report: `docs/RECONCILIATION_2026-11-24.md`; `UPSTREAM_SYNC.md` entry; `FEATURE_MATRIX.md` prefetch row corrected. Docs only, no code changed.
