@@ -406,6 +406,8 @@ enum class StrId : uint16_t {
   STR_READING_CALENDAR,
   STR_TODAY,
   STR_CAL_READ_DAYS,
+  STR_CAL_YEAR_VIEW,
+  STR_CAL_MONTH_VIEW,
   STR_QUICK_RESUME,
   STR_RECENT_BOOKS_VIEW,
   STR_LIST_VIEW,
@@ -1040,7 +1042,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x353CA840u;
+constexpr uint32_t I18N_KEY_HASH = 0xCC3FBC55u;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

@@ -62,6 +62,11 @@ void ReadingCalendarActivity::onEnter() {
 
 void ReadingCalendarActivity::shiftMonth(const int delta) {
   if (year_ == 0) return;
+  if (yearView_) {
+    year_ = std::clamp(year_ + delta, 2000, 2099);
+    requestUpdate();
+    return;
+  }
   month_ += delta;
   while (month_ < 1) {
     month_ += 12;
@@ -84,9 +89,15 @@ void ReadingCalendarActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (today_.isValid() && (year_ != today_.year || month_ != today_.month)) {
+    if (yearView_) {
+      yearView_ = false;
+      requestUpdate();
+    } else if (today_.isValid() && (year_ != today_.year || month_ != today_.month)) {
       year_ = today_.year;
       month_ = today_.month;
+      requestUpdate();
+    } else if (year_ != 0) {
+      yearView_ = true;
       requestUpdate();
     }
     return;
@@ -108,6 +119,93 @@ void ReadingCalendarActivity::loop() {
   }
 }
 
+// A year as two stacked half-year blocks of week columns (Monday first): a day is an outlined square when nothing was
+// read, and a square filled more the longer it was read (under 20, 60, 120 min, more). Days that the history only
+// marks as read, without minutes, count as the lightest fill.
+void ReadingCalendarActivity::renderYear(const int top) {
+  const int width = renderer.getScreenWidth();
+  char heading[24];
+  snprintf(heading, sizeof(heading), "< %d >", year_);
+  const int headingY = top + 4 + renderer.getLineHeight(UI_12_FONT_ID) + 14;
+  renderer.drawText(UI_12_FONT_ID, (width - renderer.getTextWidth(UI_12_FONT_ID, heading)) / 2, headingY, heading);
+
+  const int margin = 12;
+  const int cell = (width - 2 * margin) / 27;
+  const int gap = cell >= 12 ? 2 : 1;
+  const int gridLeft = (width - cell * 27) / 2;
+  const int blockH = 7 * cell + renderer.getLineHeight(UI_10_FONT_ID) + 6;
+  const int blockTop[2] = {headingY + renderer.getLineHeight(UI_12_FONT_ID) + 16,
+                           headingY + renderer.getLineHeight(UI_12_FONT_ID) + 16 + blockH + 14};
+
+  ReadingStatsDate first;
+  first.year = static_cast<uint16_t>(year_);
+  first.month = 1;
+  first.day = 1;
+  const int jan1Dow = readingStatsDayOfWeekIndex(first);
+  ReadingStatsDate july = first;
+  july.month = 7;
+  const int julyColBase = (readingStatsDayIndex(july) - readingStatsDayIndex(first) + jan1Dow) / 7;
+
+  // Month numbers above the column where each month starts.
+  for (int m = 1; m <= 12; m++) {
+    ReadingStatsDate d = first;
+    d.month = static_cast<uint8_t>(m);
+    const int doy = readingStatsDayIndex(d) - readingStatsDayIndex(first);
+    const int col = (doy + jan1Dow) / 7;
+    const int half = m <= 6 ? 0 : 1;
+    const int c = half == 0 ? col : col - julyColBase;
+    char num[4];
+    snprintf(num, sizeof(num), "%d", m);
+    renderer.drawText(UI_10_FONT_ID, gridLeft + c * cell, blockTop[half], num);
+  }
+
+  int readDays = 0;
+  uint32_t totalSeconds = 0;
+  const int days = (year_ % 4 == 0 && (year_ % 100 != 0 || year_ % 400 == 0)) ? 366 : 365;
+  ReadingStatsDate date = first;
+  const int labelH = renderer.getLineHeight(UI_10_FONT_ID) + 6;
+  for (int i = 0; i < days; i++, addDaysToReadingStatsDate(date, 1)) {
+    const int col = (i + jan1Dow) / 7;
+    const int row = (i + jan1Dow) % 7;
+    const int half = date.month <= 6 ? 0 : 1;
+    const int c = half == 0 ? col : col - julyColBase;
+    const int x = gridLeft + c * cell;
+    const int y = blockTop[half] + labelH + row * cell;
+    const int dayIndex = readingStatsDayIndex(date);
+    const bool read = readingHistoryHasDay(stats_.readingHistoryAnchorDay, stats_.readingHistoryBits, dayIndex);
+    const uint32_t secs = read ? daily_.secondsFor(dayIndex) : 0;
+    const bool future = today_.isValid() && compareReadingStatsDate(date, today_) > 0;
+    const int inner = cell - gap;
+    if (!read) {
+      if (!future) renderer.drawRect(x, y, inner, inner, 1, true);
+    } else {
+      readDays++;
+      totalSeconds += secs;
+      const unsigned mins = secs / 60;
+      const int level = mins >= 120 ? 4 : mins >= 60 ? 3 : mins >= 20 ? 2 : 1;
+      renderer.drawRect(x, y, inner, inner, 1, true);
+      const int fill = level == 4 ? inner : (inner * level) / 4 + 1;
+      const int off = (inner - fill) / 2;
+      renderer.fillRect(x + off, y + off, fill, fill, true);
+    }
+    if (today_.isValid() && compareReadingStatsDate(date, today_) == 0) {
+      renderer.drawRect(x - 1, y - 1, inner + 2, inner + 2, 1, true);
+    }
+  }
+
+  int infoY = blockTop[1] + blockH + 8;
+  char line[72];
+  snprintf(line, sizeof(line), "%s: %d / %d", tr(STR_CAL_READ_DAYS), readDays, days);
+  renderer.drawText(UI_10_FONT_ID, gridLeft, infoY, line);
+  infoY += renderer.getLineHeight(UI_10_FONT_ID) + 2;
+  if (totalSeconds >= 60) {
+    const unsigned totalMin = totalSeconds / 60;
+    snprintf(line, sizeof(line), "%s: %u %s %02u %s", tr(STR_STATS_TIME_LBL), totalMin / 60, tr(STR_UNIT_HOUR_SHORT),
+             totalMin % 60, tr(STR_UNIT_MIN_SHORT));
+    renderer.drawText(UI_10_FONT_ID, gridLeft, infoY, line);
+  }
+}
+
 void ReadingCalendarActivity::render(RenderLock&&) {
   renderer.clearScreen();
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -122,6 +220,8 @@ void ReadingCalendarActivity::render(RenderLock&&) {
   if (year_ == 0) {
     const char* msg = tr(STR_CLOCK_NOT_SET);
     renderer.drawText(UI_12_FONT_ID, (width - renderer.getTextWidth(UI_12_FONT_ID, msg)) / 2, height / 2, msg);
+  } else if (yearView_) {
+    renderYear(top);
   } else {
     char heading[48];
     snprintf(heading, sizeof(heading), "< %s %d >", monthName(month_), year_);
@@ -211,7 +311,9 @@ void ReadingCalendarActivity::render(RenderLock&&) {
     }
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TODAY), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+  const bool onCurrent = today_.isValid() && year_ == today_.year && month_ == today_.month;
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), yearView_ ? tr(STR_CAL_MONTH_VIEW) : (onCurrent ? tr(STR_CAL_YEAR_VIEW) : tr(STR_TODAY)),
+                                            tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

@@ -247,3 +247,6 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 * `main.cpp`: activity passes >= 1 s do not count as idle (crosspoint #4538).
 * Vocabulary log: `src/util/VocabLog.{h,cpp}`, setting `vocabularyLog` (+ i18n `STR_VOCABULARY_LOG`), hook in `DictionaryActivity`, `GET /api/v1/vocab` in `CompanionApi.cpp` (source of the idea: Folio `vocab.jsonl`, crosspoint #4294).
 * Checked and found not applicable / already present: see `docs/RECONCILIATION_2026-11-24.md` section 5.
+
+## 2026-11-24 (21) — year heat map in Reading calendar
+`src/activities/apps/ReadingCalendarActivity.{h,cpp}`: year view (Confirm on the current month toggles; Left/Right change the year), i18n `STR_CAL_YEAR_VIEW`/`STR_CAL_MONTH_VIEW` (en, ru). Idea: Folio's reading heat map. Docs: FEATURE_MATRIX, RECONCILIATION. Device verification pending.
