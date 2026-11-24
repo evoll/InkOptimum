@@ -128,6 +128,7 @@ void AppsActivity::loadItems() {
   addBuiltIn(ACTION_READING_CALENDAR, tr(STR_READING_CALENDAR), tr(STR_APP_BUILTIN));
   if (BookmarkStore::hasAnyBookmarks()) addBuiltIn(ACTION_BOOKMARKS, tr(STR_BOOKMARKS), tr(STR_APP_BUILTIN));
   if (OPDS_STORE.hasServers()) addBuiltIn(ACTION_OPDS, tr(STR_OPDS_BROWSER), tr(STR_APP_BUILTIN));
+  if (SETTINGS.lockscreenApp[0]) addBuiltIn(ACTION_RESET_LOCKSCREEN, tr(STR_RESET_LOCKSCREEN_APP), SETTINGS.lockscreenApp);
   addBuiltIn(ACTION_FILE_TRANSFER, tr(STR_FILE_TRANSFER), tr(STR_APP_BUILTIN));
   if (!lcploans::list().empty()) addBuiltIn(ACTION_LCP_LOANS, tr(STR_LCP_LOANS), tr(STR_APP_BUILTIN));
 
@@ -204,6 +205,14 @@ void AppsActivity::openSelected() {
       selected_ = std::min(selected_, std::max(0, static_cast<int>(items_.size()) - 1));
       requestUpdate();
     });
+    return;
+  }
+  if (item.builtIn && item.action == ACTION_RESET_LOCKSCREEN) {
+    SETTINGS.lockscreenApp[0] = '\0';
+    SETTINGS.saveToFile();
+    loadItems();
+    if (selected_ >= items_.size() && !items_.empty()) selected_ = items_.size() - 1;
+    requestUpdate();
     return;
   }
   if (item.builtIn && item.action == ACTION_SHELVES) {

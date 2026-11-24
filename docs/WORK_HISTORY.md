@@ -259,3 +259,7 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 - Correction: file-browser 'Pin as Favorite' is for sleep images, not books.
 - ShelfFile::onPathRenamed/onPathDeleted hooked into FileBrowser rename/delete (files and folders), RecentBooks(+Grid) delete and move-to-Read; missing books are also pruned on shelf open.
 - Pending device verification.
+
+## 2026-11-25 (23) — reset lock-screen app
+
+- Apps: built-in 'Reset lock-screen app' (STR_RESET_LOCKSCREEN_APP, en/ru) shown only while SETTINGS.lockscreenApp is set; clears it and saves. Builds x3x4 OK; pending device check.

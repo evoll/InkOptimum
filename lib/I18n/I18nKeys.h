@@ -417,6 +417,7 @@ enum class StrId : uint16_t {
   STR_SHELF_ALREADY,
   STR_SHELF_FULL,
   STR_SHELF_BAD_NAME,
+  STR_RESET_LOCKSCREEN_APP,
   STR_CAL_MONTH_VIEW,
   STR_QUICK_RESUME,
   STR_RECENT_BOOKS_VIEW,
@@ -1052,7 +1053,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x1935A530u;
+constexpr uint32_t I18N_KEY_HASH = 0xA86A335Fu;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }
