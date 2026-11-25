@@ -14,7 +14,7 @@
 // A plugin opens its catalog or README, exactly like the Plugins screen.
 class AppsActivity final : public Activity {
  public:
-  enum AppsAction : int { ACTION_WEATHER = 0, ACTION_READING_STATS, ACTION_BOOKMARKS, ACTION_OPDS, ACTION_FILE_TRANSFER, ACTION_LCP_LOANS, ACTION_CLOCK, ACTION_READING_CALENDAR, ACTION_SHELVES, ACTION_RESET_LOCKSCREEN };
+  enum AppsAction : int { ACTION_WEATHER = 0, ACTION_READING_STATS, ACTION_BOOKMARKS, ACTION_OPDS, ACTION_FILE_TRANSFER, ACTION_LCP_LOANS, ACTION_CLOCK, ACTION_READING_CALENDAR, ACTION_SHELVES, ACTION_RESET_LOCKSCREEN, ACTION_LINKED_DEVICES };
 
   explicit AppsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Apps", renderer, mappedInput) {}

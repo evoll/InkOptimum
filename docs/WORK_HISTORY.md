@@ -263,3 +263,7 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 ## 2026-11-25 (23) — reset lock-screen app
 
 - Apps: built-in 'Reset lock-screen app' (STR_RESET_LOCKSCREEN_APP, en/ru) shown only while SETTINGS.lockscreenApp is set; clears it and saves. Builds x3x4 OK; pending device check.
+
+## 2026-11-25 (24) — Linked devices screen
+
+- Apps > Linked devices (`LinkedDevicesActivity`): lists companion tokens from /.crosspoint/companion_tokens.txt (name + id), Confirm asks and unpairs (store.revoke + file write); `companionapi::invalidateTokens()` drops the server's cached list. STR_LINKED_DEVICES / STR_UNPAIR_DEVICE / STR_NO_LINKED_DEVICES (en/ru). Builds x3x4; pending device check.

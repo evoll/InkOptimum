@@ -37,6 +37,13 @@ void saveTokens() {
   if (!Storage.writeFile(TOKENS_PATH, tokens.serialize().c_str())) LOG_ERR("COMP", "token file not saved");
 }
 
+}  // namespace
+void invalidateTokens() {
+  tokensLoaded = false;
+  tokens = companion::TokenStore();
+}
+namespace {
+
 void sendJson(WebServer& s, int code, JsonDocument& doc) {
   String out;
   serializeJson(doc, out);

@@ -14,6 +14,7 @@
 #include "LcpLoans.h"
 #include "activities/apps/ClockActivity.h"
 #include "activities/apps/LcpLoansActivity.h"
+#include "activities/apps/LinkedDevicesActivity.h"
 #include "activities/apps/ReadingCalendarActivity.h"
 #include "activities/shelves/ShelvesActivity.h"
 #include "activities/apps/XtAppActivity.h"
@@ -129,6 +130,7 @@ void AppsActivity::loadItems() {
   if (BookmarkStore::hasAnyBookmarks()) addBuiltIn(ACTION_BOOKMARKS, tr(STR_BOOKMARKS), tr(STR_APP_BUILTIN));
   if (OPDS_STORE.hasServers()) addBuiltIn(ACTION_OPDS, tr(STR_OPDS_BROWSER), tr(STR_APP_BUILTIN));
   if (SETTINGS.lockscreenApp[0]) addBuiltIn(ACTION_RESET_LOCKSCREEN, tr(STR_RESET_LOCKSCREEN_APP), SETTINGS.lockscreenApp);
+  addBuiltIn(ACTION_LINKED_DEVICES, tr(STR_LINKED_DEVICES), tr(STR_APP_BUILTIN));
   addBuiltIn(ACTION_FILE_TRANSFER, tr(STR_FILE_TRANSFER), tr(STR_APP_BUILTIN));
   if (!lcploans::list().empty()) addBuiltIn(ACTION_LCP_LOANS, tr(STR_LCP_LOANS), tr(STR_APP_BUILTIN));
 
@@ -213,6 +215,11 @@ void AppsActivity::openSelected() {
     loadItems();
     if (selected_ >= items_.size() && !items_.empty()) selected_ = items_.size() - 1;
     requestUpdate();
+    return;
+  }
+  if (item.builtIn && item.action == ACTION_LINKED_DEVICES) {
+    startActivityForResult(std::make_unique<LinkedDevicesActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
   if (item.builtIn && item.action == ACTION_SHELVES) {

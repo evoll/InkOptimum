@@ -13,6 +13,8 @@ bool authorized(WebServer& server);      // true when the request carries a vali
 // The code to show on the reader while a pairing session is open (empty otherwise). `changed` is set when what the
 // screen shows changed since the last call, so the activity knows to repaint.
 std::string codeToShow(bool& changed);
+// Forget the cached token list (call after the token file was edited elsewhere, e.g. the Linked devices screen).
+void invalidateTokens();
 void reset();  // server stopped: drop an open pairing session
 
 }  // namespace companionapi
