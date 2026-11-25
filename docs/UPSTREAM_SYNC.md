@@ -22,7 +22,7 @@ Checked against the working repositories (shallow clones, commits since 2026-10-
 * **Verdict for us**: the Arabic/RTL-UI/Myanmar line is a separate multi-week port (it needs the CPac/glyph-ID drawing path); the reader/web/dictionary fixes above are small and portable one by one. Already ours: bidi markup (`dir`, `<bdi>`, `<bdo>`, `unicode-bidi`), L4 bracket mirroring, Indic OpenType shaping (PR #603), word spacing.
 
 ## crosspoint-reader — new items
-Ported/covered: bracket mirroring L4 (#4295), plugins with updates first (#4319), Wi-Fi power. Not yet: SD card size/used/free in About (#4331), dictionary vocabulary history (#4294), dictionary link selection reuse (#4379), swipe in dictionary definitions (#4363), "Orient Side Buttons" (#45986f2), special root folders skipped when building the library (#818a154), shared FtFont across sizes (#4308), plugin catalog capability filter / headers (#4260, #4197), `end_percent` in reading events (#4201), sleep images once each in random order (#3841), ruby closer to browsers (#4204), `.notdef` for replacement characters in TTF (#4256), latin-ext combining marks (#4358).
+Ported/covered: bracket mirroring L4 (#4295), plugins with updates first (#4319), Wi-Fi power. Not yet: dictionary vocabulary history (#4294), dictionary link selection reuse (#4379), swipe in dictionary definitions (#4363), "Orient Side Buttons" (#45986f2), shared FtFont across sizes (#4308), plugin catalog capability filter / headers (#4260, #4197), `end_percent` in reading events (#4201), ruby closer to browsers (#4204), `.notdef` for replacement characters in TTF (#4256), latin-ext combining marks (#4358).
 
 ## Paperio-Reader 2.2.3–2.2.7
 Not yet in our code (checked by search): compact FB2/EPUB headings, complete inline notes, large Lyra covers, quote sleep screen, power-button assignments, transparent sleep screens, Dropbox (ours is a plugin), "stop clock maintenance when disabled", SD font metadata safe rendering.
@@ -152,3 +152,6 @@ guloff/folio-firmware `c14fb8d` (1.1.1, 2026-10-24, CrossPoint 1.6.5 fork for X4
 
 ### 2026-11-24 — repositories refreshed, code reconciliation
 Fetched and checked out: crosspoint `92e8714` (+49 since `fa17b9c`), inkmod `9af70eb` (already merged earlier; checkout was stale), Paperio `a1ba105` (+14, 2.3.0–2.3.2), papyrix `12b7e6b` (+10), freeink-sdk `a7eb4cc` (+2 relevant over our pin `995d9bd`), touch-licorice-apps `04d46f0` (+7, store apps only), witchhunt `db99b55` (shallow clone; ~1000 commits since `abbade9`), CrossInk `9914146` / x4pro-emu `7df1a46` / Folio `c14fb8d` unchanged. Details and verdicts: `docs/RECONCILIATION_2026-11-24.md`.
+
+
+Сверка 11-25: из списка «Not yet» уже есть в коде — размер/занято/свободно SD (Настройки → Диагностика, SystemDiagnosticsActivity), пропуск служебных корневых папок (System Volume Information, $RECYCLE.BIN, .Trashes, .fseventsd — FileSearchUtils/FileBrowserActivity), случайные картинки сна без повторов из окна последних (SleepActivity, APP_STATE.recentSleep; строгий «каждая по разу» не реализован, только окно недавних). Остальное в списке не перепроверялось.
