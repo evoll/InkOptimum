@@ -22,7 +22,7 @@ Checked against the working repositories (shallow clones, commits since 2026-10-
 * **Verdict for us**: the Arabic/RTL-UI/Myanmar line is a separate multi-week port (it needs the CPac/glyph-ID drawing path); the reader/web/dictionary fixes above are small and portable one by one. Already ours: bidi markup (`dir`, `<bdi>`, `<bdo>`, `unicode-bidi`), L4 bracket mirroring, Indic OpenType shaping (PR #603), word spacing.
 
 ## crosspoint-reader — new items
-Ported/covered: bracket mirroring L4 (#4295), plugins with updates first (#4319), Wi-Fi power. Not yet: dictionary vocabulary history (#4294), dictionary link selection reuse (#4379), swipe in dictionary definitions (#4363), "Orient Side Buttons" (#45986f2), shared FtFont across sizes (#4308), plugin catalog capability filter / headers (#4260, #4197), `end_percent` in reading events (#4201), ruby closer to browsers (#4204), `.notdef` for replacement characters in TTF (#4256), latin-ext combining marks (#4358).
+Ported/covered: bracket mirroring L4 (#4295), plugins with updates first (#4319), Wi-Fi power. Not yet: dictionary vocabulary history (#4294), dictionary link selection reuse (#4379), swipe in dictionary definitions (#4363), shared FtFont across sizes (#4308), ruby closer to browsers (#4204), latin-ext combining marks (#4358).
 
 ## Paperio-Reader 2.2.3–2.2.7
 Not yet in our code (checked by search): compact FB2/EPUB headings, complete inline notes, large Lyra covers, quote sleep screen, power-button assignments, transparent sleep screens, Dropbox (ours is a plugin), "stop clock maintenance when disabled", SD font metadata safe rendering.
@@ -155,3 +155,5 @@ Fetched and checked out: crosspoint `92e8714` (+49 since `fa17b9c`), inkmod `9af
 
 
 Сверка 11-25: из списка «Not yet» уже есть в коде — размер/занято/свободно SD (Настройки → Диагностика, SystemDiagnosticsActivity), пропуск служебных корневых папок (System Volume Information, $RECYCLE.BIN, .Trashes, .fseventsd — FileSearchUtils/FileBrowserActivity), случайные картинки сна без повторов из окна последних (SleepActivity, APP_STATE.recentSleep; строгий «каждая по разу» не реализован, только окно недавних). Остальное в списке не перепроверялось.
+
+Сверка 11-25 (2): уже есть — ориентация боковых кнопок (sideButtonOrientationAware), фильтр каталога плагинов по возможностям (PluginItems CAPABILITIES), `end_percent` в событиях чтения (main.cpp / EpubReaderActivity), `.notdef` для U+FFFD в TTF (TtfEpdFont.cpp). Не перепроверено: ruby ближе к браузерам, latin-ext combining marks, общий FtFont для размеров, свайп в определениях, история словаря (частично закрыта журналом словаря).
