@@ -157,3 +157,8 @@ Fetched and checked out: crosspoint `92e8714` (+49 since `fa17b9c`), inkmod `9af
 Сверка 11-25: из списка «Not yet» уже есть в коде — размер/занято/свободно SD (Настройки → Диагностика, SystemDiagnosticsActivity), пропуск служебных корневых папок (System Volume Information, $RECYCLE.BIN, .Trashes, .fseventsd — FileSearchUtils/FileBrowserActivity), случайные картинки сна без повторов из окна последних (SleepActivity, APP_STATE.recentSleep; строгий «каждая по разу» не реализован, только окно недавних). Остальное в списке не перепроверялось.
 
 Сверка 11-25 (2): уже есть — ориентация боковых кнопок (sideButtonOrientationAware), фильтр каталога плагинов по возможностям (PluginItems CAPABILITIES), `end_percent` в событиях чтения (main.cpp / EpubReaderActivity), `.notdef` для U+FFFD в TTF (TtfEpdFont.cpp). Свайп в определениях словаря уже есть (DictionaryActivity, wasSwipe). Ruby реализован (ChapterHtmlSlimParser: <ruby>/<rt>, <rp> и <rtc> отбрасываются); нюансы «ближе к браузерам» (#4204) не сверялись. Общие комбинирующие знаки обрабатываются (utf8IsCombiningMark: 0300–036F, 1DC0–1DFF, 20D0–20FF, FE20–FE2F), конкретика latin-ext (#4358) не сверялась. Общий FtFont для размеров (#4308) не сделан: каждый TtfEpdFont держит свой FtFont (экономия RAM, нужна проверка на устройстве). История словаря закрыта журналом словаря (VocabLog).
+
+
+## Update 2026-11-26
+
+SDK pin 995d9bd → `57cd928` (applied, builds). New upstream heads: crosspoint `d2270389`, witchhunt `532f1467`, CrossInk `d53849e1` (v2.0.0), Paperio `ccbdfdc2` (2.3.3), papyrix `b78938f`. Verdicts and reasons: WORK_HISTORY entry 29. Open for review: witchhunt EPUB layout fixes (tables, list markers, inline ids) and picture-cache perf; crosspoint embedded @font-face.
