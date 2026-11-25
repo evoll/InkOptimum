@@ -102,7 +102,9 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "activities/reader/ReaderUtils.h"
 #include "activities/reader/StatsBackup.h"
 #include "activities/settings/KOReaderSettingsActivity.h"
+#include "activities/pin/PinEntryActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "util/PinGate.h"
 #ifndef SIMULATOR
 #include "network/FirmwareFlasher.h"
 #ifndef SIMULATOR
@@ -1213,6 +1215,40 @@ void outOfMemoryHandler() {
   esp_restart();
 }
 
+// Picks and opens the first activity of a boot. A function (not inline in setup()) because the PIN lock runs it later,
+// from the unlock screen, with the same inputs.
+static void routeStartTarget(const BootResume resume, const uint32_t snapshotTarget, const bool recoveryFirmwareMode) {
+  if (recoveryFirmwareMode) {
+    // Skip normal home/reader routing: jump straight into the SD firmware picker.
+    activityManager.replaceActivity(
+        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+  } else if (HalSystem::isRebootFromPanic()) {
+    // If we rebooted from a panic, go to crash report screen to show the panic info
+    activityManager.goToCrashReport();
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
+             !APP_STATE.openEpubPath.empty()) {
+    activityManager.goToReader(APP_STATE.openEpubPath);
+  } else if (resume == BootResume::Silent) {
+    // target == home (or reader with no open book): land on home — don't fall
+    // through to the sleep-wake "resume reader" logic, which fires on stale
+    // openEpubPath + lastSleepFromReader from a prior session.
+    activityManager.goHome();
+  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+             (!BoardConfig::isX4Pro() && mappedInputManager.isPressed(MappedInputManager::Button::Back)) ||
+             APP_STATE.readerActivityLoadCount > 0) {
+    // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
+    // crashed (indicated by readerActivityLoadCount > 0)
+    activityManager.goHome();
+  } else {
+    // Clear app state to avoid getting into a boot loop if the epub doesn't load
+    const auto path = APP_STATE.openEpubPath;
+    APP_STATE.openEpubPath = "";
+    APP_STATE.readerActivityLoadCount++;
+    APP_STATE.saveToFile();
+    activityManager.goToReader(path);
+  }
+}
+
 void setup() {
 #ifndef SIMULATOR
   // First thing: count crash-resets of this image and roll back after repeated ones.
@@ -1466,7 +1502,8 @@ void setup() {
   // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
   // retained frame and input dispatches against a visible UI.
   const BootResume resume = isSilentReboot              ? BootResume::Silent
-                            : !APP_STATE.showBootScreen ? BootResume::QuickResume
+                            : (!APP_STATE.showBootScreen && !PinGate::enabled())  // quick resume would show the last page
+                                ? BootResume::QuickResume
                                                         : BootResume::Splash;
 
   if (snapshotTarget == SILENT_REBOOT_TARGET_SLEEP || snapshotTarget == SILENT_REBOOT_TARGET_SLEEP_TIMEOUT) {
@@ -1554,34 +1591,17 @@ void setup() {
   }
 #endif
 
-  if (recoveryFirmwareMode) {
-    // Skip normal home/reader routing: jump straight into the SD firmware picker.
-    activityManager.replaceActivity(
-        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
-  } else if (HalSystem::isRebootFromPanic()) {
-    // If we rebooted from a panic, go to crash report screen to show the panic info
-    activityManager.goToCrashReport();
-  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
-             !APP_STATE.openEpubPath.empty()) {
-    activityManager.goToReader(APP_STATE.openEpubPath);
-  } else if (resume == BootResume::Silent) {
-    // target == home (or reader with no open book): land on home — don't fall
-    // through to the sleep-wake "resume reader" logic, which fires on stale
-    // openEpubPath + lastSleepFromReader from a prior session.
-    activityManager.goHome();
-  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-             (!BoardConfig::isX4Pro() && mappedInputManager.isPressed(MappedInputManager::Button::Back)) ||
-             APP_STATE.readerActivityLoadCount > 0) {
-    // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
-    // crashed (indicated by readerActivityLoadCount > 0)
-    activityManager.goHome();
+  // PIN lock: asked for on every cold boot / wake from sleep, not for recovery, panic reports or silent in-session
+  // restarts. The unlock screen then opens the same target the routing below would have.
+  if (resume != BootResume::Silent && !recoveryFirmwareMode && !HalSystem::isRebootFromPanic() && PinGate::enabled()) {
+    activityManager.replaceActivity(std::make_unique<PinEntryActivity>(
+        renderer, mappedInputManager, tr(STR_PIN_ENTER), [](const std::string& pin) { return PinGate::attempt(pin); },
+        [resume, snapshotTarget, recoveryFirmwareMode](const std::string&) {
+          routeStartTarget(resume, snapshotTarget, recoveryFirmwareMode);
+        },
+        /*cancellable=*/false, /*finishOnDone=*/false));
   } else {
-    // Clear app state to avoid getting into a boot loop if the epub doesn't load
-    const auto path = APP_STATE.openEpubPath;
-    APP_STATE.openEpubPath = "";
-    APP_STATE.readerActivityLoadCount++;
-    APP_STATE.saveToFile();
-    activityManager.goToReader(path);
+    routeStartTarget(resume, snapshotTarget, recoveryFirmwareMode);
   }
 
   if (resume == BootResume::Silent) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -33,6 +35,10 @@ class Store {
 
   bool lookup(uint8_t dictionaryIndex, const char* word, char* matchedWord, size_t matchedWordSize, char* article,
               size_t articleSize) const;
+
+  // "Did you mean": spelling variants of `word` that have an entry, best first (see DictSuggest.h). Opens the index
+  // once; for a miss path only. Returns how many were written to `out` (headwords as typed, max `maxOut`).
+  size_t suggest(uint8_t dictionaryIndex, const char* word, std::string* out, size_t maxOut) const;
 
   static size_t normalizeWord(const char* input, char* output, size_t outputSize);
 

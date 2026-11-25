@@ -834,6 +834,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // --- System ---
     add(SettingInfo::String(StrId::STR_DEVICE_NAME, SETTINGS.deviceName, sizeof(SETTINGS.deviceName), "deviceName",
                             StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::String(StrId::STR_WEB_PASSWORD, SETTINGS.webPassword, sizeof(SETTINGS.webPassword), "webPassword",
+                            StrId::STR_CAT_SYSTEM)
+            .withObfuscated());
     add(SettingInfo::Value(
         StrId::STR_TIME_TO_SLEEP, &InkMODSettings::sleepTimeoutMinutes,
         {InkMODSettings::MIN_SLEEP_TIMEOUT_MINUTES, InkMODSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1},

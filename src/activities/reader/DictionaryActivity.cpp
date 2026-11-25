@@ -511,6 +511,18 @@ bool DictionaryActivity::loadDictionaryArticle(const uint8_t dictionaryIndex) {
   } else {
     snprintf(matchedWord_, sizeof(matchedWord_), "%s", selectedLookupWord_);
     snprintf(article_, sizeof(article_), "%s", tr(STR_DICTIONARY_WORD_NOT_FOUND));
+    std::string guesses[3];
+    const size_t guessCount = dictionaries_.suggest(dictionaryIndex, selectedLookupWord_, guesses, 3);
+    if (guessCount > 0) {
+      std::string text = article_;
+      text += "\n\n";
+      text += tr(STR_DID_YOU_MEAN);
+      for (size_t g = 0; g < guessCount; ++g) {
+        text += g == 0 ? " " : ", ";
+        text += guesses[g];
+      }
+      snprintf(article_, sizeof(article_), "%s", text.c_str());
+    }
   }
   activeDictionary_ = dictionaryIndex;
   articleLength_ = static_cast<uint16_t>(std::min<size_t>(strlen(article_), MAX_ARTICLE_BYTES));

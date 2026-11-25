@@ -297,6 +297,17 @@ void InkMODWebServer::begin() {
     });
   }
 
+  // Optional password (Settings > System > Web password): HTTP Basic for everything except /api/v1/*, which has its
+  // own bearer tokens (and an open /api/v1/info). Browsers prompt once and then resend the credentials, so the web
+  // pages, their fetch() calls and WebDAV clients keep working.
+  server->addMiddleware([](WebServer& s, Middleware::Callback next) {
+    if (SETTINGS.webPassword[0] == '\0') return next();
+    if (s.uri().startsWith("/api/v1/")) return next();
+    if (s.authenticate("inkoptimum", SETTINGS.webPassword)) return next();
+    s.requestAuthentication(BASIC_AUTH, "InkOptimum");
+    return true;
+  });
+
   // Setup routes
   LOG_DBG("WEB", "Setting up routes...");
   server->on("/", HTTP_GET, [this] { handleRoot(); });
@@ -1739,8 +1750,10 @@ void InkMODWebServer::handleGetSettings() const {
         doc["type"] = "string";
         if (setting.stringGetter) {
           doc["value"] = setting.stringGetter();
-        } else if (setting.stringMaxLen > 0) {
+        } else if (setting.stringMaxLen > 0 && !setting.obfuscated) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+        } else if (setting.obfuscated) {
+          doc["value"] = "";  // never echo credentials
         }
         return true;
       default:
@@ -1894,6 +1907,7 @@ void InkMODWebServer::handlePostSettings() {
       }
       case SettingType::STRING: {
         const std::string val = doc[s.key].as<std::string>();
+        if (s.obfuscated && val.empty()) break;  // masked on read: an empty value means "unchanged"
         if (std::strcmp(s.key, "deviceName") == 0 && (val.length() < InkMODSettings::MIN_DEVICE_NAME_LENGTH ||
                                                       val.length() > InkMODSettings::MAX_DEVICE_NAME_LENGTH)) {
           break;

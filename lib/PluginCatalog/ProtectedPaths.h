@@ -15,7 +15,7 @@ namespace protectedpaths {
 inline constexpr const char* SENSITIVE_FILES[] = {
     "/.inkmod/wifi.json", "/.inkmod/opds.json", "/.inkmod/koreader.json", "/.inkmod/koreader.bin",
     "/.inkmod/koreader_profiles.json", "/.inkmod/lcp_device.json", "/.inkmod/lcp_passphrases.json",
-    "/.inkmod/lcp_loans.json"};
+    "/.inkmod/lcp_loans.json", "/.inkmod/settings_pin.json"};
 
 // SdFat also opens a name by its generated 8.3 alias (".inkmod" is
 // INKMOD~1), which no spelling check can map back to the long name.

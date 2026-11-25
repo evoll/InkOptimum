@@ -516,7 +516,9 @@ void SettingsActivity::openStringEditor(const SettingInfo& setting) {
   const size_t minLength = setting.nameId == StrId::STR_DEVICE_NAME ? InkMODSettings::MIN_DEVICE_NAME_LENGTH : 0;
   const SettingInfo selectedSetting = setting;
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(setting.nameId),
-                                                                 initialText, maxLength, InputType::Text, minLength),
+                                                                 initialText, maxLength,
+                                                                 setting.obfuscated ? InputType::Password : InputType::Text,
+                                                                 minLength),
                          [this, selectedSetting](const ActivityResult& result) {
                            if (result.isCancelled) {
                              requestUpdate();
@@ -1335,6 +1337,7 @@ void SettingsActivity::render(RenderLock&&) {
           } else if (setting.stringMaxLen > 0) {
             valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
           }
+          if (setting.obfuscated && !valueText.empty()) valueText = "********";
         } else if (setting.type == SettingType::INFO && setting.stringGetter) {
           valueText = setting.stringGetter();
         } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::UiFont) {

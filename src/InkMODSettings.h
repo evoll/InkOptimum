@@ -574,6 +574,9 @@ class InkMODSettings {
   char uiFontFamily[64] = "";
   // Mini app (XTApps manifest app_id) that draws the sleep screen through its lockscreen entry; empty = normal sleep screen.
   char lockscreenApp[48] = "";
+  // Optional HTTP Basic password (user "inkoptimum") for the Wi-Fi web interface and WebDAV; empty = open as before.
+  // /api/v1/* keeps its own bearer-token auth. Stored obfuscated like other credentials.
+  char webPassword[33] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
   // Hide file extensions in the file browser right-side value column (0 = show, 1 = hide)

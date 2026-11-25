@@ -421,6 +421,23 @@ enum class StrId : uint16_t {
   STR_LINKED_DEVICES,
   STR_UNPAIR_DEVICE,
   STR_NO_LINKED_DEVICES,
+  STR_WEB_PASSWORD,
+  STR_DID_YOU_MEAN,
+  STR_PIN_LOCK,
+  STR_PIN_ON,
+  STR_PIN_OFF_STATE,
+  STR_PIN_NEW,
+  STR_PIN_REPEAT,
+  STR_PIN_CURRENT,
+  STR_PIN_ENTER,
+  STR_PIN_CHANGE,
+  STR_PIN_TURN_OFF,
+  STR_PIN_SET,
+  STR_PIN_OFF,
+  STR_PIN_WRONG,
+  STR_PIN_TOO_SHORT,
+  STR_PIN_LOCKED,
+  STR_PIN_SAVE_FAILED,
   STR_CAL_MONTH_VIEW,
   STR_QUICK_RESUME,
   STR_RECENT_BOOKS_VIEW,
@@ -1056,7 +1073,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x109333DFu;
+constexpr uint32_t I18N_KEY_HASH = 0x6650E38Au;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

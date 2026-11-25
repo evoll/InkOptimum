@@ -1,6 +1,7 @@
 #include "DictionaryStore.h"
 
 #include <DictArticles.h>
+#include <DictSuggest.h>
 #include <DictWordForms.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -342,6 +343,61 @@ bool Store::lookup(const uint8_t dictionaryIndex, const char* word, char* matche
     if (lookupExact(dictionaryIndex, form.c_str(), matchedWord, matchedWordSize, article, articleSize)) return true;
   }
   return false;
+}
+
+size_t Store::suggest(const uint8_t dictionaryIndex, const char* word, std::string* out, const size_t maxOut) const {
+  if (dictionaryIndex >= count_ || !word || !out || maxOut == 0) return 0;
+  const auto candidates = dict_suggest::editCandidates(word);
+  if (candidates.empty()) return 0;
+
+  char indexPath[MAX_DICTIONARY_PATH_BYTES + 32];
+  snprintf(indexPath, sizeof(indexPath), "%s/%s", entries_[dictionaryIndex].path, INDEX_FILE_NAME);
+  FsFile indexFile;
+  if (!Storage.openFileForRead("DICT", indexPath, indexFile)) return 0;
+  uint32_t entryCount = 0;
+  uint16_t indexVersion = 0;
+  uint16_t indexRecordSize = 0;
+  if (!validateIndexHeader(indexFile, entryCount, indexVersion, indexRecordSize)) {
+    indexFile.close();
+    return 0;
+  }
+
+  size_t found = 0;
+  char normalized[128];
+  IndexRecord record;
+  for (const auto& candidate : candidates) {
+    if (found >= maxOut) break;
+    if (normalizeWord(candidate.c_str(), normalized, sizeof(normalized)) == 0) continue;
+    const uint32_t wantedHash = hashNormalized(normalized);
+    const uint32_t wantedSecondaryHash = secondaryHashNormalized(normalized);
+    uint32_t low = 0;
+    uint32_t high = entryCount;
+    bool readOk = true;
+    while (low < high) {
+      const uint32_t mid = low + (high - low) / 2;
+      if (!readIndexRecord(indexFile, mid, indexRecordSize, record)) {
+        readOk = false;
+        break;
+      }
+      if (record.hash < wantedHash) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    if (!readOk) break;
+    bool hit = false;
+    for (uint32_t i = low; i < entryCount && i < low + MAX_HASH_CANDIDATES; ++i) {
+      if (!readIndexRecord(indexFile, i, indexRecordSize, record) || record.hash != wantedHash) break;
+      if (indexVersion != FORMAT_VERSION_V2 || record.secondaryHash == wantedSecondaryHash) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) out[found++] = candidate;
+  }
+  indexFile.close();
+  return found;
 }
 
 bool Store::lookupExact(const uint8_t dictionaryIndex, const char* word, char* matchedWord,
