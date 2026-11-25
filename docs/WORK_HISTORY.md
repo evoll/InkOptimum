@@ -282,3 +282,7 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 ## 2026-11-25 (27) — upstream list check, part 2
 
 - Verified already present: side-button orientation, plugin catalog capability filter, end_percent in reading events, .notdef for U+FFFD in TTF. Docs only.
+
+## 2026-11-25 (28) — upstream list check, part 3
+
+- Corrected UPSTREAM_SYNC: dictionary swipe, ruby (basic), generic combining marks present; shared FtFont across sizes (#4308) still open. Docs only.
