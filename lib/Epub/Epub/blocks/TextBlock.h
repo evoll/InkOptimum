@@ -75,6 +75,9 @@ class TextBlock final : public Block {
   // A line of an h1-h3 heading: laid out and drawn in the heading font (HeadingFont.h) while one is loaded.
   void setHeading(const bool heading) { heading_ = heading; }
   bool isHeading() const { return heading_; }
+  // A line set in a font the book embeds (@font-face): hash of its font-family, 0 = the reader font.
+  void setFontFamily(const uint32_t family) { fontFamily_ = family; }
+  uint32_t fontFamily() const { return fontFamily_; }
   bool isEmpty() override { return words.empty(); }
   size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines
@@ -82,6 +85,7 @@ class TextBlock final : public Block {
  private:
   bool vertical_ = false;
   bool heading_ = false;
+  uint32_t fontFamily_ = 0;
  public:
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;

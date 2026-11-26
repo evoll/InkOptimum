@@ -300,5 +300,17 @@ All reference repos fetched (crosspoint 92e8714, Paperio a1ba105, papyrix 12b7e6
 - `a6be7fd0`: PSRAM boards (X4 Pro/Classic) use a full-plane scratch buffer for the tiled gray pass in `EpubReaderActivity::runTiledGrayscalePass` (one strip instead of many); falls back to the old strip size if allocation fails.
 - `d2270389` (adapted): SD font prewarm reads neighbouring glyph bitmaps in 16 KB batches through a PSRAM buffer (`SdCardFont::bitmapReadBuffer_`); not the paired gray-plane decode (our renderer differs).
 - N/A: `fed03d62`, `65bfafda`, `a71161f3` (their fui icon alignment / library title wrap / OnePage board); `b1660ead` covered by SDK pin.
-- `c84f63ed` @font-face embedded EPUB fonts: NOT ported yet. Our fork has no per-word font slots, so it needs a block-level design (CSS @font-face + font-family cache, BookFontSystem, section-file font key, renderer reload handling); touches the section cache format and cannot be validated without a device. Next.
+- `c84f63ed` @font-face embedded EPUB fonts: ported in block-level form, see entry 31 (the line below is the earlier note).
+- (older note) `c84f63ed` @font-face: NOT ported yet. Our fork has no per-word font slots, so it needs a block-level design (CSS @font-face + font-family cache, BookFontSystem, section-file font key, renderer reload handling); touches the section cache format and cannot be validated without a device. Next.
 - Builds: x3x4 (TLS/BMP/Range part) and x4pro-release (full) OK; native tests pass. Device check pending: HTTPS stability on X3/X4 (TLS patch), gray page render and SD-font load speed on X4 Pro.
+
+## 2026-11-27 (31) — crosspoint c84f63ed: publisher fonts (@font-face), adapted
+
+Source: crosspoint-reader c84f63ed. Our fork has no per-word font slots, so the font is chosen per paragraph (block), like the heading font.
+- `CssParser`: parses `@font-face` (font-family, font-weight, font-style, `src: url()` — first TTF/OTF url, relative to the stylesheet; WOFF/data:/remote urls skipped) and `font-family` (hash of the first name, `cssFamilyHash` in CssStyle.h). Faces are stored beside the rules cache in `/css_fonts.cache` (removed with the cache; removed when the book declares none). `CSS_CACHE_VERSION` 19 (style record +4 bytes).
+- `Epub::parseCssFiles` passes the stylesheet dir and saves the table.
+- `ChapterHtmlSlimParser`: the block's family (inherited through block CSS; html/body family as default) goes to `ParsedText::setFontFamily` -> `TextBlock` (flag bit 4 + u32 in the section file, `SECTION_FILE_VERSION` 84). Line height uses the book font. Layout and drawing resolve through `lib/Epub/Epub/BookFont.h`; the section header font key folds in BookFont only while it is active, so books without fonts keep their caches.
+- `src/BookFontSystem.{h,cpp}` (PSRAM boards): `attach()` after the Epub is loaded reads the listed faces into PSRAM (<=3 MB each, <=8 MB total), `resolve` builds a `TtfEpdFont` per family at the reader's point size and inserts it into the renderer on first use; size change reloads; `detach()` on reader exit and after the sleep-screen render. Attached in `EpubReaderActivity::onEnter` and `drawCurrentPageToBuffer`.
+- Setting `publisherFonts` ("Publisher fonts" / "Шрифты издателя"), X4 Pro/Classic only, default off. The page-layout signatures include a marker only while book fonts are active.
+- Not ported: per-word/inline family switching, font-size scaling per family, WOFF.
+- Tests: `test/css_font_family` (family hash, applyOver); native suite 1029 pass. Builds x3x4-release and x4pro-release OK. Not checked on a device: embedded-font books (glyph faulting, baseline of mixed-font pages, memory), setting toggle rebuilding sections.

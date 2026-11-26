@@ -563,6 +563,8 @@ class InkMODSettings {
   uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
+  // Set the book's own @font-face fonts (TTF/OTF) where its CSS names them; PSRAM boards only (1 = on).
+  uint8_t publisherFonts = 0;
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t bionicReadingEnabled = 0;
   // Guide Dots - places a middle dot between words to guide the eye

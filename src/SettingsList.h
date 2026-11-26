@@ -434,6 +434,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         "paragraphAlignment", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &InkMODSettings::embeddedStyle, "embeddedStyle",
                             StrId::STR_CAT_READER));
+    if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {
+      add(SettingInfo::Toggle(StrId::STR_PUBLISHER_FONTS, &InkMODSettings::publisherFonts, "publisherFonts",
+                              StrId::STR_CAT_READER));
+    }
     add(SettingInfo::Toggle(StrId::STR_HYPHENATION, &InkMODSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER));
     if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {

@@ -496,6 +496,10 @@ Epub::CssParseStatus Epub::parseCssFiles(const bool forceRebuild) const {
       Storage.remove(tmpCssPath.c_str());
       continue;
     }
+    {
+      const size_t slash = cssPath.rfind('/');
+      cssParser->setStylesheetDir(slash == std::string::npos ? std::string() : cssPath.substr(0, slash + 1));
+    }
     if (!cssParser->loadFromStream(tempCssFile)) {
       failedCssFileIndex = cssFileIndex + 1;
       failedCssPath = cssPath;
@@ -529,6 +533,7 @@ Epub::CssParseStatus Epub::parseCssFiles(const bool forceRebuild) const {
     cssParser->clear();
     return CssParseStatus::Failed;
   }
+  if (!cssParser->saveFontFaces()) LOG_ERR("EBP", "Failed to save @font-face table");
 
   LOG_DBG("EBP", "Loaded %zu %s CSS style rules from %zu/%zu files", cssParser->ruleCount(),
           parsedAllCss ? "complete" : "partial", parsedCssFileCount, cssFiles.size());

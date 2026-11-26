@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../BookFont.h"
 #include "../HeadingFont.h"
 #include <Epub/FootnotePreviews.h>
 #include <expat.h>
@@ -65,8 +66,17 @@ class ChapterHtmlSlimParser {
   int headingDepth = INT_MAX;
   // Inside an h1-h3 while a heading font is loaded: new blocks are marked as heading blocks.
   bool headingBig_ = false;
+  // font-family declared on html/body: the family of every block that names none (publisher @font-face fonts).
+  uint32_t rootFontFamily_ = 0;
+  uint32_t blockFontFamily() const {
+    return currentCssStyle.fontFamily != 0 ? currentCssStyle.fontFamily : rootFontFamily_;
+  }
   // The font a line of this kind is measured and drawn with.
-  int lineFontId(const bool heading) const { return heading ? HeadingFont::resolve(renderer, fontId) : fontId; }
+  int lineFontId(const bool heading, const uint32_t family = 0) const {
+    const int book = family != 0 ? BookFont::resolve(renderer, family) : 0;
+    if (book != 0) return book;
+    return heading ? HeadingFont::resolve(renderer, fontId) : fontId;
+  }
   bool blockHyphenationEnabled() const { return hyphenationEnabled && headingDepth == INT_MAX; }
   int italicUntilDepth = INT_MAX;
   int underlineUntilDepth = INT_MAX;

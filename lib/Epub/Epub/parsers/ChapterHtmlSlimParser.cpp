@@ -699,6 +699,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       // The reused block may have been created on the other side of a heading boundary.
       currentTextBlock->setHyphenationEnabled(blockHyphenationEnabled());
       currentTextBlock->setHeading(headingBig_);
+      currentTextBlock->setFontFamily(blockFontFamily());
 
       flushPendingAnchor();
       return;
@@ -723,6 +724,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   wordsExtractedInBlock = 0;
   paragraphTopSpacingApplied = false;
   currentTextBlock->setHeading(headingBig_);
+  currentTextBlock->setFontFamily(blockFontFamily());
   currentTextBlock->setLetterSpacing(vertical_ ? 0 : LetterSpacing::pixels());
   // A new paragraph inside an open <bdi>/<bdo>/dir element stays inside it.
   for (const auto& elem : bidiStack_) {
@@ -1411,6 +1413,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (cssStyle.hasHiddenText() && cssStyle.hiddenText && strcmp(name, "html") != 0 && strcmp(name, "body") != 0 &&
       self->hiddenTextUntilDepth == INT_MAX) {
     self->hiddenTextUntilDepth = self->depth;
+  }
+  if (cssStyle.fontFamily != 0 && (strcmp(name, "html") == 0 || strcmp(name, "body") == 0)) {
+    self->rootFontFamily_ = cssStyle.fontFamily;
   }
 
   // Special handling for tables/cells: buffer simple tables for grid layout, with
@@ -3168,7 +3173,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   line->setVertical(vertical_);
 
   // A line carrying ruby gets the annotation's height above it: the half-size reading sits over the base.
-  const int lineFont = lineFontId(line->isHeading());
+  const int lineFont = lineFontId(line->isHeading(), line->fontFamily());
   const int rubyExtra = line->hasRuby() ? renderer.getLineHeight(lineFont) / 2 : 0;
   const int lineHeight = renderer.getLineHeight(lineFont) * lineCompression + rubyExtra;
 
@@ -3226,7 +3231,7 @@ void ChapterHtmlSlimParser::makePages() {
   }
   inlineAnchorIds.clear();
 
-  const int lineHeight = renderer.getLineHeight(lineFontId(currentTextBlock->isHeading())) * lineCompression;
+  const int lineHeight = renderer.getLineHeight(lineFontId(currentTextBlock->isHeading(), currentTextBlock->getFontFamily())) * lineCompression;
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();

@@ -3,6 +3,7 @@
 #include "CssFontSize.h"
 
 #include <BufferedWriter.h>
+#include <FsHelpers.h>
 #include <Logging.h>
 
 #include <algorithm>
@@ -385,6 +386,11 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
       style.hiddenText = css_font_size::isUnreadablySmall(length);
       style.defined.hiddenText = 1;
     }
+  } else if (iequalsAscii(name, "font-family")) {
+    // The first family only; a generic or unembedded name just falls back to the reader font later.
+    const size_t comma = value.find(',');
+    const std::string_view first = comma == std::string_view::npos ? value : value.substr(0, comma);
+    style.fontFamily = cssFamilyHash(first.data(), first.size());
   } else if (iequalsAscii(name, "font-variant")) {
     // Only the small-caps keyword is handled - "normal", "all-small-caps"
     // etc. fall through to false (regular text), same as an unrecognized
@@ -659,6 +665,12 @@ bool CssParser::loadFromStream(FsFile& source) {
 
   bool inAtRule = false;
   int atDepth = 0;
+  // '@font-face' detection: the at-rule name is collected up to its first blank or '{', and the body of a
+  // font-face block is captured for addFontFace().
+  StackBuffer atName;
+  bool atNameDone = false;
+  bool inFontFace = false;
+  StackBuffer fontFaceBody;
 
   int bodyDepth = 0;
   bool skippingRule = false;
@@ -667,13 +679,29 @@ bool CssParser::loadFromStream(FsFile& source) {
 
   auto handleChar = [&](const char c) {
     if (inAtRule) {
+      if (!atNameDone) {
+        if (c == '{' || isCssWhitespace(c) || c == ';') {
+          atNameDone = true;
+          inFontFace = atName.view() == "font-face";
+        } else {
+          atName.push_back(c);
+        }
+      }
       if (c == '{') {
         ++atDepth;
+        if (atDepth == 1 && inFontFace) fontFaceBody.clear();
       } else if (c == '}') {
         if (atDepth > 0) --atDepth;
-        if (atDepth == 0) inAtRule = false;
+        if (atDepth == 0) {
+          if (inFontFace) addFontFace(fontFaceBody.view());
+          inFontFace = false;
+          inAtRule = false;
+        }
       } else if (c == ';' && atDepth == 0) {
         inAtRule = false;
+        inFontFace = false;
+      } else if (inFontFace && atDepth == 1) {
+        fontFaceBody.push_back(c);
       }
       return;
     }
@@ -685,6 +713,9 @@ bool CssParser::loadFromStream(FsFile& source) {
       if (c == '@' && selector.empty()) {
         inAtRule = true;
         atDepth = 0;
+        atName.clear();
+        atNameDone = false;
+        inFontFace = false;
         return;
       }
       if (c == '{') {
@@ -792,6 +823,127 @@ bool CssParser::loadFromStream(FsFile& source) {
   return true;
 }
 
+// @font-face
+
+namespace {
+constexpr char fontsCache[] = "/css_fonts.cache";
+constexpr uint8_t FONTS_CACHE_VERSION = 1;
+constexpr size_t MAX_FONT_FACES = 24;
+
+bool hasEmbeddableFontExtension(std::string_view url) {
+  const size_t dot = url.rfind('.');
+  if (dot == std::string_view::npos) return false;
+  const std::string_view ext = url.substr(dot + 1);
+  return iequalsAscii(ext, "ttf") || iequalsAscii(ext, "otf");
+}
+}  // namespace
+
+void CssParser::addFontFace(const std::string_view declBlock) {
+  if (fontFaces_.size() >= MAX_FONT_FACES) return;
+  CssFontFace face;
+  std::string_view src;
+  size_t pos = 0;
+  // Declarations are split on ';' outside parentheses (a data: url holds ';').
+  while (pos < declBlock.size()) {
+    int paren = 0;
+    size_t end = pos;
+    for (; end < declBlock.size(); ++end) {
+      const char c = declBlock[end];
+      if (c == '(') ++paren;
+      else if (c == ')' && paren > 0) --paren;
+      else if (c == ';' && paren == 0) break;
+    }
+    const std::string_view decl = declBlock.substr(pos, end - pos);
+    pos = end + 1;
+    const size_t colon = decl.find(':');
+    if (colon == std::string_view::npos) continue;
+    const std::string_view name = trimCssWhitespace(decl.substr(0, colon));
+    const std::string_view value = trimCssWhitespace(decl.substr(colon + 1));
+    if (iequalsAscii(name, "font-family")) {
+      face.family = cssFamilyHash(value.data(), value.size());
+    } else if (iequalsAscii(name, "font-weight")) {
+      face.bold = interpretFontWeight(value) == CssFontWeight::Bold;
+    } else if (iequalsAscii(name, "font-style")) {
+      face.italic = interpretFontStyle(value) == CssFontStyle::Italic;
+    } else if (iequalsAscii(name, "src")) {
+      src = value;
+    }
+  }
+  if (face.family == 0 || src.empty()) return;
+
+  // src is a comma separated list of url(...) [format(...)] | local(...); take the first TTF/OTF url.
+  size_t at = 0;
+  while ((at = src.find("url(", at)) != std::string_view::npos) {
+    at += 4;
+    const size_t close = src.find(')', at);
+    if (close == std::string_view::npos) break;
+    std::string_view url = trimCssWhitespace(src.substr(at, close - at));
+    at = close + 1;
+    if (url.size() >= 2 && (url.front() == '"' || url.front() == '\'')) url = url.substr(1, url.size() - 2);
+    if (url.empty() || url.compare(0, 5, "data:") == 0 || url.find("://") != std::string_view::npos) continue;
+    const size_t cut = url.find_first_of("?#");
+    if (cut != std::string_view::npos) url = url.substr(0, cut);
+    if (!hasEmbeddableFontExtension(url)) continue;
+    std::string joined = (url.front() == '/') ? std::string(url.substr(1)) : stylesheetDir_ + std::string(url);
+    face.href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(joined));
+    fontFaces_.push_back(std::move(face));
+    return;
+  }
+}
+
+bool CssParser::saveFontFaces() const {
+  if (cachePath.empty()) return false;
+  const std::string path = cachePath + fontsCache;
+  if (fontFaces_.empty()) {
+    if (Storage.exists(path.c_str())) Storage.remove(path.c_str());
+    return true;
+  }
+  FsFile file;
+  if (!Storage.openFileForWrite("CSS", path, file)) return false;
+  BufferedWriter<FsFile> out(file);
+  const uint8_t version = FONTS_CACHE_VERSION;
+  const auto count = static_cast<uint16_t>(fontFaces_.size());
+  bool ok = out.write(&version, 1) && out.write(&count, sizeof(count));
+  for (const auto& face : fontFaces_) {
+    const uint8_t flags = static_cast<uint8_t>((face.bold ? 1 : 0) | (face.italic ? 2 : 0));
+    const auto len = static_cast<uint16_t>(face.href.size());
+    ok = ok && out.write(&face.family, sizeof(face.family)) && out.write(&flags, 1) && out.write(&len, sizeof(len)) &&
+         out.write(face.href.data(), len);
+  }
+  ok = out.flush() && ok;
+  file.close();
+  if (!ok) Storage.remove(path.c_str());
+  return ok;
+}
+
+bool CssParser::loadFontFaces(const std::string& cachePath, std::vector<CssFontFace>& out) {
+  out.clear();
+  const std::string path = cachePath + fontsCache;
+  if (!Storage.exists(path.c_str())) return false;
+  FsFile file;
+  if (!Storage.openFileForRead("CSS", path, file)) return false;
+  uint8_t version = 0;
+  uint16_t count = 0;
+  bool ok = file.read(&version, 1) == 1 && version == FONTS_CACHE_VERSION &&
+            file.read(&count, sizeof(count)) == static_cast<int>(sizeof(count)) && count <= MAX_FONT_FACES;
+  for (uint16_t i = 0; ok && i < count; ++i) {
+    CssFontFace face;
+    uint8_t flags = 0;
+    uint16_t len = 0;
+    ok = file.read(&face.family, sizeof(face.family)) == static_cast<int>(sizeof(face.family)) &&
+         file.read(&flags, 1) == 1 && file.read(&len, sizeof(len)) == static_cast<int>(sizeof(len)) && len < 512;
+    if (!ok) break;
+    face.href.resize(len);
+    ok = len == 0 || file.read(&face.href[0], len) == static_cast<int>(len);
+    face.bold = (flags & 1) != 0;
+    face.italic = (flags & 2) != 0;
+    if (ok) out.push_back(std::move(face));
+  }
+  file.close();
+  if (!ok) out.clear();
+  return ok && !out.empty();
+}
+
 // Style resolution
 
 CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view classAttr,
@@ -857,6 +1009,7 @@ void CssParser::deleteCache() const {
   if (hasCache()) Storage.remove((cachePath + rulesCache).c_str());
   Storage.remove((cachePath + rulesCacheTmp).c_str());
   Storage.remove((cachePath + rulesCacheBackup).c_str());
+  Storage.remove((cachePath + fontsCache).c_str());
 }
 
 bool CssParser::saveToCache(const bool complete) const {
@@ -932,7 +1085,7 @@ bool CssParser::saveToCache(const bool complete) const {
     if (style.defined.smallCaps) definedBits |= 1 << 20;
     if (style.defined.hiddenText) definedBits |= 1 << 21;
     if (style.defined.writingMode) definedBits |= 1 << 22;
-    return writeBytes(&definedBits, sizeof(definedBits));
+    return writeBytes(&definedBits, sizeof(definedBits)) && writeBytes(&style.fontFamily, sizeof(style.fontFamily));
   };
 
   // Write each simple rule: selector string + CssStyle fields
@@ -1077,10 +1230,10 @@ bool CssParser::loadFromCache() {
   constexpr size_t CSS_LENGTH_FIELD_COUNT = 12;
   constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
   // One style as written by the cache writer: 4 enums, 12 lengths (float + unit), display, backgroundBlack,
-  // verticalAlign, direction, smallCaps, hiddenText, then the 32-bit defined mask.
+  // verticalAlign, direction, smallCaps, hiddenText, then the 32-bit defined mask and the font-family hash.
   constexpr size_t CSS_FIXED_STYLE_BYTES = 4 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) +
-                                           6 * sizeof(uint8_t) + sizeof(uint32_t);
-  static_assert(CSS_FIXED_STYLE_BYTES == 74, "CSS cache style record changed: update the writer, reader and version");
+                                           6 * sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t);
+  static_assert(CSS_FIXED_STYLE_BYTES == 78, "CSS cache style record changed: update the writer, reader and version");
 
   // The record is read in one call and taken apart in RAM: a field at a time was ~30 SdFat calls a
   // rule, paid for every rule each time a section build loads the ruleset.
@@ -1150,6 +1303,7 @@ bool CssParser::loadFromCache() {
     style.defined.smallCaps = (definedBits & 1 << 20) != 0;
     style.defined.hiddenText = (definedBits & 1 << 21) != 0;
     style.defined.writingMode = (definedBits & 1 << 22) != 0;
+    get(&style.fontFamily, sizeof(style.fontFamily));
     return true;
   };
 

@@ -102,6 +102,7 @@ class ParsedText {
 
  private:
   bool heading_ = false;
+  uint32_t fontFamily_ = 0;
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool forceParagraphIndents = false,
@@ -129,6 +130,9 @@ class ParsedText {
   // An h1-h3 block: its lines use the heading font (HeadingFont.h) when one is loaded.
   void setHeading(const bool heading) { heading_ = heading; }
   bool isHeading() const { return heading_; }
+  // Font the book embeds for this paragraph (hash of its font-family, 0 = reader font); see BookFont.h.
+  void setFontFamily(const uint32_t family) { fontFamily_ = family; }
+  uint32_t getFontFamily() const { return fontFamily_; }
   void bidiOpen(uint32_t cp);
   void bidiClose(bool isolate);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

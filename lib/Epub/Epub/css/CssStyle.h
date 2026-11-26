@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Matches order of PARAGRAPH_ALIGNMENT in InkMODSettings
@@ -116,6 +117,24 @@ struct CssPropertyFlags {
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
 
+// Hash of a font-family name as written in CSS: quotes and surrounding blanks dropped, ASCII case folded.
+// Shared by font-family declarations and @font-face rules so the two match. Never returns 0.
+inline uint32_t cssFamilyHash(const char* name, size_t len) {
+  while (len > 0 && (*name == ' ' || *name == '\t' || *name == '\'' || *name == '"')) {
+    ++name;
+    --len;
+  }
+  while (len > 0 && (name[len - 1] == ' ' || name[len - 1] == '\t' || name[len - 1] == '\'' || name[len - 1] == '"')) --len;
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < len; ++i) {
+    char c = name[i];
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    hash ^= static_cast<uint8_t>(c);
+    hash *= 16777619u;
+  }
+  return len == 0 ? 0 : (hash != 0 ? hash : 1);
+}
+
 struct CssStyle {
   CssTextAlign textAlign = CssTextAlign::Left;
   CssFontStyle fontStyle = CssFontStyle::Normal;
@@ -145,6 +164,9 @@ struct CssStyle {
   // Text declared at a font size too small to read (font-size:1px watermark spans). Only the text
   // is dropped; structure, spacing and images of the element stay.
   bool hiddenText = false;
+  // font-family: case-insensitive FNV-1a hash of the first family name (cssFamilyHash), 0 = not set. Matched
+  // against the book's @font-face families; a name the book does not embed simply resolves to the reader font.
+  uint32_t fontFamily = 0;
 
   // Runtime-only reader override. It is intentionally not serialized in the
   // CSS cache. When set for a <p>, publisher vertical margins/padding (including
@@ -259,6 +281,7 @@ struct CssStyle {
       hiddenText = base.hiddenText;
       defined.hiddenText = 1;
     }
+    if (base.fontFamily != 0) fontFamily = base.fontFamily;
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -302,6 +325,7 @@ struct CssStyle {
     verticalAlign = CssVerticalAlign::Baseline;
     smallCaps = false;
     hiddenText = false;
+    fontFamily = 0;
     lockVerticalSpacing = false;
     defined.clearAll();
   }

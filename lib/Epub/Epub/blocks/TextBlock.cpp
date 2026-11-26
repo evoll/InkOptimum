@@ -1,3 +1,4 @@
+#include "../BookFont.h"
 #include "../HeadingFont.h"
 #include "TextBlock.h"
 
@@ -119,7 +120,8 @@ int TextBlock::drawRuby(const GfxRenderer& renderer, const int fontId, const siz
 
 void TextBlock::render(const GfxRenderer& renderer, const int bodyFontId, const int x, const int y,
                        const bool foregroundBlack) const {
-  const int fontId = heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId;
+  const int bookFontId = fontFamily_ != 0 ? BookFont::resolve(renderer, fontFamily_) : 0;
+  const int fontId = bookFontId != 0 ? bookFontId : (heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId);
   // Validate iterator bounds before rendering
   const bool hasBionic = !wordBionicBoundary.empty();
   const bool hasGuideDots = !wordGuideDotXOffset.empty();
@@ -343,7 +345,9 @@ bool TextBlock::serialize(FsFile& file) const {
          serialization::tryWritePod(file, blockStyle.textIndentDefined) &&
          serialization::tryWritePod(file, blockStyle.isRtl) &&
          serialization::tryWritePod(file, blockStyle.directionDefined) &&
-         serialization::tryWritePod(file, static_cast<uint8_t>((vertical_ ? 1 : 0) | (heading_ ? 2 : 0)));
+         serialization::tryWritePod(file, static_cast<uint8_t>((vertical_ ? 1 : 0) | (heading_ ? 2 : 0) |
+                                                         (fontFamily_ != 0 ? 4 : 0))) &&
+         (fontFamily_ == 0 || serialization::tryWritePod(file, fontFamily_));
 }
 
 std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
@@ -480,7 +484,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     return nullptr;
   }
   uint8_t verticalFlag = 0;
-  if (!serialization::tryReadPod(file, verticalFlag) || verticalFlag > 3) {
+  if (!serialization::tryReadPod(file, verticalFlag) || verticalFlag > 7) {
     LOG_ERR("TXB", "Deserialization failed: invalid vertical flag");
     return nullptr;
   }
@@ -496,5 +500,10 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
 
   textBlock->vertical_ = (verticalFlag & 1) != 0;
   textBlock->heading_ = (verticalFlag & 2) != 0;
+  if ((verticalFlag & 4) != 0 && !serialization::tryReadPod(file, textBlock->fontFamily_)) {
+    LOG_ERR("TXB", "Deserialization failed: font family");
+    delete textBlock;
+    return nullptr;
+  }
   return std::unique_ptr<TextBlock>(textBlock);
 }

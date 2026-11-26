@@ -1,3 +1,4 @@
+#include "BookFont.h"
 #include "HeadingFont.h"
 #include "ParsedText.h"
 #include "LetterSpacing.h"
@@ -651,7 +652,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int bo
   if (words.empty()) {
     return;
   }
-  const int fontId = heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId;
+  const int bookFontId = fontFamily_ != 0 ? BookFont::resolve(renderer, fontFamily_) : 0;
+  const int fontId = bookFontId != 0 ? bookFontId : (heading_ ? HeadingFont::resolve(renderer, bodyFontId) : bodyFontId);
 
   if (!blockStyle.directionDefined && hasRtlWord) {
     const size_t wordsToScan = std::min(words.size(), RTL_PARAGRAPH_PROBE_WORDS);
@@ -1749,6 +1751,9 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                                std::move(outBoundaries), std::move(outSuffixX),
                                                std::move(outGuideDotXOffset), std::move(outBackgroundBlack), blockStyle,
                                                std::move(outRuby), std::move(outDisplay));
-  lineBlock->setHeading(heading_ && fontId != 0 && fontId == HeadingFont::get());
+  const int bookFontId = fontFamily_ != 0 ? BookFont::resolve(renderer, fontFamily_) : 0;
+  const bool isBookFont = bookFontId != 0 && bookFontId == fontId;
+  lineBlock->setHeading(!isBookFont && heading_ && fontId != 0 && fontId == HeadingFont::get());
+  lineBlock->setFontFamily(isBookFont ? fontFamily_ : 0);
   processLine(std::move(lineBlock));
 }

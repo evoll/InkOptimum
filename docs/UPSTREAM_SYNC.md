@@ -165,4 +165,4 @@ SDK pin 995d9bd → `57cd928` (applied, builds). New upstream heads: crosspoint 
 
 ## 2026-11-26 crosspoint port
 
-Ported/adapted: cf27f9e3 (TLS buffers, Range restart, BMP palette), a6be7fd0, d2270389 (batched SD font reads). N/A: fed03d62, 65bfafda, a71161f3. Open: c84f63ed @font-face (block-level design needed).
+Ported/adapted: cf27f9e3 (TLS buffers, Range restart, BMP palette), a6be7fd0, d2270389 (batched SD font reads). N/A: fed03d62, 65bfafda, a71161f3. c84f63ed @font-face ported block-level (publisher fonts setting).

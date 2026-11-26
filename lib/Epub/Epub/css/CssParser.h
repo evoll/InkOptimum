@@ -39,13 +39,22 @@ struct CssAncestorEntry {
   std::string classAttr;
 };
 
+// One @font-face source the book embeds (a .ttf/.otf; WOFF is not read). `href` is the normalised path inside the
+// EPUB, resolved against the stylesheet that declared it.
+struct CssFontFace {
+  uint32_t family = 0;  // cssFamilyHash of font-family
+  bool bold = false;
+  bool italic = false;
+  std::string href;
+};
+
 class CssParser {
  public:
   // v15: inkMOD Classic Book fixes FB2 front-matter and poem/stanza geometry.
   // Bumping the CSS cache also invalidates existing section/page caches through
   // the normal CSS-rebuild path so stale pre-fix pages are not reused.
   static constexpr uint32_t CSS_CACHE_MAGIC = 0x435843FF;
-  static constexpr uint8_t CSS_CACHE_VERSION = 18;  // v18: unicode-bidi in the hiddenText byte's bits 4-6;  // v17: writing-mode, in the hiddenText byte's bits 2-3
+  static constexpr uint8_t CSS_CACHE_VERSION = 19;  // v19: font-family hash after the defined mask;  // v18: unicode-bidi in the hiddenText byte's bits 4-6;  // v17: writing-mode, in the hiddenText byte's bits 2-3
 
   static constexpr size_t MAX_DESCENDANT_RULES = 100;
 
@@ -56,6 +65,16 @@ class CssParser {
   CssParser& operator=(const CssParser&) = delete;
 
   bool loadFromStream(HalFile& source);
+
+  // Directory of the stylesheet being parsed (EPUB-internal, with trailing '/' or empty): @font-face urls are
+  // relative to it.
+  void setStylesheetDir(std::string dir) { stylesheetDir_ = std::move(dir); }
+  [[nodiscard]] const std::vector<CssFontFace>& fontFaces() const { return fontFaces_; }
+  // @font-face table beside the rules cache (/css_fonts.cache). Removed when the book declares none.
+  bool saveFontFaces() const;
+  static bool loadFontFaces(const std::string& cachePath, std::vector<CssFontFace>& out);
+  // Declarations of one @font-face block, appended to fontFaces_ when usable.
+  void addFontFace(std::string_view declBlock);
 
   [[nodiscard]] CssStyle resolveStyle(std::string_view tagName, std::string_view classAttr,
                                       const std::vector<CssAncestorEntry>& ancestors = {}) const;
@@ -85,6 +104,7 @@ class CssParser {
   void clear() {
     decltype(rulesBySelector_){}.swap(rulesBySelector_);
     decltype(descendantRules_){}.swap(descendantRules_);
+    decltype(fontFaces_){}.swap(fontFaces_);
     cachePartial_ = false;
   }
 
@@ -128,6 +148,8 @@ class CssParser {
   std::vector<DescendantRule> descendantRules_;
 
   std::string cachePath;
+  std::string stylesheetDir_;
+  std::vector<CssFontFace> fontFaces_;
   bool cachePartial_ = false;
 
   [[nodiscard]] bool processRuleBlockWithStyle(std::string_view selectorGroup, const CssStyle& style);

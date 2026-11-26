@@ -1,5 +1,7 @@
 #include "util/NightScheduleRuntime.h"
 #include "EpubReaderActivity.h"
+#include "BookFontSystem.h"
+#include <Epub/BookFont.h>
 
 #include <BlePageTurner.h>
 
@@ -239,6 +241,7 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
   hashLayoutValue(hash, viewportHeight);
   hashLayoutValue(hash, SETTINGS.hyphenationEnabled);
   hashLayoutValue(hash, SETTINGS.embeddedStyle);
+  if (BookFont::enabled()) hashLayoutValue(hash, 0xB00Fu);
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
@@ -261,6 +264,7 @@ uint32_t bookWidePagesLayoutSignature(const int fontId, const uint16_t viewportW
   hashLayoutValue(hash, viewportHeight);
   hashLayoutValue(hash, SETTINGS.hyphenationEnabled);
   hashLayoutValue(hash, SETTINGS.embeddedStyle);
+  if (BookFont::enabled()) hashLayoutValue(hash, 0xB00Fu);
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
@@ -1339,6 +1343,7 @@ void EpubReaderActivity::onEnter() {
   mappedInput.setReaderMode(true);
 
   epub->setupCacheDir();
+  BookFontSystem::attach(*epub, renderer);  // publisher @font-face fonts (setting, PSRAM boards)
   // Inline footnote previews: notes are gathered once per book (popup), then every section build
   // streams them into the text. Without a usable footnotes.bin the plain page cache is used.
   {
@@ -1444,6 +1449,7 @@ void EpubReaderActivity::onExit() {
   Activity::onExit();
 
   readerWork.cancel();
+  BookFontSystem::detach();
   // Give the rest of the UI the global layout settings back.
   book_overrides::exitBook();
   Section::setInlineFootnotePreviews(false);
@@ -5942,6 +5948,10 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   }
 
   epub->setupCacheDir();
+  BookFontSystem::attach(*epub, renderer);
+  struct BookFontScope {
+    ~BookFontScope() { BookFontSystem::detach(); }
+  } bookFontScope;
 
   // Load saved spine index and page number
   int spineIndex = 0, pageNumber = 0;
