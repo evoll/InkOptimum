@@ -56,13 +56,16 @@ class PluginHttp {
   // One segment of a resumable download: appends the body to `path` (kept on failure; the caller owns the
   // .part file). Stops after maxBytes (> 0) with `segmentFull` set. `total` is the full size when the server
   // reported it (Content-Length, or Content-Range on a 206), else 0. Sends "Range: bytes=offset-" when
-  // offset > 0 and needs a 206 then (`rangeUnsupported` otherwise).
+  // offset > 0; a 200 instead of 206 restarts the file from the whole body (`restarted`).
   struct Segment {
     Result result;
     size_t bytes = 0;  // appended by this call
     size_t total = 0;
     bool segmentFull = false;
     bool rangeUnsupported = false;
+    // The server ignored Range (answered 200 to offset > 0): the .part was rewritten from byte 0 and the whole body
+    // was taken whatever maxBytes said, so `bytes` is the new .part size, not offset + bytes (crosspoint #4576).
+    bool restarted = false;
   };
   Segment appendToFile(plugincat::Request req, const std::string& path, size_t offset, size_t maxBytes);
 

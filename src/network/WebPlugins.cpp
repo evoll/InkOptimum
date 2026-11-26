@@ -309,14 +309,14 @@ void InkMODWebServer::handlePluginFetch() {
   PluginHttp http;
   http.setFollowRedirects(5);
   const auto seg = http.appendToFile(req, part, offset, maxBytes);
-  const size_t bytes = offset + seg.bytes;
+  const size_t bytes = seg.restarted ? seg.bytes : offset + seg.bytes;
   JsonDocument out;
   out["status"] = seg.result.status;
   out["bytes"] = bytes;
   if (seg.total > 0) out["total"] = seg.total;
 
   const int status = seg.result.status;
-  const bool statusOk = (offset == 0 && status == 200) || (offset > 0 && status == 206);
+  const bool statusOk = (offset == 0 && status == 200) || (offset > 0 && (status == 206 || (status == 200 && seg.restarted)));
   if (seg.result.writeFailed || seg.rangeUnsupported || !statusOk) {
     out["complete"] = false;
     out["error"] = seg.result.writeFailed ? "sd write failed"

@@ -149,9 +149,25 @@ PluginHttp::Segment PluginHttp::appendToFile(plugincat::Request req, const std::
   }
   bool writeFailed = false;
   size_t written = 0;
+  bool checkedStatus = false;
   seg.result = run(
       req,
       [&](const uint8_t* data, size_t len) {
+        if (!checkedStatus) {
+          checkedStatus = true;
+          if (offset > 0 && http_.getStatus() == 200) {
+            // Range ignored: this response is the whole body again. Rewrite the .part from it and finish it here,
+            // since another segment would only restart again.
+            file.close();
+            file = Storage.open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
+            if (!file) {
+              writeFailed = true;
+              return false;
+            }
+            seg.restarted = true;
+            maxBytes = 0;
+          }
+        }
         size_t take = len;
         if (maxBytes > 0 && written + take > maxBytes) {
           take = maxBytes - written;
@@ -171,7 +187,7 @@ PluginHttp::Segment PluginHttp::appendToFile(plugincat::Request req, const std::
   if (seg.segmentFull) seg.result.complete = false;
 
   const int status = seg.result.status;
-  if (offset > 0 && status == 200) seg.rangeUnsupported = true;
+  if (offset > 0 && status == 200 && !seg.restarted) seg.rangeUnsupported = true;
   if (status == 206) {
     for (const auto& h : http_.getHeaders()) {
       if (h.first != "content-range") continue;

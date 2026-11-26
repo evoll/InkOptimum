@@ -162,3 +162,7 @@ Fetched and checked out: crosspoint `92e8714` (+49 since `fa17b9c`), inkmod `9af
 ## Update 2026-11-26
 
 SDK pin 995d9bd → `57cd928` (applied, builds). New upstream heads: crosspoint `d2270389`, witchhunt `532f1467`, CrossInk `d53849e1` (v2.0.0), Paperio `ccbdfdc2` (2.3.3), papyrix `b78938f`. Verdicts and reasons: WORK_HISTORY entry 29. Open for review: witchhunt EPUB layout fixes (tables, list markers, inline ids) and picture-cache perf; crosspoint embedded @font-face.
+
+## 2026-11-26 crosspoint port
+
+Ported/adapted: cf27f9e3 (TLS buffers, Range restart, BMP palette), a6be7fd0, d2270389 (batched SD font reads). N/A: fed03d62, 65bfafda, a71161f3. Open: c84f63ed @font-face (block-level design needed).

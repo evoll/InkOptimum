@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -120,6 +121,14 @@ class SdCardFont {
 
  private:
   uint32_t cacheGeneration_ = 0;
+#ifdef BOARD_HAS_PSRAM
+  // One SD transfer for a run of neighbouring glyph bitmaps during prewarm; lives in PSRAM, never internal RAM.
+  static constexpr size_t BITMAP_READ_BYTES = 16 * 1024;
+  struct PsramFree {
+    void operator()(uint8_t* p) const;
+  };
+  std::unique_ptr<uint8_t, PsramFree> bitmapReadBuffer_;
+#endif
 
   // Per-style metadata (parsed from file header/TOC)
   struct CpFontHeader {

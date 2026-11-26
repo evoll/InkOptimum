@@ -15,6 +15,7 @@
 
 #include "BootLog.h"
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <BoardConfig.h>
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
@@ -456,12 +457,33 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
     return false;
   }
 
-  constexpr int STRIP_ROWS = 80;
   const int displayHeight = renderer.getDisplayHeight();
   const int displayWidthBytes = renderer.getDisplayWidthBytes();
-  auto scratch =
-      std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * STRIP_ROWS]);
-  if (!scratch) {
+  int STRIP_ROWS = 80;
+  std::unique_ptr<uint8_t[]> scratch;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM readers (crosspoint #4601): one plane-sized scratch in PSRAM, so each plane is a single page render
+  // instead of one render per 80-row band (about 10 for an 800-row panel). Falls back to the bands without PSRAM.
+  struct PsramFree {
+    void operator()(uint8_t* p) const { heap_caps_free(p); }
+  };
+  std::unique_ptr<uint8_t, PsramFree> psramScratch;
+  {
+    const size_t planeBytes = static_cast<size_t>(displayWidthBytes) * displayHeight;
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= planeBytes + 256 * 1024) {
+      psramScratch.reset(static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
+    }
+  }
+  uint8_t* scratchPtr = psramScratch.get();
+  if (scratchPtr) STRIP_ROWS = displayHeight;
+#else
+  uint8_t* scratchPtr = nullptr;
+#endif
+  if (!scratchPtr) {
+    scratch.reset(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * STRIP_ROWS]);
+    scratchPtr = scratch.get();
+  }
+  if (!scratchPtr) {
     LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); falling back to BW snapshot",
             displayWidthBytes * STRIP_ROWS);
     return false;
@@ -473,7 +495,7 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
     renderer.setRenderMode(mode);
     for (int y = 0; y < displayHeight; y += STRIP_ROWS) {
       const int rows = std::min(STRIP_ROWS, displayHeight - y);
-      renderer.beginStripTarget(scratch.get(), y, rows);
+      renderer.beginStripTarget(scratchPtr, y, rows);
       renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
         if (BoardConfig::isX4Pro() && page.hasImages()) {
@@ -485,7 +507,7 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
         page.renderImages(renderer, fontId, marginLeft, marginTop);
       }
       renderer.endStripTarget();
-      renderer.writeGrayscalePlaneStrip(lsbPlane, scratch.get(), y, rows);
+      renderer.writeGrayscalePlaneStrip(lsbPlane, scratchPtr, y, rows);
     }
   };
 
