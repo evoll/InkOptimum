@@ -680,7 +680,9 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
         // blank space before the following paragraph so the scene/section break is visible.
         // This only fires when the <br> block stayed empty (i.e. no inline text was added).
         const int16_t lineHeight = static_cast<int16_t>(renderer.getLineHeight(fontId) * lineCompression + 0.5f);
-        incoming.marginTop = static_cast<int16_t>(incoming.marginTop + lineHeight);
+        // In the padding, which a merge adds up (margins collapse to the larger): a run of <br> gives a line each
+        // and the paragraph after it keeps its own margin-top.
+        incoming.paddingTop = static_cast<int16_t>(incoming.paddingTop + lineHeight);
       }
 
       // `blockStyle` already contains all horizontal insets accumulated from
@@ -2237,6 +2239,11 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->updateEffectiveInlineStyle();
   } else if (matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS))) {
     if (strcmp(name, "br") == 0) {
+      // A <br> ends the line it stands on and adds a blank line only when that line is empty, as a browser lays it
+      // out: a contents entry Calibre ends with <br class="calibre1"/> takes one line, not two (witchhunt ce1833ce4).
+      // Decided here, before the flush: the line has content when a word is buffered or the block holds text.
+      const bool lineHasContent = self->partWordBufferIndex > 0 || self->wordsExtractedInBlock > 0 ||
+                                  (self->currentTextBlock && !self->currentTextBlock->isEmpty());
       if (self->partWordBufferIndex > 0) {
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
         self->flushPartWordBuffer();
@@ -2250,7 +2257,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         brStyle = self->currentTextBlock->getBlockStyle();
       }
       self->inlineLinePositionActive = false;
-      brStyle.fromBrElement = true;
+      brStyle.fromBrElement = !lineHasContent;  // only an <br> on an empty line owes a blank line
       self->startNewTextBlock(brStyle);
     } else {
       // Flush pending text before the new block, as the header and <br/> branches do.

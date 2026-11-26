@@ -21,6 +21,7 @@ class OtaUpdateActivity : public Activity {
   State state = WIFI_SELECTION;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
   OtaUpdater updater;
+  bool noChecksum = false;  // the failure was a release without a SHA-256
 
   void onWifiSelectionComplete(bool success);
 

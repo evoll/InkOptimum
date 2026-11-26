@@ -394,6 +394,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return UPDATE_OLDER_ERROR;
   }
 
+  // The release's digest is the only check of the whole downloaded image (streaming OTA cannot verify one):
+  // a release that lists none is refused before anything is downloaded.
+  {
+    uint8_t digestProbe[32];
+    if (!parseSha256Digest(otaDigest, digestProbe)) {
+      LOG_ERR("OTA", "Release lists no usable SHA-256: refusing to install");
+      return NO_CHECKSUM_ERROR;
+    }
+  }
+
   if (isCancellationRequested()) {
     return CANCELLED_ERROR;
   }

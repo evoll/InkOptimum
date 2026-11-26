@@ -922,6 +922,7 @@ enum class StrId : uint16_t {
   STR_PLUGIN_ENTER_CODE,
   STR_PLUGIN_SIGN_IN_FAILED,
   STR_PLUGIN_SIGN_IN_EXPIRED,
+  STR_FIRMWARE_NO_CHECKSUM,
   STR_FIRMWARE_SIGNATURE_BAD,
   STR_APPS,
   STR_THEME_GRID,
@@ -1074,7 +1075,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0x7D8D915Fu;
+constexpr uint32_t I18N_KEY_HASH = 0x85384716u;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

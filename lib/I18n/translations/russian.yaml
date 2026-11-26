@@ -967,6 +967,7 @@ STR_PLUGIN_NOT_SIGNED_IN: "Вход не выполнен. Настройте п
 STR_PLUGIN_ENTER_CODE: "Введите этот код:"
 STR_PLUGIN_SIGN_IN_FAILED: "Не удалось войти"
 STR_PLUGIN_SIGN_IN_EXPIRED: "Код истёк"
+STR_FIRMWARE_NO_CHECKSUM: "У обновления нет контрольной суммы"
 STR_FIRMWARE_SIGNATURE_BAD: "Подпись прошивки отсутствует или неверна"
 STR_APPS: "Приложения"
 STR_THEME_GRID: "Сетка"

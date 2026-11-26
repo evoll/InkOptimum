@@ -28,6 +28,7 @@ class OtaUpdater {
     OOM_ERROR,
     CANCELLED_ERROR,
     SIGNATURE_ERROR,  // a signing key is configured and the image has no valid signature
+    NO_CHECKSUM_ERROR,  // the release lists no SHA-256 for the asset (witchhunt 0d7aeff7b)
   };
 
   size_t getOtaSize() const { return otaSize; }

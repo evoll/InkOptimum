@@ -210,6 +210,9 @@ void OtaUpdateActivity::render(RenderLock&&) {
     }
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
+    if (noChecksum) {
+      renderer.drawCenteredText(UI_10_FONT_ID, top + 40, tr(STR_FIRMWARE_NO_CHECKSUM));
+    }
     if (mappedInput.hasTouch()) {
       const auto buttons = otaTouchRects(renderer);
       drawTouchAction(renderer, buttons.left, tr(STR_BACK));
@@ -262,6 +265,7 @@ void OtaUpdateActivity::loop() {
         LOG_DBG("OTA", "Update failed: %d", res);
         {
           RenderLock lock(*this);
+          noChecksum = res == OtaUpdater::NO_CHECKSUM_ERROR;
           state = FAILED;
         }
         requestUpdate();

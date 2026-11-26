@@ -314,3 +314,12 @@ Source: crosspoint-reader c84f63ed. Our fork has no per-word font slots, so the 
 - Setting `publisherFonts` ("Publisher fonts" / "Шрифты издателя"), X4 Pro/Classic only, default off. The page-layout signatures include a marker only while book fonts are active.
 - Not ported: per-word/inline family switching, font-size scaling per family, WOFF.
 - Tests: `test/css_font_family` (family hash, applyOver); native suite 1029 pass. Builds x3x4-release and x4pro-release OK. Not checked on a device: embedded-font books (glyph faulting, baseline of mixed-font pages, memory), setting toggle rebuilding sections.
+
+## 2026-11-27 (32) — witchhunt review (a4078b57..HEAD, 499 commits), first pass
+
+Taken:
+- `0d7aeff7b` OTA without SHA-256: `OtaUpdater::installUpdate` refuses a release that lists no usable digest before downloading (`NO_CHECKSUM_ERROR`, "Update has no checksum" / "У обновления нет контрольной суммы" under "Update failed"). The streaming OTA path of the S3 boards had no digest check at all.
+- `ce1833ce4`/`63ee56fa7` `<br>` (adapted): a `<br>` on a line that has a word or text no longer adds a blank line (Calibre contents entries ending in `<br class="calibre1"/>` took two lines each); only a `<br>` on an empty line does, and the blank line goes in padding-top so a run of `<br>` gives a line each. `SECTION_FILE_VERSION` 85. Not ported: their picture-on-line / table-close / hidden-block cases (our parser has no such state). No native parser harness exists, so this is covered by the builds only.
+Already present / N/A: screenshot names after the book (`ScreenshotUtil::buildFilename`), 5886e2afd (no in-browser EPUB optimizer here), 0d6f14b38 / 9d2699bc3 / 212b2f419 (our parser has no box scopes or nested-table streaming), Lyra Tiles / home themes / Touch Lock / Picco panel tables / integer-math refactors (their UI, boards or style), did-you-mean (own version done), cache cipher (needs a threat-model decision).
+Open (large): plugin events (`edfb24096`, device.json events queue + send at Wi-Fi join/sleep, C3 restart dance), footnote popup over the page (`883c382c4`; we already have inline note previews), the 2.5x reader cold-open perf series (build through the popup, PSRAM chapter build region).
+Builds x3x4-release, x4pro-release OK; native tests 1029 pass.
