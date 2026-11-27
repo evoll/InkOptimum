@@ -4,6 +4,8 @@
 #include <Logging.h>
 #include <stdint.h>
 
+#include <algorithm>
+
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -125,10 +127,16 @@ struct PixelCache {
     if (newTopRow <= bandStart) return true;
     if (newTopRow > height) newTopRow = height;
 
-    for (int r = bandStart; r < newTopRow; ++r) {
-      const int idx = r - bandStart;
-      const uint8_t* rowPtr = (idx < bandRows) ? (buffer + (size_t)idx * bytesPerRow) : zeroRow;
-      if (file.write(rowPtr, (size_t)bytesPerRow) != (size_t)bytesPerRow) {
+    // The band's rows are contiguous: one write for them, then single rows of zeros for the gap below the band.
+    const int rowsInBand = std::min(newTopRow - bandStart, bandRows);
+    const size_t bandBytes = (size_t)rowsInBand * bytesPerRow;
+    if (bandBytes > 0 && file.write(buffer, bandBytes) != bandBytes) {
+      LOG_ERR("IMG", "Cache write error at row %d", bandStart);
+      ok = false;
+      return false;
+    }
+    for (int r = bandStart + rowsInBand; r < newTopRow; ++r) {
+      if (file.write(zeroRow, (size_t)bytesPerRow) != (size_t)bytesPerRow) {
         LOG_ERR("IMG", "Cache write error at row %d", r);
         ok = false;
         return false;

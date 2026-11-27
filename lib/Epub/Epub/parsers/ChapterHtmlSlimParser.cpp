@@ -33,7 +33,8 @@
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
-constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 1024;
+// 4 KB lets the SD card transfer multi-sector blocks (Paperio 5c96e3fc measured it on X4 Classic)
+constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 4096;
 // Start shedding completed EPUB layout state well before the allocator is in
 // danger. A previous 24/16 KiB floor let one larger std::string/vector growth
 // consume the remaining heap between parser callbacks and caused a real
