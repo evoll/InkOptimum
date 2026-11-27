@@ -1374,6 +1374,7 @@ inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<
   systemSettings.push_back(SettingInfo::Action(StrId::STR_BT_PAGE_TURNER, SettingAction::BluetoothPageTurner));
   addSettingByName(systemSettings, allSettings, StrId::STR_PLUGINS);
   addSettingByName(systemSettings, allSettings, StrId::STR_TLS_MODE);
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_PIN_LOCK, SettingAction::PinLock));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_TLS_FORGET, SettingAction::ForgetTlsPins));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));

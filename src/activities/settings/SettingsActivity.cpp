@@ -23,6 +23,7 @@
 #include <TlsTrust.h>
 #include "ClockOffsetActivity.h"
 #include "ClockSyncActivity.h"
+#include "activities/pin/PinFlow.h"
 #include "activities/weather/WeatherActivity.h"
 #include "InkMODSettings.h"
 #include "FontSelectionActivity.h"
@@ -1068,6 +1069,9 @@ void SettingsActivity::toggleCurrentSetting() {
               }
               requestUpdate();
             });
+        break;
+      case SettingAction::PinLock:
+        pin_flow::open(*this, renderer, mappedInput);
         break;
       case SettingAction::ForgetTlsPins:
         startActivityForResult(

@@ -339,5 +339,9 @@ Builds x3x4-release, x4pro-release OK; native tests 1029 pass.
 ## 2026-11-27 (35) — forgotten PIN: reset file
 
 - `PinGate::consumeResetFile()` (called in `main.cpp` right after the SD card starts, before the PIN screen is routed): an empty file `/inkoptimum-reset-pin.txt` on the card root, put there from a computer, removes the PIN (and its wrong-try counter) at the next boot and is deleted itself. The path is in `protectedpaths::SENSITIVE_FILES`, so the web file manager cannot create it. No UI; log line "PIN: Reset file found".
-- Without a reset file the PIN can still only be turned off from Apps > PIN lock with the current PIN. The web password is changed or cleared in Settings > System > Web password (behind the PIN if set). Scope unchanged: the PIN is a screen lock, not card encryption.
+- Without a reset file the PIN can still only be turned off from Settings > System > PIN lock with the current PIN. The web password is changed or cleared in Settings > System > Web password (behind the PIN if set). Scope unchanged: the PIN is a screen lock, not card encryption.
 - Not tested on a device.
+
+## 2026-11-27 (36) — PIN lock moved to Settings
+
+The PIN lock entry is no longer in Apps: it is Settings > System > PIN lock (`SettingAction::PinLock`, before "Forget TLS pins"), same flow (`pin_flow::open`: set twice / change / turn off with the current PIN). `ACTION_PIN_LOCK` removed from `AppsActivity`. (Entries 25 and 35 above still say "Apps > PIN lock": that was the place until this change.) Not tested on a device.

@@ -41,6 +41,7 @@ enum class SettingAction {
   ResetGlobalStats,
   ClearCache,
   ForgetTlsPins,
+  PinLock,
   CheckForUpdates,
   SdFirmwareUpdate,
   SwitchOtaSlot,
