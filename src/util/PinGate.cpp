@@ -113,4 +113,14 @@ void clear() {
   if (Storage.exists(PATH)) Storage.remove(PATH);
 }
 
+bool consumeResetFile() {
+  constexpr const char* RESET_FILE = "/inkoptimum-reset-pin.txt";
+  if (!Storage.exists(RESET_FILE)) return false;
+  const bool had = enabled();
+  clear();
+  Storage.remove(RESET_FILE);
+  LOG_INF("PIN", "Reset file found: PIN %s", had ? "removed" : "was not set");
+  return had;
+}
+
 }  // namespace PinGate

@@ -20,5 +20,9 @@ uint32_t lockedSeconds();  // time still to wait (0 = a try is allowed now)
 Result attempt(const std::string& pin);
 bool setPin(const std::string& pin);  // false: not 4-8 digits or the card write failed
 void clear();
+// Forgotten PIN: an (empty) file /inkoptimum-reset-pin.txt put on the card's root from a computer removes the PIN
+// at the next boot (the file is removed with it). The web file manager cannot create it (protected path). Whoever
+// can write the card can also read it, which the PIN never claimed to stop. True when a PIN was reset.
+bool consumeResetFile();
 
 }  // namespace PinGate

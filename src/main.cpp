@@ -1310,6 +1310,9 @@ void setup() {
     return;
   }
 
+  // A forgotten PIN is reset by /inkoptimum-reset-pin.txt on the card (before anything asks for the PIN).
+  PinGate::consumeResetFile();
+
   // Hyphenation packs for languages that are not built in (SD: /.inkmod/hyphenation/).
   SdHyphenationPack::install();
 

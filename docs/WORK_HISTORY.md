@@ -335,3 +335,9 @@ Builds x3x4-release, x4pro-release OK; native tests 1029 pass.
 - Plugin events (witchhunt `edfb24096`) are NOT open: `src/util/PluginEventBus.*` already implements device.json subscriptions, the outbox, drain at Wi-Fi join and at sleep (`drainAtSleep`), and the C3 clean-boot send (`wantsCleanBootSend`/`sendFromCleanBoot`) for reader.open/exit/session, book.downloaded and sleep.enter.
 - USB drive mode and in-page footnote popups are already in FEATURE_MATRIX; the Paperio X4 Classic USB commit (`beee65c8`) is therefore only a different implementation. Chapter percentage in the status bar exists (`statusBarChapterPageCount == 2`).
 - What is really left from the reference review: Paperio flip-clock sleep screen (`a1ba1059`), CrossInk finished-book check icons and monthly reading-history files, spare SD fallback font, cache cipher (needs a threat-model decision), shared FtFont across sizes (#4308), and device verification of everything ported since entry 22.
+
+## 2026-11-27 (35) — forgotten PIN: reset file
+
+- `PinGate::consumeResetFile()` (called in `main.cpp` right after the SD card starts, before the PIN screen is routed): an empty file `/inkoptimum-reset-pin.txt` on the card root, put there from a computer, removes the PIN (and its wrong-try counter) at the next boot and is deleted itself. The path is in `protectedpaths::SENSITIVE_FILES`, so the web file manager cannot create it. No UI; log line "PIN: Reset file found".
+- Without a reset file the PIN can still only be turned off from Apps > PIN lock with the current PIN. The web password is changed or cleared in Settings > System > Web password (behind the PIN if set). Scope unchanged: the PIN is a screen lock, not card encryption.
+- Not tested on a device.
