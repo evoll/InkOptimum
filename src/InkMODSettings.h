@@ -565,6 +565,9 @@ class InkMODSettings {
   uint8_t embeddedStyle = 1;
   // Set the book's own @font-face fonts (TTF/OTF) where its CSS names them; PSRAM boards only (1 = on).
   uint8_t publisherFonts = 0;
+  // Book text borrows glyphs the reading font lacks from the SD UI font family (Settings > UI font), loaded at the
+  // reading size (1 = on). Bitmap (.cpfont) families only.
+  uint8_t bookSpareFont = 0;
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t bionicReadingEnabled = 0;
   // Guide Dots - places a middle dot between words to guide the eye

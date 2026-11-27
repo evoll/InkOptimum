@@ -438,6 +438,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
       add(SettingInfo::Toggle(StrId::STR_PUBLISHER_FONTS, &InkMODSettings::publisherFonts, "publisherFonts",
                               StrId::STR_CAT_READER));
     }
+    add(SettingInfo::Toggle(StrId::STR_BOOK_SPARE_FONT, &InkMODSettings::bookSpareFont, "bookSpareFont",
+                            StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_HYPHENATION, &InkMODSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER));
     if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {

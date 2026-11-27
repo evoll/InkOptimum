@@ -7,6 +7,7 @@
 
 #include <new>
 
+#include <Epub/BookFont.h>
 #include <Epub/HeadingFont.h>
 
 #include <MemoryBudget.h>
@@ -92,9 +93,57 @@ void SdCardFontSystem::applyUiFont(GfxRenderer& renderer) {
   LOG_DBG("SDFS", "UI glyph font: %s (%u pt)", wanted.c_str(), file->pointSize);
 }
 
+void SdCardFontSystem::applySpareFont(GfxRenderer& renderer) {
+  std::string wanted;
+  uint8_t wantedPt = 0;
+  if (SETTINGS.bookSpareFont != 0 && SETTINGS.uiFontFamily[0] != '\0' && SETTINGS.sdFontFamilyName[0] != '\0' &&
+      !manager_.currentFamilyName().empty()) {
+    wanted = SETTINGS.uiFontFamily;
+    wantedPt = SETTINGS.getSdFontTargetPointSize();
+  }
+  if (wanted == spareLoadedFamily_ && wantedPt == spareLoadedPt_) return;
+
+  renderer.setBookSpareFont(nullptr);  // before the font goes away
+  BookFont::setSpareKey(0);
+  spareFont_.reset();
+  spareLoadedFamily_.clear();
+  spareLoadedPt_ = 0;
+  if (wanted.empty()) return;
+
+  refreshIfDirty();
+  const auto* family = registry_.findFamily(wanted);
+  if (!family || family->vector) {  // like the UI glyph font: a bitmap .cpfont family only
+    LOG_DBG("SDFS", "Spare font family unusable: %s", wanted.c_str());
+    return;
+  }
+  const auto* file = family->findClosestFile(wantedPt);
+  if (!file) return;
+  constexpr uint32_t kBitmapHeadroom = 70 * 1024;  // a bitmap size keeps its tables in RAM
+  if (ESP.getMaxAllocHeap() < kBitmapHeadroom) {
+    LOG_ERR("SDFS", "Not enough heap for the spare font %s", wanted.c_str());
+    return;
+  }
+  std::unique_ptr<SdCardFont> font(new (std::nothrow) SdCardFont());
+  if (!font || !font->load(file->path.c_str())) {
+    LOG_ERR("SDFS", "Failed to load spare font %s", file->path.c_str());
+    return;
+  }
+  spareFont_ = std::move(font);
+  spareLoadedFamily_ = wanted;
+  spareLoadedPt_ = wantedPt;
+  renderer.setBookSpareFont(spareFont_.get());
+  // FNV-1a over family name and point size: a different spare font or size must lay the book out again.
+  uint32_t key = 2166136261u;
+  for (const char c : wanted) key = (key ^ static_cast<uint8_t>(c)) * 16777619u;
+  key = (key ^ file->pointSize) * 16777619u;
+  BookFont::setSpareKey(key == 0 ? 1u : key);
+  LOG_DBG("SDFS", "Spare font: %s (%u pt)", wanted.c_str(), file->pointSize);
+}
+
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   ensureBodyLoaded(renderer);
   syncHeadingFont(renderer);
+  applySpareFont(renderer);
 }
 
 void SdCardFontSystem::syncHeadingFont(GfxRenderer& renderer) {
@@ -193,6 +242,7 @@ void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) {
   manager_.unloadAll(renderer);
   headingAttemptKey_.clear();
   HeadingFont::set(0);
+  applySpareFont(renderer);  // no SD reading font left: the spare goes too
 }
 
 int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEnum*/) const {

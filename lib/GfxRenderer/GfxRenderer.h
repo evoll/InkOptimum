@@ -112,6 +112,18 @@ class GfxRenderer {
 
   const EpdFontFamily* getMissingGlyphFallbackFamily(int primaryFontId) const;
 
+  // Spare SD font for book text: a second SD family (bitmap, loaded at the reading size by the app) that supplies
+  // glyphs which neither the SD reading font nor the flash fallback has. Glyphs load one by one on demand
+  // (SdCardFont overflow), so no page pre-scan is needed. Not owned here.
+  SdCardFont* bookSpareFont_ = nullptr;
+  mutable EpdFontFamily bookSpareFamily_{nullptr};
+  // The spare family for text drawn with SD reading font `primaryFontId`; nullptr when none is set or the font is
+  // not an SD reading font.
+  const EpdFontFamily* bookSpareFor(int primaryFontId) const;
+  // Where a glyph the reading font lacks comes from: the flash fallback first, then the spare; nullptr if neither.
+  static const EpdFontFamily* pickGlyphFallback(const EpdFontFamily* flashFallback, const EpdFontFamily* spare,
+                                                uint32_t cp, EpdFontFamily::Style style);
+
   // CJK interface fallback (see setUiCjkEnabled).
   bool uiCjkEnabled_ = false;
   bool uiGlyphFontDedicated_ = false;  // a UI font picked on its own, not borrowed from the reading font
@@ -192,6 +204,10 @@ class GfxRenderer {
       sdCardFonts_.erase(it);
     }
   }
+  // Sets (or with nullptr clears) the spare SD font for book text. The caller keeps ownership and must clear it
+  // before freeing the font.
+  void setBookSpareFont(SdCardFont* font);
+  bool hasBookSpareFont() const { return bookSpareFont_ != nullptr; }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   void setMissingGlyphFallbackFonts(int smallFontId, int largeFontId) {
     missingGlyphFallbackSmallFontId_ = smallFontId;

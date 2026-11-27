@@ -13,6 +13,7 @@ using ResolveFn = int (*)(uint32_t family);
 struct State {
   ResolveFn resolve = nullptr;
   bool enabled = false;
+  uint32_t spareKey = 0;  // identity of the spare SD font for missing glyphs (0 = none); it changes line widths
 };
 inline State& state() {
   static State s;
@@ -35,8 +36,16 @@ inline int resolve(const GfxRenderer& renderer, const uint32_t family) {
   return (id != 0 && renderer.getFontMap().count(id) != 0) ? id : 0;
 }
 
-// Section-cache font key: unchanged unless book fonts are in play.
+// The spare SD font (SdCardFontSystem::applySpareFont) supplies glyphs the reading font lacks, so it changes
+// measured widths: its identity belongs in every layout key.
+inline uint32_t spareKey() { return state().spareKey; }
+inline void setSpareKey(const uint32_t key) { state().spareKey = key; }
+
+// Section-cache font key: unchanged unless book fonts or a spare font are in play.
 inline int layoutKey(const int key) {
-  return enabled() ? static_cast<int>(static_cast<unsigned>(key) * 16777619u ^ 0xB00F0001u) : key;
+  unsigned k = static_cast<unsigned>(key);
+  if (enabled()) k = k * 16777619u ^ 0xB00F0001u;
+  if (state().spareKey != 0) k = k * 16777619u ^ state().spareKey;
+  return static_cast<int>(k);
 }
 }  // namespace BookFont

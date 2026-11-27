@@ -53,6 +53,12 @@ class SdCardFontSystem {
   /// built-in UI size, kept apart from the reading font. Cheap when nothing changed. Call after the setting changes.
   void applyUiFont(GfxRenderer& renderer);
 
+  /// Load (or drop) the spare font for book text: the SETTINGS.uiFontFamily family (bitmap .cpfont only) at the
+  /// reading point size, when SETTINGS.bookSpareFont is on and an SD reading font is active. Supplies glyphs the
+  /// reading font lacks. Publishes its identity to BookFont so section caches are laid out again when it changes.
+  /// Cheap when nothing changed.
+  void applySpareFont(GfxRenderer& renderer);
+
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
   /// The SD card is scanned on the first call when nothing at boot needed the list (see begin()).
   const SdCardFontRegistry& registry() const {
@@ -93,6 +99,9 @@ class SdCardFontSystem {
   mutable std::atomic<bool> registryDirty_{false};
   std::unique_ptr<SdCardFont> uiFont_;
   std::string uiFontLoadedFamily_;
+  std::unique_ptr<SdCardFont> spareFont_;
+  std::string spareLoadedFamily_;
+  uint8_t spareLoadedPt_ = 0;
   uint8_t uiFontLoadedPt_ = 0;  // point size of the loaded UI glyph font (follows the interface text size)
 };
 

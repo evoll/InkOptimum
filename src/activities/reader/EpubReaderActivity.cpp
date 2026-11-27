@@ -242,6 +242,7 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
   hashLayoutValue(hash, SETTINGS.hyphenationEnabled);
   hashLayoutValue(hash, SETTINGS.embeddedStyle);
   if (BookFont::enabled()) hashLayoutValue(hash, 0xB00Fu);
+  if (BookFont::spareKey() != 0) hashLayoutValue(hash, BookFont::spareKey());
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
@@ -265,6 +266,7 @@ uint32_t bookWidePagesLayoutSignature(const int fontId, const uint16_t viewportW
   hashLayoutValue(hash, SETTINGS.hyphenationEnabled);
   hashLayoutValue(hash, SETTINGS.embeddedStyle);
   if (BookFont::enabled()) hashLayoutValue(hash, 0xB00Fu);
+  if (BookFont::spareKey() != 0) hashLayoutValue(hash, BookFont::spareKey());
   hashLayoutValue(hash, SETTINGS.imageRendering);
   hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
   hashLayoutValue(hash, SETTINGS.guideReadingEnabled);

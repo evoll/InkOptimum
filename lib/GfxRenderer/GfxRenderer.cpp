@@ -212,6 +212,23 @@ const EpdFontFamily* GfxRenderer::getMissingGlyphFallbackFamily(const int primar
   return best;
 }
 
+void GfxRenderer::setBookSpareFont(SdCardFont* font) {
+  bookSpareFont_ = font;
+  bookSpareFamily_ = EpdFontFamily(font ? font->getEpdFont(0) : nullptr);
+}
+
+const EpdFontFamily* GfxRenderer::bookSpareFor(const int primaryFontId) const {
+  if (!bookSpareFont_ || sdCardFonts_.find(primaryFontId) == sdCardFonts_.end()) return nullptr;
+  return &bookSpareFamily_;
+}
+
+const EpdFontFamily* GfxRenderer::pickGlyphFallback(const EpdFontFamily* flashFallback, const EpdFontFamily* spare,
+                                                    const uint32_t cp, const EpdFontFamily::Style style) {
+  if (flashFallback && flashFallback->findGlyphData(cp, style).glyph) return flashFallback;
+  if (spare && spare->findGlyphData(cp, style).glyph) return spare;
+  return nullptr;
+}
+
 void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
   auto result = fontMap.insert({fontId, font});
   if (!result.second) {
@@ -853,11 +870,13 @@ int GfxRenderer::getTextWidthRaw(const int fontId, const char* text, const EpdFo
     int32_t widthFP = 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
     const EpdFontFamily* glyphFallback = getMissingGlyphFallbackFamily(fontId);
+    const EpdFontFamily* spareFallback = bookSpareFor(fontId);
     while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&textCursor))) {
       uint16_t advance = sdIt->second->getAdvance(cp, styleIdx);
-      if (advance == 0 && !utf8IsCombiningMark(cp) && glyphFallback) {
-        const auto fallbackGlyph = glyphFallback->findGlyphData(cp, style);
-        if (fallbackGlyph.glyph) advance = fallbackGlyph.glyph->advanceX;
+      if (advance == 0 && !utf8IsCombiningMark(cp) && (glyphFallback || spareFallback)) {
+        if (const EpdFontFamily* from = pickGlyphFallback(glyphFallback, spareFallback, cp, style)) {
+          advance = from->findGlyphData(cp, style).glyph->advanceX;
+        }
       }
       widthFP += advance;
     }
@@ -926,16 +945,16 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   const EpdFontFamily* prevGlyphFont = nullptr;
   const EpdFontFamily* glyphFallback = getMissingGlyphFallbackFamily(fontId);
   if (!glyphFallback) glyphFallback = uiCjkFallbackFor(fontId, textCursor);
+  const EpdFontFamily* spareFallback = bookSpareFor(fontId);
 
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&textCursor)))) {
     if (utf8IsCombiningMark(cp)) {
       const EpdFontFamily* markFont = &font;
       auto markData = font.findGlyphData(cp, style);
-      if (!markData.glyph && glyphFallback) {
-        const auto fallbackData = glyphFallback->findGlyphData(cp, style);
-        if (fallbackData.glyph) {
-          markFont = glyphFallback;
-          markData = fallbackData;
+      if (!markData.glyph && (glyphFallback || spareFallback)) {
+        if (const EpdFontFamily* from = pickGlyphFallback(glyphFallback, spareFallback, cp, style)) {
+          markFont = from;
+          markData = from->findGlyphData(cp, style);
         }
       }
       if (!markData.glyph) continue;
@@ -955,10 +974,9 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     // falling back to aliases/synthetic tofu.
     const EpdFontFamily* glyphFont = &font;
     bool hasRealGlyph = font.findGlyphData(cp, style).glyph != nullptr;
-    if (!hasRealGlyph && glyphFallback) {
-      const auto fallbackData = glyphFallback->findGlyphData(cp, style);
-      if (fallbackData.glyph) {
-        glyphFont = glyphFallback;
+    if (!hasRealGlyph && (glyphFallback || spareFallback)) {
+      if (const EpdFontFamily* from = pickGlyphFallback(glyphFallback, spareFallback, cp, style)) {
+        glyphFont = from;
         hasRealGlyph = true;
       }
     }
@@ -2150,8 +2168,7 @@ bool GfxRenderer::hasGlyph(const int fontId, const uint32_t cp, const EpdFontFam
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return false;
   if (fontIt->second.findGlyphData(cp, style).glyph) return true;
-  const EpdFontFamily* fallback = getMissingGlyphFallbackFamily(fontId);
-  return fallback && fallback->findGlyphData(cp, style).glyph;
+  return pickGlyphFallback(getMissingGlyphFallbackFamily(fontId), bookSpareFor(fontId), cp, style) != nullptr;
 }
 
 bool GfxRenderer::shapeIndicRun(const int fontId, const EpdFontFamily::Style style, const uint32_t* cps, const unsigned count,
@@ -2371,12 +2388,14 @@ int GfxRenderer::getTextAdvanceXRaw(const int fontId, const char* text, EpdFontF
     const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
     const EpdFontFamily* glyphFallback = getMissingGlyphFallbackFamily(fontId);
+    const EpdFontFamily* spareFallback = bookSpareFor(fontId);
     while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
       if (utf8IsCombiningMark(cp)) continue;
       int32_t advFP = sdIt->second->getAdvance(cp, styleIdx);
-      if (advFP == 0 && glyphFallback) {
-        const auto fallbackGlyph = glyphFallback->findGlyphData(cp, style);
-        if (fallbackGlyph.glyph) advFP = fallbackGlyph.glyph->advanceX;
+      if (advFP == 0 && (glyphFallback || spareFallback)) {
+        if (const EpdFontFamily* from = pickGlyphFallback(glyphFallback, spareFallback, cp, style)) {
+          advFP = from->findGlyphData(cp, style).glyph->advanceX;
+        }
       }
       widthPx += fp4::toPixel(prevAdvanceFP);
       prevAdvanceFP = isSupSub ? (advFP + 1) / 2 : advFP;
