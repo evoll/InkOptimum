@@ -349,3 +349,10 @@ The PIN lock entry is no longer in Apps: it is Settings > System > PIN lock (`Se
 ## 2026-11-27 (37) — finished books marked in the file browser
 
 Source: CrossInk 2.0.0 (finished EPUBs shown with a check in the File Browser). In Books mode an EPUB whose stats.bin has `isCompleted` (set with "Mark finished" in the book menu) gets "[x] " before its extension in the right-hand column (ASCII: the built-in UI fonts have no check glyph). `FileBrowserActivity::isFinishedBook` reads the stats file once per row and keeps the answer until the list is reloaded or the stats are deleted. XTC is not marked (its stats are a different store). Not tested on a device.
+
+## 2026-11-28 (38) — skip identical stats rewrites; review notes corrected again
+
+- New `src/util/FileContentEquals.h` (CrossInk 2.0.0 idea): compares a file with the bytes about to be written (64-byte chunks). `GlobalReadingStats` `saveToFile` and `BookReadingStats::save` (stats.bin) now serialize first and return without touching the SD card when the file already holds the same bytes (reader exit saves unconditionally, so a quick open/close used to rewrite both files).
+- Correction to (34): CrossInk has no "monthly reading-history files" in code or docs; that item is removed from the open list.
+- Paperio flip-clock sleep screen (`a1ba1059`) deliberately NOT taken: it is X4 Classic only, rewires the boot path (RTC marker, minute timer wake from deep sleep, a redraw without normal boot) and drains the battery every minute; it cannot be checked without the device. Left for a decision.
+- Builds x3x4-release, x4pro-release OK; native tests pass.

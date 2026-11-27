@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+#include "util/FileContentEquals.h"
+
 namespace {
 // Binary layout v1 (11 bytes):
 //   [0]     version (= 1)
@@ -198,11 +200,6 @@ void BookReadingStats::formatDuration(uint32_t seconds, char* buf, size_t len) {
 }
 
 void BookReadingStats::save(const std::string& cachePath) const {
-  FsFile f;
-  if (!Storage.openFileForWrite("STATS", cachePath + "/stats.bin", f)) {
-    LOG_ERR("STATS", "Could not write stats.bin");
-    return;
-  }
   uint8_t data[STATS_FILE_SIZE];
   memset(data, 0, sizeof(data));
   data[0] = STATS_FILE_VERSION;
@@ -224,6 +221,14 @@ void BookReadingStats::save(const std::string& cachePath) const {
   }
   for (size_t i = 0; i < dayOfWeekSeconds.size(); ++i) {
     writeLe32(data, 41 + static_cast<int>(i) * 4, dayOfWeekSeconds[i]);
+  }
+  // Reader exit saves unconditionally; an open-and-close that changed nothing must not rewrite the file.
+  const std::string statsPath = cachePath + "/stats.bin";
+  if (fileContentEquals("STATS", statsPath.c_str(), data, STATS_FILE_SIZE)) return;
+  FsFile f;
+  if (!Storage.openFileForWrite("STATS", statsPath, f)) {
+    LOG_ERR("STATS", "Could not write stats.bin");
+    return;
   }
   f.write(data, STATS_FILE_SIZE);
   f.close();

@@ -9,6 +9,8 @@
 #include <limits>
 #include <string>
 
+#include "util/FileContentEquals.h"
+
 namespace {
 enum class StatsLoadResult : uint8_t { Ok, Invalid, NewerFormat };
 
@@ -197,6 +199,12 @@ bool verifyFileSize(const char* path, const size_t expectedSize) {
 }
 
 bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* backupPath) {
+  uint8_t data[GLOBAL_STATS_FILE_SIZE];
+  serializeStats(stats, data);
+
+  // Reader exit saves unconditionally; an open-and-close that changed nothing must not rewrite the file.
+  if (fileContentEquals("GSTATS", path, data, sizeof(data))) return true;
+
   const std::string tmpPath = std::string(path) + ".tmp";
   if (Storage.exists(tmpPath.c_str()) && !Storage.remove(tmpPath.c_str())) {
     LOG_ERR("GSTATS", "Could not remove stale stats temp file: %s", tmpPath.c_str());
@@ -209,8 +217,6 @@ bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* b
     return false;
   }
 
-  uint8_t data[GLOBAL_STATS_FILE_SIZE];
-  serializeStats(stats, data);
   const size_t bytesWritten = f.write(data, GLOBAL_STATS_FILE_SIZE);
   if (bytesWritten != GLOBAL_STATS_FILE_SIZE) {
     LOG_ERR("GSTATS", "Short write for stats temp file %s: %u/%u bytes", tmpPath.c_str(),
