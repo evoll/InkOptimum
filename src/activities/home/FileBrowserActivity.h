@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -53,6 +54,10 @@ class FileBrowserActivity final : public Activity {
   std::string basepath = "/";
   std::vector<std::string> files;
   bool fileListMemoryLimited = false;
+  // Books marked finished (stats.bin), looked up when a row is first drawn and kept until the list is reloaded or a
+  // book action may have changed it. Key: the entry as listed.
+  mutable std::unordered_map<std::string, bool> finishedCache_;
+  bool isFinishedBook(const std::string& entry) const;
 
   // Data loading
   void loadFiles();

@@ -345,3 +345,7 @@ Builds x3x4-release, x4pro-release OK; native tests 1029 pass.
 ## 2026-11-27 (36) — PIN lock moved to Settings
 
 The PIN lock entry is no longer in Apps: it is Settings > System > PIN lock (`SettingAction::PinLock`, before "Forget TLS pins"), same flow (`pin_flow::open`: set twice / change / turn off with the current PIN). `ACTION_PIN_LOCK` removed from `AppsActivity`. (Entries 25 and 35 above still say "Apps > PIN lock": that was the place until this change.) Not tested on a device.
+
+## 2026-11-27 (37) — finished books marked in the file browser
+
+Source: CrossInk 2.0.0 (finished EPUBs shown with a check in the File Browser). In Books mode an EPUB whose stats.bin has `isCompleted` (set with "Mark finished" in the book menu) gets "[x] " before its extension in the right-hand column (ASCII: the built-in UI fonts have no check glyph). `FileBrowserActivity::isFinishedBook` reads the stats file once per row and keeps the answer until the list is reloaded or the stats are deleted. XTC is not marked (its stats are a different store). Not tested on a device.

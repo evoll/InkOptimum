@@ -200,8 +200,18 @@ void saveLastFileBrowserPosition(const std::string& directory, const std::string
 std::string getFileName(std::string filename);
 }  // namespace
 
+bool FileBrowserActivity::isFinishedBook(const std::string& entry) const {
+  if (mode != Mode::Books || entry.empty() || entry.back() == '/' || !FsHelpers::hasEpubExtension(entry)) return false;
+  const auto it = finishedCache_.find(entry);
+  if (it != finishedCache_.end()) return it->second;
+  const bool finished = BookActions::isEpubCompleted(buildFullPath(basepath, entry));
+  finishedCache_.emplace(entry, finished);
+  return finished;
+}
+
 void FileBrowserActivity::loadFiles() {
   files.clear();
+  finishedCache_.clear();
   fileListMemoryLimited = false;
 
   auto root = Storage.open(basepath.c_str());
@@ -733,6 +743,7 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
                                                        getFileName(entry)),
                 [this, fullPath](const ActivityResult& confirmation) {
                   if (!confirmation.isCancelled) {
+                    finishedCache_.clear();
                     if (!BookActions::deleteBookStats(fullPath)) {
                       LOG_ERR("FileBrowser", "Failed to delete book stats for: %s", fullPath.c_str());
                     } else {
@@ -1174,6 +1185,9 @@ void FileBrowserActivity::render(RenderLock&&) {
       }
       if (isPinnedSleepFavorite(fullPath)) {
         return extension.empty() ? std::string("*") : "* " + extension;
+      }
+      if (isFinishedBook(files[index])) {
+        return extension.empty() ? std::string("[x]") : "[x] " + extension;  // finished (marked in the book menu)
       }
       return extension;
     };
