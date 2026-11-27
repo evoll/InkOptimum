@@ -356,3 +356,10 @@ Source: CrossInk 2.0.0 (finished EPUBs shown with a check in the File Browser). 
 - Correction to (34): CrossInk has no "monthly reading-history files" in code or docs; that item is removed from the open list.
 - Paperio flip-clock sleep screen (`a1ba1059`) deliberately NOT taken: it is X4 Classic only, rewires the boot path (RTC marker, minute timer wake from deep sleep, a redraw without normal boot) and drains the battery every minute; it cannot be checked without the device. Left for a decision.
 - Builds x3x4-release, x4pro-release OK; native tests pass.
+
+## 2026-11-28 (39) — spare SD fallback font: analysis only, no code
+
+- What already exists: `GfxRenderer::getMissingGlyphFallbackFamily(primaryFontId)` returns ONE built-in family (small/large size-matched, `missingGlyphFallbackSmall/LargeFontId_`) for SD reading fonts; used at 4 sites (width measuring with the advance table, line draw, `hasGlyph`-style check, per-glyph render). Interface text additionally falls back to the SD "UI font (CJK)" (`uiCjkFont_`, `uiCjkFallbackFor`, glyphs read on demand into `uiCjkLoaded_`), but that fallback is skipped for SD reading fonts (`sdCardFonts_.count(fontId) > 0`).
+- Cheapest viable design: when the built-in fallback also lacks a glyph, try `uiCjkFamily_` (the SD family the user already chose in Settings > System > UI font) for book text. Needs: a second step at the 4 sites (the lookup returns one family, so a per-glyph helper `findMissingGlyph(fontId, cp, style)` is required), and the page pre-scan (`FontCacheManager`) must also request those code points from the spare font before the page is drawn, otherwise the glyph is absent at first draw. The advance table of the primary font gives 0 for such glyphs, so layout width must also consult the spare font, and the section cache key would have to include the spare font (layout changes).
+- Not implemented: it touches layout (cache key), measuring and drawing at once, and cannot be checked without a device; a mistake would corrupt line widths in every SD-font book. Left as an explicit decision for the user (options: do it with a device check next; or skip).
+- Docs only; no build needed.
