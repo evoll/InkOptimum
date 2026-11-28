@@ -28,6 +28,8 @@ class Epub {
   // FB2 is converted to an unpacked EPUB package.  Normal EPUBs remain ZIP
   // archives, but all item access also supports this directory form.
   bool unpackedPackage = false;
+  // Set only while load() indexes the archive; getItemSize/readItemContentsToStream then reuse it.
+  ZipFile* sharedZip_ = nullptr;
   // Set once in the constructor (see Epub.cpp) rather than re-checked with
   // Storage.exists() on every readItemContentsToStream() call, since that
   // runs for every chapter/image/CSS read of every book, FB2-origin or not.

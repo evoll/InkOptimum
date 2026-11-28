@@ -303,7 +303,8 @@ std::string Epub::coverPageFromNavLandmarks(const std::string& navHref) const {
 std::string Epub::coverPictureByName() const {
   if (unpackedPackage) return {};
   CoverNameScan scan;
-  ZipFile zf(filepath);
+  ZipFile ownZip(filepath);
+  ZipFile& zf = sharedZip_ ? *sharedZip_ : ownZip;
   if (!zf.enumerateFilePaths([&](const std::string_view path) { scan.feed(path); })) {
     LOG_DBG("EBP", "Could not list the archive to look for a cover by name");
     return {};
@@ -413,7 +414,8 @@ void Epub::discoverCssFilesFromZip() {
   if (unpackedPackage) return;
 
   const std::string& opfDir = contentBasePath;
-  ZipFile zf(filepath);
+  ZipFile ownZip(filepath);
+  ZipFile& zf = sharedZip_ ? *sharedZip_ : ownZip;
 
   if (!zf.enumerateFilePaths([&](std::string_view filePath) {
         if (!opfDir.empty() && filePath.find(opfDir) != 0) {
@@ -574,6 +576,21 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const Prog
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   cssParser.reset(new CssParser(cachePath));
 
+  // One open archive serves every lookup and read of the indexing passes (container.xml, OPF, cover
+  // checks, CSS discovery, NCX/nav) instead of reopening the file for each. Not used for unpacked
+  // packages, and entries a decryptor owns bypass the zip anyway. Ported from crosspoint-reader #4619.
+  ZipFile sharedZipFile(filepath);
+  struct SharedZipScope {
+    ZipFile*& slot;
+    ZipFile& zip;
+    void release() {
+      slot = nullptr;
+      zip.close();
+    }
+    ~SharedZipScope() { release(); }
+  } sharedScope{sharedZip_, sharedZipFile};
+  if (!unpackedPackage && !isFb2Origin && sharedZipFile.open()) sharedZip_ = &sharedZipFile;
+
   if (bookMetadataCache->load()) {
     if (!skipLoadingCss) {
       bool rebuildCssCache = false;
@@ -603,6 +620,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const Prog
         } else {
           discoverCssFilesFromZip();
         }
+        sharedScope.release();  // CSS inflation wants the memory, not an open archive
         bookMetadataCache.reset();
         const CssParseStatus cssStatus = parseCssFiles(forceCssRebuild);
         bookMetadataCache.reset(new BookMetadataCache(cachePath));
@@ -711,6 +729,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const Prog
   }
   LOG_INF("EBP-PROF", "TOC pass completed in %lu ms", millis() - tocStart);
   reportProgress(30);
+  sharedScope.release();  // buildBookBin and the CSS pass open the archive themselves
 
   if (!bookMetadataCache->endWrite()) {
     LOG_ERR("EBP", "Could not end writing cache");
@@ -1189,7 +1208,8 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
     return decrypted;
   }
 
-  const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
+  const auto content = sharedZip_ ? sharedZip_->readFileToMemory(path.c_str(), size, trailingNullByte)
+                                   : ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
     return nullptr;
@@ -1264,6 +1284,7 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
     }
     return true;
   }
+  if (sharedZip_) return sharedZip_->readFileToStream(path.c_str(), out, chunkSize, cancellationToken);
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, cancellationToken);
 }
 
@@ -1282,6 +1303,7 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
     *size = decryptor->decryptedSize(path);
     return true;
   }
+  if (sharedZip_) return sharedZip_->getInflatedFileSize(path.c_str(), size);
   return ZipFile(filepath).getInflatedFileSize(path.c_str(), size);
 }
 
