@@ -71,7 +71,8 @@ class InkMODSettings {
     PROGRESS_BAR_THICK = 2,
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
-  enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
+  // SECTION_TITLE (3) is the parent heading of the current chapter (Paperio 2.3.4); appended so saved values keep meaning.
+  enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, SECTION_TITLE = 3, STATUS_BAR_TITLE_COUNT };
   enum STATUS_BAR_TIME_LEFT {
     TIME_LEFT_HIDE = 0,
     TIME_LEFT_CHAPTER = 1,

@@ -62,12 +62,13 @@ const StrId progressBarThicknessNames[PROGRESS_BAR_THICKNESS_ITEMS] = {
 constexpr int TEXT_SIZE_ITEMS = 3;
 const StrId textSizeNames[TEXT_SIZE_ITEMS] = {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE};
 
-constexpr int TITLE_ITEMS = 3;
-const StrId titleNames[TITLE_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER};
+constexpr int TITLE_ITEMS = 4;
+const StrId titleNames[TITLE_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_SECTION_TITLE};
 const uint8_t titleRawValues[TITLE_ITEMS] = {
     InkMODSettings::STATUS_BAR_TITLE::HIDE_TITLE,
     InkMODSettings::STATUS_BAR_TITLE::BOOK_TITLE,
     InkMODSettings::STATUS_BAR_TITLE::CHAPTER_TITLE,
+    InkMODSettings::STATUS_BAR_TITLE::SECTION_TITLE,
 };
 
 constexpr int TIME_LEFT_ITEMS = 3;
@@ -426,6 +427,8 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
     title = tr(STR_EXAMPLE_BOOK);
   } else if (SETTINGS.statusBarTitle == InkMODSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
     title = tr(STR_EXAMPLE_CHAPTER);
+  } else if (SETTINGS.statusBarTitle == InkMODSettings::STATUS_BAR_TITLE::SECTION_TITLE) {
+    title = tr(STR_EXAMPLE_SECTION);
   }
 
   if (isLandscapeCw || isLandscapeCcw || isInverted) {

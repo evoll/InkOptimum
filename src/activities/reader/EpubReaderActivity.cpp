@@ -5748,6 +5748,25 @@ void EpubReaderActivity::renderStatusBar() const {
       }
     }
 
+  } else if (SETTINGS.statusBarTitle == InkMODSettings::STATUS_BAR_TITLE::SECTION_TITLE) {
+    // Parent heading of the current chapter in the TOC ("Gospel of Luke" instead of the whole Bible).
+    // Without a nesting in the file, the current chapter title is shown (Paperio 2.3.4).
+    if (!suppressCurrentChapterTitle) {
+      title = tr(STR_UNNAMED);
+      int tocIndex = currentEpubTocIndex;
+      if (tocIndex < 0) tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+      if (tocIndex != -1) {
+        const auto tocItem = epub->getTocItem(tocIndex);
+        title = tocItem.title;
+        for (int i = tocIndex - 1; i >= 0 && tocItem.level > 0; --i) {
+          const auto parent = epub->getTocItem(i);
+          if (parent.level < tocItem.level) {
+            title = parent.title;
+            break;
+          }
+        }
+      }
+    }
   } else if (SETTINGS.statusBarTitle == InkMODSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
     title = epub->getTitle();
   }

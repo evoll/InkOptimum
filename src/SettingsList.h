@@ -921,10 +921,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE}, "statusBarTextSize",
                           StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Enum(StrId::STR_TITLE, &InkMODSettings::statusBarTitle,
-                          {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER}, "statusBarTitle",
+                          {StrId::STR_HIDE, StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_SECTION_TITLE}, "statusBarTitle",
                           StrId::STR_CUSTOMISE_STATUS_BAR)
             .withEnumRawValues(
-                {InkMODSettings::HIDE_TITLE, InkMODSettings::BOOK_TITLE, InkMODSettings::CHAPTER_TITLE}));
+                {InkMODSettings::HIDE_TITLE, InkMODSettings::BOOK_TITLE, InkMODSettings::CHAPTER_TITLE,
+                 InkMODSettings::SECTION_TITLE}));
     add(SettingInfo::Enum(StrId::STR_TIME_LEFT, &InkMODSettings::statusBarTimeLeft,
                           {StrId::STR_HIDE, StrId::STR_CHAPTER, StrId::STR_BOOK}, "statusBarTimeLeft",
                           StrId::STR_CUSTOMISE_STATUS_BAR));
