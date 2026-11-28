@@ -273,6 +273,7 @@ bool SdCardFontRegistry::discover() {
 
   scanRoot(FONTS_DIR_HIDDEN, families_);
   scanRoot(FONTS_DIR_VISIBLE, families_);
+  scanRoot(FONTS_DIR_CROSSPOINT, families_);
 
   std::sort(families_.begin(), families_.end(),
             [](const SdCardFontFamilyInfo& a, const SdCardFontFamilyInfo& b) { return a.name < b.name; });
@@ -292,6 +293,8 @@ const char* SdCardFontRegistry::findFamilyRoot(const char* familyName) {
   if (Storage.exists(path)) return FONTS_DIR_HIDDEN;
   snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
   if (Storage.exists(path)) return FONTS_DIR_VISIBLE;
+  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_CROSSPOINT, familyName);
+  if (Storage.exists(path)) return FONTS_DIR_CROSSPOINT;
   return nullptr;
 }
 

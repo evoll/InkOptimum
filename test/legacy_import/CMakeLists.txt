@@ -1,0 +1,4 @@
+add_executable(legacy_import_test LegacyImportTest.cpp)
+target_include_directories(legacy_import_test PRIVATE ${REPO_ROOT}/lib/LegacyImport)
+target_link_libraries(legacy_import_test PRIVATE GTest::gtest_main)
+gtest_discover_tests(legacy_import_test)

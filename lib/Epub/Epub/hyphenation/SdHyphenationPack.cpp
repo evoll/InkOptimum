@@ -32,28 +32,54 @@ std::vector<std::string>& misses() {
   return m;
 }
 
-bool loadPack(const std::string& tag, Loaded& out) {
-  const std::string path = std::string(kDir) + "/hyph-" + tag + ".trie";
-  if (!Storage.exists(path.c_str())) return false;
+// Our own pack first, then the CPHY packs other firmware installs (CrossPoint, CrossInk, witchhunt-reader).
+constexpr const char* kCphyDirs[] = {"/.inkmod/hyphenation", "/.crosspoint/hyphenation", "/.crossink/hyphenation"};
+
+// Reads a whole file of at most maxSize bytes into a new buffer; null when absent, too big or short.
+std::unique_ptr<uint8_t[]> readWhole(const std::string& path, const size_t minSize, const size_t maxSize,
+                                     size_t& sizeOut) {
+  if (!Storage.exists(path.c_str())) return nullptr;
   FsFile file;
-  if (!Storage.openFileForRead("HYPH", path, file)) return false;
+  if (!Storage.openFileForRead("HYPH", path, file)) return nullptr;
   const size_t size = file.size();
-  if (size < HyphenationPack::kHeaderSize + 5 || size > HyphenationPack::kMaxFileSize) {
+  if (size < minSize || size > maxSize) {
     file.close();
-    return false;
+    return nullptr;
   }
   std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[size]);
   if (!buf) {
     file.close();
-    return false;
+    return nullptr;
   }
   const bool readOk = file.read(buf.get(), size) == static_cast<int>(size);
   file.close();
+  if (!readOk) return nullptr;
+  sizeOut = size;
+  return buf;
+}
+
+bool loadPack(const std::string& tag, Loaded& out) {
+  std::unique_ptr<uint8_t[]> buf;
   HyphenationPack::Parsed parsed;
-  if (!readOk || !HyphenationPack::parse(buf.get(), size, parsed)) {
-    LOG_ERR("HYPH", "Invalid hyphenation pack %s", path.c_str());
-    return false;
+  size_t size = 0;
+  const std::string ownPath = std::string(kDir) + "/hyph-" + tag + ".trie";
+  buf = readWhole(ownPath, HyphenationPack::kHeaderSize + 5, HyphenationPack::kMaxFileSize, size);
+  if (buf && !HyphenationPack::parse(buf.get(), size, parsed)) {
+    LOG_ERR("HYPH", "Invalid hyphenation pack %s", ownPath.c_str());
+    buf.reset();
   }
+  if (!buf) {
+    for (const char* dir : kCphyDirs) {
+      const std::string path = std::string(dir) + "/hyph-" + tag + ".cphyph";
+      buf = readWhole(path, HyphenationPack::kCphyHeaderSize + 1,
+                      HyphenationPack::kCphyHeaderSize + HyphenationPack::kCphyMaxPayload, size);
+      if (!buf) continue;
+      if (HyphenationPack::parseCphy(buf.get(), size, tag.c_str(), parsed)) break;
+      LOG_ERR("HYPH", "Invalid CPHY hyphenation pack %s", path.c_str());
+      buf.reset();
+    }
+  }
+  if (!buf) return false;
   out.tag = tag;
   out.buffer = std::move(buf);
   out.patterns = {parsed.rootOffset, parsed.data, parsed.size};

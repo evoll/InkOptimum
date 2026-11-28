@@ -40,6 +40,7 @@ enum class SettingAction {
   RestoreStats,
   ResetGlobalStats,
   ClearCache,
+  ImportOtherFirmware,
   ForgetTlsPins,
   PinLock,
   CheckForUpdates,

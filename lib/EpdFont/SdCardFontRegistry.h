@@ -43,6 +43,9 @@ class SdCardFontRegistry {
   // when creating new installs; both are read from if present.
   static constexpr const char* FONTS_DIR_HIDDEN = "/.fonts";
   static constexpr const char* FONTS_DIR_VISIBLE = "/fonts";
+  // Where Paperio-Reader and witchhunt-reader keep SD fonts (/.crosspoint/fonts/<Family>/<Family>_<size>.cpfont);
+  // read-only for discovery so a card prepared for them works here. A family in /.fonts or /fonts wins by name.
+  static constexpr const char* FONTS_DIR_CROSSPOINT = "/.crosspoint/fonts";
 
   // Returns the existing root for `familyName` (the one that contains
   // /<root>/<familyName>/), or nullptr if the family is not installed in

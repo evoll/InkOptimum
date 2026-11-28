@@ -426,6 +426,12 @@ enum class StrId : uint16_t {
   STR_PIN_LOCK,
   STR_PUBLISHER_FONTS,
   STR_BOOK_SPARE_FONT,
+  STR_IMPORT_OTHER_FIRMWARE,
+  STR_IMPORT_OTHER_FIRMWARE_CONFIRM,
+  STR_IMPORT_OTHER_FIRMWARE_BUSY,
+  STR_IMPORT_OTHER_FIRMWARE_NO_SOURCE,
+  STR_IMPORT_OTHER_FIRMWARE_NOTHING_NEW,
+  STR_IMPORT_OTHER_FIRMWARE_DONE,
   STR_PIN_NEW,
   STR_PIN_REPEAT,
   STR_PIN_CURRENT,
@@ -1074,7 +1080,7 @@ inline LangStrings getLanguageStrings(Language lang) {
 }
 
 // FNV-1a hash of the ordered StrId names (SD language pack compatibility check)
-constexpr uint32_t I18N_KEY_HASH = 0xF833E02Du;
+constexpr uint32_t I18N_KEY_HASH = 0x4B0C235Au;
 
 // Helper function to get language count
 constexpr uint8_t getLanguageCount() { return static_cast<uint8_t>(Language::_COUNT); }

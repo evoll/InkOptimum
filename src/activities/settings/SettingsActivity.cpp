@@ -47,6 +47,7 @@
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/reader/StatsBackup.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "util/LegacyDataImport.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "activities/util/OptionSelectionActivity.h"
@@ -1083,6 +1084,34 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::ScreenCalibration:
         startActivityForResult(std::make_unique<ScreenCalibrationActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::ImportOtherFirmware:
+        startActivityForResult(
+            std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_IMPORT_OTHER_FIRMWARE),
+                                                   tr(STR_IMPORT_OTHER_FIRMWARE_CONFIRM)),
+            [this](const ActivityResult& confirmResult) {
+              if (confirmResult.isCancelled) {
+                requestUpdate();
+                return;
+              }
+              GUI.drawPopup(renderer, tr(STR_IMPORT_OTHER_FIRMWARE_BUSY));
+              renderer.displayBuffer();
+              const auto imported = LegacyDataImport::run();
+              char text[96];
+              if (!imported.sourceFound) {
+                snprintf(text, sizeof(text), "%s", tr(STR_IMPORT_OTHER_FIRMWARE_NO_SOURCE));
+              } else if (imported.copied == 0 && imported.failed == 0) {
+                snprintf(text, sizeof(text), "%s", tr(STR_IMPORT_OTHER_FIRMWARE_NOTHING_NEW));
+              } else {
+                snprintf(text, sizeof(text), tr(STR_IMPORT_OTHER_FIRMWARE_DONE), imported.copied, imported.books,
+                         imported.failed);
+              }
+              GUI.drawPopup(renderer, text);
+              renderer.displayBuffer();
+              delay(1800);
+              rebuildSettingsLists();
+              requestUpdate();
+            });
         break;
       case SettingAction::ClearCache:
         startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
